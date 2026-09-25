@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    @apply bg-ink-900 text-slate-200 font-sans antialiased;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  input,
+  textarea {
+    user-select: text;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium
+           transition-colors duration-150 whitespace-nowrap select-none
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-boss/60 disabled:opacity-40
+           disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-boss text-ink-900 hover:bg-boss-dark;
+  }
+  .btn-ghost {
+    @apply btn bg-ink-600 text-slate-300 hover:bg-ink-500 hover:text-white;
+  }
+  .btn-success {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
+  }
+  .btn-danger {
+    @apply btn bg-rose-700/80 text-white hover:bg-rose-700;
+  }
+
+  .field {
+    @apply w-full rounded-md border border-ink-500 bg-ink-800 px-3 py-2 text-sm text-slate-200
+           placeholder:text-slate-500 focus:border-boss focus:outline-none;
+  }
+
+  .chip {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] leading-none
+           bg-ink-500 text-slate-300;
+  }
+
+  .panel-title {
+    @apply text-[11px] font-semibold uppercase tracking-widest text-slate-500;
+  }
+}
+
+/* 细滚动条，跟深色主题统一 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3346;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4560;
+  background-clip: content-box;
+}

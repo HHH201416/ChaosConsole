@@ -1,0 +1,99 @@
+{
+  "name": "chaos-console",
+  "version": "1.0.0",
+  "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
+  "main": "electron/main.js",
+  "author": {
+    "name": "ChaosConsole",
+    "email": "boss@chaosconsole.local"
+  },
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,WEB,ELECTRON -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
+    "dev:server": "cross-env NODE_ENV=development node server/index.js",
+    "dev:web": "vite",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 tcp:127.0.0.1:43117 && cross-env NODE_ENV=development CHAOS_EXTERNAL_SERVER=1 ELECTRON_ENABLE_LOGGING=1 electron .",
+    "build:web": "vite build",
+    "start": "cross-env NODE_ENV=production electron .",
+    "icon": "node scripts/make-icon.js",
+    "dist": "npm run icon && npm run build:web && node scripts/build.js --publish never",
+    "release": "npm run icon && npm run build:web && node scripts/build.js --publish always"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "electron-updater": "^6.3.9",
+    "express": "^4.21.2",
+    "sql.js": "^1.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "vite": "^5.4.11",
+    "wait-on": "^8.0.2",
+    "zustand": "^5.0.3"
+  },
+  "build": {
+    "appId": "com.chaosconsole.boss",
+    "productName": "AI Agent开发控制台",
+    "copyright": "Copyright © 2026 ChaosConsole",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "dist/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asar": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "executableName": "ChaosConsole",
+      "artifactName": "AI Agent开发控制台 Setup.${ext}",
+      "signAndEditExecutable": false
+    },
+    "afterPack": "scripts/after-pack.js",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI Agent开发控制台",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "ChaosConsole",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

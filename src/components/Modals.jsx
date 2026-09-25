@@ -1,0 +1,605 @@
+import { useState, useEffect, useRef } from 'react'
+import { useStore } from '../store'
+import { ROLE_PRESETS } from '../lib/meta'
+
+function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
+      <div
+        className={`${width} max-h-[88vh] animate-slideUp overflow-y-auto rounded-xl border border-ink-500 bg-ink-800 p-5 shadow-2xl`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4">
+          <h3 className="text-base font-semibold text-white">{title}</h3>
+          {subtitle && <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>}
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+const AVATARS = ['🤖', '👨💻', '👩💻', '🧑🔬', '🎨', '🧪', '🔍', '⚙️', '📊', '✍️', '🛡️', '📋', '🧠', '🚀', '🦾', '👾', '📱']
+
+/* ------------------------------------------------------------------ *
+ * Agent 的模型选择复用块
+ * ------------------------------------------------------------------ */
+
+function ExecutorModelPicker({ executor, model, onChange }) {
+  const executors = useStore((s) => s.system?.executors) || []
+  const list = executors.find((e) => e.id === executor)
+  const models = list?.models || []
+
+  return (
+    <div className="flex gap-3">
+      <div className="flex-1">
+        <label className="mb-1 block text-[11px] text-slate-400">执行器（用哪个 CLI 干活）</label>
+        <select
+          className="field"
+          value={executor}
+          onChange={(e) => onChange({ executor: e.target.value, model: '' })}
+        >
+          {executors.map((e) => (
+            <option key={e.id} value={e.id} disabled={!e.available}>
+              {e.label}
+              {e.available ? '' : '（未安装）'}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex-1">
+        <label className="mb-1 block text-[11px] text-slate-400">模型</label>
+        <select className="field" value={model} onChange={(e) => onChange({ model: e.target.value })}>
+          <option value="">（用默认模型）</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label || m.id}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * 新岗位
+ * ------------------------------------------------------------------ */
+
+export function NewAgentModal({ onClose }) {
+  const createAgent = useStore((s) => s.createAgent)
+  const [form, setForm] = useState({
+    functionLabel: '',
+    role: 'Coder',
+    avatar: '🤖',
+    executor: 'claude',
+    model: '',
+    systemPrompt: '',
+  })
+  const [busy, setBusy] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => ref.current?.focus(), [])
+
+  const submit = async () => {
+    const label = form.functionLabel.trim()
+    if (!label || busy) return
+    setBusy(true)
+    // 姓名只作为内部标识，界面上不展示；这里直接用职能名兜底
+    const created = await createAgent({ ...form, name: label })
+    setBusy(false)
+    if (created) onClose()
+  }
+
+  return (
+    <Shell
+      title="新增岗位"
+      subtitle="每个岗位是一个独立 Agent。界面上只显示「是干什么的」，不显示姓名。"
+      onClose={onClose}
+    >
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">是干什么的 *</label>
+          <input
+            ref={ref}
+            className="field"
+            value={form.functionLabel}
+            onChange={(e) => setForm({ ...form, functionLabel: e.target.value })}
+            placeholder="例如：数据库调优 / 鸿蒙应用开发 / 埋点设计"
+          />
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="mb-1 block text-[11px] text-slate-400">职能分类（决定自动派单）</label>
+            <select className="field" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              {ROLE_PRESETS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="w-40">
+            <label className="mb-1 block text-[11px] text-slate-400">头像</label>
+            <div className="flex flex-wrap gap-1 rounded-md border border-ink-500 bg-ink-900 p-1.5">
+              {AVATARS.map((a) => (
+                <button
+                  key={a}
+                  onClick={() => setForm({ ...form, avatar: a })}
+                  className={`rounded px-1 py-0.5 text-sm leading-none transition-colors ${
+                    form.avatar === a ? 'bg-boss/25 ring-1 ring-boss/60' : 'hover:bg-ink-600'
+                  }`}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <ExecutorModelPicker
+          executor={form.executor}
+          model={form.model}
+          onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+        />
+
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">系统提示词</label>
+          <textarea
+            rows={7}
+            className="field resize-none font-mono text-[11px] leading-relaxed"
+            value={form.systemPrompt}
+            onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
+            placeholder={'你是团队里的「数据库调优」工程师。\n专长：索引设计、慢查询分析、执行计划解读。\n工作要求：\n1. …'}
+          />
+          <p className="mt-1 text-[10px] text-slate-600">
+            每次执行任务时，这段文字会连同任务一起通过 stdin 发送给 CLI。
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button className="btn-ghost" onClick={onClose}>
+          取消
+        </button>
+        <button className="btn-primary" disabled={!form.functionLabel.trim() || busy} onClick={submit}>
+          {busy ? '创建中…' : '创建岗位'}
+        </button>
+      </div>
+    </Shell>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * 新任务（看板手动派单用）
+ * ------------------------------------------------------------------ */
+
+const TAG_PRESETS = ['WebSearch', 'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'Task']
+
+export function NewTaskModal({ onClose }) {
+  const createTask = useStore((s) => s.createTask)
+  const system = useStore((s) => s.system)
+  const agents = useStore((s) => s.agents)
+  const [form, setForm] = useState({
+    title: '',
+    description: '',
+    tags: [],
+    cwd: system?.defaultCwd || '',
+    agentId: '',
+  })
+  const [busy, setBusy] = useState(false)
+  const titleRef = useRef(null)
+
+  useEffect(() => titleRef.current?.focus(), [])
+
+  const toggleTag = (t) =>
+    setForm((f) => ({ ...f, tags: f.tags.includes(t) ? f.tags.filter((x) => x !== t) : [...f.tags, t] }))
+
+  const submit = async () => {
+    if (!form.title.trim() || busy) return
+    setBusy(true)
+    const created = await createTask({
+      title: form.title,
+      description: form.description,
+      tags: form.tags,
+      cwd: form.cwd,
+      agentId: form.agentId || undefined,
+    })
+    setBusy(false)
+    if (created) onClose()
+  }
+
+  return (
+    <Shell
+      title="新建任务"
+      subtitle="任务进入「进行中」时，后端会自动挑一个空闲岗位接手"
+      onClose={onClose}
+      width="w-[36rem]"
+    >
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">任务名称 *</label>
+          <input
+            ref={titleRef}
+            className="field"
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            placeholder="例如：给登录页加上失败重试与错误提示"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">详细说明（会作为任务描述发给 Agent）</label>
+          <textarea
+            rows={5}
+            className="field resize-none text-[12px] leading-relaxed"
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            placeholder="背景、要改哪些文件、验收标准、不要动什么…"
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">标签</label>
+          <div className="flex flex-wrap gap-1.5">
+            {TAG_PRESETS.map((t) => (
+              <button
+                key={t}
+                onClick={() => toggleTag(t)}
+                className={`rounded px-2 py-1 font-mono text-[11px] transition-colors ${
+                  form.tags.includes(t)
+                    ? 'bg-boss/20 text-boss ring-1 ring-boss/50'
+                    : 'bg-ink-600 text-slate-400 hover:bg-ink-500'
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="mb-1 block text-[11px] text-slate-400">执行路径（Agent 的工作目录）</label>
+            <input
+              className="field font-mono text-[11px]"
+              value={form.cwd}
+              onChange={(e) => setForm({ ...form, cwd: e.target.value })}
+              placeholder="D:\\你的项目目录"
+            />
+          </div>
+          <div className="w-44">
+            <label className="mb-1 block text-[11px] text-slate-400">指定岗位</label>
+            <select
+              className="field"
+              value={form.agentId}
+              onChange={(e) => setForm({ ...form, agentId: e.target.value })}
+            >
+              <option value="">自动分配</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.functionLabel}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button className="btn-ghost" onClick={onClose}>
+          取消
+        </button>
+        <button className="btn-primary" disabled={!form.title.trim() || busy} onClick={submit}>
+          {busy ? '创建中…' : '创建任务'}
+        </button>
+      </div>
+    </Shell>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * MCP 管理
+ * ------------------------------------------------------------------ */
+
+function McpRow({ server, onToggle, busy }) {
+  const [expanded, setExpanded] = useState(false)
+  const [envValues, setEnvValues] = useState({})
+  const [argValue, setArgValue] = useState('')
+  const needsInput = server.category === 'needs-key'
+  const canEnable = !needsInput || (server.envKeys.every((k) => envValues[k]) && (!server.requiresArg || argValue))
+
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2.5 transition-colors ${
+        server.enabled ? 'border-emerald-700/50 bg-emerald-950/20' : 'border-ink-500 bg-ink-900/40'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <span
+          className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+            server.enabled ? 'bg-emerald-500' : server.installed ? 'bg-slate-500' : 'bg-ink-500'
+          }`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[12.5px] font-medium text-slate-200">{server.label}</span>
+            <span className="font-mono text-[10px] text-slate-600">{server.id}</span>
+            {server.category === 'needs-key' && (
+              <span className="rounded bg-boss/15 px-1.5 py-[1px] text-[9.5px] text-boss">需密钥</span>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">{server.desc}</p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-700">{server.pkg}</p>
+
+          {expanded && needsInput && !server.enabled && (
+            <div className="mt-2 space-y-2">
+              {server.envKeys.map((k) => (
+                <input
+                  key={k}
+                  className="field font-mono text-[11px]"
+                  placeholder={k}
+                  value={envValues[k] || ''}
+                  onChange={(e) => setEnvValues({ ...envValues, [k]: e.target.value })}
+                />
+              ))}
+              {server.requiresArg && (
+                <input
+                  className="field font-mono text-[11px]"
+                  placeholder={server.requiresArg}
+                  value={argValue}
+                  onChange={(e) => setArgValue(e.target.value)}
+                />
+              )}
+              {server.keyHint && <p className="text-[10px] text-slate-600">{server.keyHint}</p>}
+            </div>
+          )}
+
+          {server.enabled && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {server.enabledClaude && <span className="chip bg-sky-500/15 text-sky-300">claude</span>}
+              {server.enabledDeveco && <span className="chip bg-violet-500/15 text-violet-300">deveco</span>}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 gap-1.5">
+          {needsInput && !server.enabled && (
+            <button className="btn-ghost px-2 py-1 text-[11px]" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? '收起' : '填密钥'}
+            </button>
+          )}
+          {server.enabled ? (
+            <button className="btn-danger px-2 py-1 text-[11px]" disabled={busy} onClick={() => onToggle(server, false)}>
+              停用
+            </button>
+          ) : (
+            <button
+              className="btn-primary px-2 py-1 text-[11px]"
+              disabled={busy || !canEnable}
+              onClick={() => onToggle(server, true, { env: envValues, arg: argValue })}
+            >
+              启用
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function McpModal({ onClose }) {
+  const { mcpServers, mcpSummary, mcpLoading, loadMcp, enableMcp, disableMcp } = useStore()
+  const [tab, setTab] = useState('installable')
+
+  useEffect(() => {
+    loadMcp()
+  }, [loadMcp])
+
+  const installable = mcpServers.filter((s) => s.category === 'installable')
+  const needsKey = mcpServers.filter((s) => s.category === 'needs-key')
+  const shown = tab === 'installable' ? installable : needsKey
+
+  const onToggle = async (server, enable, opts) => {
+    if (enable) await enableMcp(server.id, opts)
+    else await disableMcp(server.id)
+  }
+
+  return (
+    <Shell
+      title="MCP 服务器"
+      subtitle="MCP 让 Agent 能读写文件、查文档、开浏览器等。启用后会同时写入 claude 与 deveco 两个 CLI 的配置。"
+      onClose={onClose}
+      width="w-[44rem]"
+    >
+      {mcpSummary && (
+        <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-ink-500 bg-ink-900 p-3 text-[11px]">
+          {[
+            ['已启用', `${mcpSummary.enabled} / ${mcpSummary.total}`],
+            ['运行环境', `node ${mcpSummary.node}`],
+            ['claude', mcpSummary.claudeAvailable ? '已就绪' : '未检测到'],
+            ['deveco', mcpSummary.devecoAvailable ? '已就绪' : '未检测到'],
+          ].map(([k, v]) => (
+            <div key={k} className="flex gap-2">
+              <span className="w-16 shrink-0 text-slate-500">{k}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-slate-400" title={String(v)}>
+                {v}
+              </span>
+            </div>
+          ))}
+          <div className="col-span-2 flex gap-2 border-t border-ink-600 pt-1.5">
+            <span className="w-16 shrink-0 text-slate-500">安装目录</span>
+            <span className="min-w-0 flex-1 break-all font-mono text-slate-500">{mcpSummary.dir}</span>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-3 flex gap-1 border-b border-ink-600">
+        {[
+          { key: 'installable', label: '即装即用', count: installable.length },
+          { key: 'needsKey', label: '需要密钥', count: needsKey.length },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`-mb-px border-b-2 px-3 py-2 text-[12px] transition-colors ${
+              tab === t.key ? 'border-boss text-white' : 'border-transparent text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            {t.label}
+            <span className="ml-1.5 font-mono text-[10px] text-slate-600">{t.count}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        {mcpLoading && shown.length === 0 && <p className="py-8 text-center text-xs text-slate-600">加载中…</p>}
+        {shown.map((s) => (
+          <McpRow key={s.id} server={s} onToggle={onToggle} busy={mcpLoading} />
+        ))}
+      </div>
+
+      <div className="mt-5 flex items-center justify-between">
+        <p className="max-w-[70%] text-[10px] leading-relaxed text-slate-600">
+          提示：每启用一个 MCP，它都会注入到 Agent 的每次会话里。装太多会挤占上下文、拖慢每个任务，
+          建议只开当前用得上的。
+        </p>
+        <button className="btn-ghost" onClick={onClose}>
+          关闭
+        </button>
+      </div>
+    </Shell>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * 设置
+ * ------------------------------------------------------------------ */
+
+export function SettingsModal({ onClose }) {
+  const system = useStore((s) => s.system)
+  const setPermissionMode = useStore((s) => s.setPermissionMode)
+  const setDevecoAutoApprove = useStore((s) => s.setDevecoAutoApprove)
+  const clearAllTasks = useStore((s) => s.clearAllTasks)
+  const [busy, setBusy] = useState(false)
+
+  if (!system) return null
+
+  return (
+    <Shell title="运行设置" subtitle="这些选项决定 Agent 如何被拉起执行" onClose={onClose}>
+      <div className="space-y-4 text-[12px]">
+        {/* 执行器状态 */}
+        <div className="space-y-2">
+          {(system.executors || []).map((e) => (
+            <div key={e.id} className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${e.available ? 'bg-emerald-500' : 'bg-boss'}`} />
+                <span className="font-medium text-slate-200">{e.label}</span>
+                <span className="font-mono text-[10px] text-slate-600">
+                  {e.available ? `${e.models.length} 个模型可用` : '未安装'}
+                </span>
+              </div>
+              <p className="text-[10.5px] text-slate-500">{e.hint}</p>
+              {e.available && (
+                <p className="mt-1 break-all font-mono text-[10px] text-slate-600">
+                  {e.models.map((m) => m.id).join(' · ')}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* 权限 */}
+        <div>
+          <label className="mb-1 block text-[11px] text-slate-400">Claude 权限模式</label>
+          <select
+            className="field"
+            value={system.permissionMode}
+            onChange={(e) => setPermissionMode(e.target.value)}
+          >
+            {(system.validPermissionModes || []).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
+            <b className="text-slate-400">acceptEdits</b>：允许读写文件，危险操作仍受 CLI 审批约束（默认）。
+            <br />
+            <b className="text-rose-400">bypassPermissions</b>：<b>关闭全部审批闸门</b>。除非完全清楚后果，否则别选。
+          </p>
+        </div>
+
+        {/* DevEco 自动放行 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-boss"
+              checked={Boolean(system.devecoAutoApprove)}
+              onChange={(e) => setDevecoAutoApprove(e.target.checked)}
+            />
+            <span>
+              <span className="block text-[12px] font-medium text-slate-200">DevEco 自动放行</span>
+              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                DevEco Code 没有 acceptEdits 这种中间档，只有「全自动放行」。
+                <b className="text-boss"> 默认关闭</b>，此时它会驳回未经批准的敏感操作，
+                表现为任务跑不动（事件里会看到「权限被拦截」）。
+                打开后它才能自主读写文件、执行命令 —— 这等于让它不经确认地在你的机器上干活。
+              </span>
+            </span>
+          </label>
+        </div>
+
+        {/* 数据 */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-ink-600 pt-3 text-[11px]">
+          {[
+            ['版本', system.version],
+            ['服务端口', String(system.port)],
+            ['数据目录', system.dataDir],
+            ['数据库', system.dbFile],
+            ['默认工作目录', system.defaultCwd],
+            ['运行环境', system.isElectron ? 'Electron 桌面端' : '浏览器（开发模式）'],
+          ].map(([k, v]) => (
+            <div key={k} className="col-span-2 flex gap-2">
+              <span className="w-20 shrink-0 text-slate-500">{k}</span>
+              <span className="min-w-0 flex-1 break-all font-mono text-slate-400">{v}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-ink-600 pt-3">
+          <div>
+            <div className="text-[11px] text-slate-400">清空所有任务</div>
+            <div className="text-[10px] text-slate-600">把看板和对话记录全部归零，员工保留</div>
+          </div>
+          <button
+            className="btn-danger"
+            disabled={busy}
+            onClick={async () => {
+              if (!confirm('确定清空所有任务与对话记录？此操作不可撤销。')) return
+              setBusy(true)
+              await clearAllTasks()
+              setBusy(false)
+            }}
+          >
+            清空
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-5 flex justify-end">
+        <button className="btn-ghost" onClick={onClose}>
+          关闭
+        </button>
+      </div>
+    </Shell>
+  )
+}

@@ -43,6 +43,12 @@
     "zustand": "^5.0.3"
   },
   "build": {
+"publish": {
+  "provider": "github",
+  "owner": "HHH20416", 
+  "repo": "ChaosConsole",
+  "releaseType": "draft"
+},
     "appId": "com.chaosconsole.boss",
     "productName": "AI Agent开发控制台",
     "copyright": "Copyright © 2026 ChaosConsole",

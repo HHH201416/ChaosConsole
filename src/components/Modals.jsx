@@ -28,6 +28,34 @@ function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
 const AVATARS = ['🤖', '👨💻', '👩💻', '🧑🔬', '🎨', '🧪', '🔍', '⚙️', '📊', '✍️', '🛡️', '📋', '🧠', '🚀', '🦾', '👾', '📱']
 
 /* ------------------------------------------------------------------ *
+ * 版本行
+ * ------------------------------------------------------------------ */
+
+/**
+ * 一行版本信息：标签 + 标记 + 体积/日期，右侧留一个动作槽给调用方。
+ * 动作做成 children，是为了以后别处要复用同一套行样式时不必再抄一遍。
+ */
+function ReleaseRow({ release, selected, onClick, children }) {
+  const clickable = typeof onClick === 'function'
+  return (
+    <div
+      onClick={onClick}
+      className={`flex items-center gap-2 rounded border px-2.5 py-1.5 ${
+        selected ? 'border-boss/60 bg-ink-600' : 'border-ink-600 bg-ink-800'
+      } ${clickable ? 'cursor-pointer transition-colors hover:border-ink-400' : ''}`}
+    >
+      <span className="font-mono text-[11px] text-slate-300">{release.tag}</span>
+      {release.current && <span className="chip bg-emerald-900/50 text-emerald-300">当前</span>}
+      {release.prerelease && <span className="chip">预发布</span>}
+      <span className="ml-auto text-[10px] text-slate-600">
+        {release.size ? fmtBytes(release.size) : ''} {release.publishedAt ? release.publishedAt.slice(0, 10) : ''}
+      </span>
+      {children}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
  * Agent 的模型选择复用块
  * ------------------------------------------------------------------ */
 
@@ -614,16 +642,7 @@ export function SettingsModal({ onClose }) {
 
           <div className="space-y-1.5">
             {(rel?.releases || []).map((r) => (
-              <div
-                key={r.tag}
-                className="flex items-center gap-2 rounded border border-ink-600 bg-ink-800 px-2.5 py-1.5"
-              >
-                <span className="font-mono text-[11px] text-slate-300">{r.tag}</span>
-                {r.current && <span className="chip bg-emerald-900/50 text-emerald-300">当前</span>}
-                {r.prerelease && <span className="chip">预发布</span>}
-                <span className="ml-auto text-[10px] text-slate-600">
-                  {r.size ? fmtBytes(r.size) : ''} {r.publishedAt ? r.publishedAt.slice(0, 10) : ''}
-                </span>
+              <ReleaseRow key={r.tag} release={r}>
                 <button
                   className="btn-ghost"
                   disabled={r.current || !r.size}
@@ -632,7 +651,7 @@ export function SettingsModal({ onClose }) {
                 >
                   {r.current ? '已是此版' : '切换'}
                 </button>
-              </div>
+              </ReleaseRow>
             ))}
           </div>
 

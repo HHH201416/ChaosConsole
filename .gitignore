@@ -139,3 +139,9 @@ dist/
 # Python 字节码缓存（deveco-studio.py 被 import 时会产生）
 __pycache__/
 *.pyc
+
+# 安装器版本清单（构建时由 scripts/nsis-manifest.js 生成）
+build/versions.nsh
+
+# 自检脚本的临时隔离数据目录
+.tmp-resp/

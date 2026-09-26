@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api, setToken, loadToken } from './lib/api'
+import { loadUiPrefs, saveUiPrefs } from './lib/prefs'
 
 /* ------------------------------------------------------------------ *
  * WebSocket：单例连接 + 断线重连
@@ -31,6 +32,12 @@ function closeSocket() {
   }
 }
 
+/* 界面偏好在模块加载时读一次，当作三个字段的初值。放在这里而不是 bootstrap() 里：
+   zustand 的 create 只求值一次，而 bootstrap 每次登录/重连都会跑；偏好是「这台机器
+   上次的样子」，不该被登录动作重置。登录页也碰不到这几个字段（TopBar/ChatPanel 都在
+   登录后才渲染），所以早读没有副作用。 */
+const initialPrefs = loadUiPrefs()
+
 export const useStore = create((set, get) => ({
   /* ---------------- 状态 ---------------- */
   token: null,
@@ -44,6 +51,9 @@ export const useStore = create((set, get) => ({
   conversations: [],
   system: null,
 
+  /* 刻意**不**在模块加载时水合：只有 id 没有 detail 是个不自洽的状态（对话页会
+     以为「已选中但没内容」）。它只作为候选值，由 bootstrap 校验通过后再走 selectTask
+     真正恢复。 */
   selectedTaskId: null,
   detail: null, // { task, agent, messages, events, isRunning }
   detailLoading: false,
@@ -57,11 +67,30 @@ export const useStore = create((set, get) => ({
 
   toasts: [],
 
+  /* 侧栏 / 对话面板的折叠开关。跨重启保留（见 lib/prefs.js）。
+     注意：它一旦持久化，就会改变 scripts/e2e-check.js 与 scripts/responsive-check.js
+     的运行前提 —— 两个脚本都必须在开头把 chaos.ui 清掉，否则上次折叠过侧栏的话
+     下次 `aside` 里就读不到那 20 个职能名了。 */
+  sidebarOpen: initialPrefs.sidebarOpen,
+  chatOpen: initialPrefs.chatOpen,
+
   /* ---------------- 提示条 ---------------- */
   toast(text, kind = 'info') {
     const id = Math.random().toString(36).slice(2)
     set((s) => ({ toasts: [...s.toasts, { id, text, kind }] }))
     setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 4200)
+  },
+
+  /* ---------------- 面板折叠 ---------------- */
+  toggleSidebar() {
+    const next = !get().sidebarOpen
+    set({ sidebarOpen: next })
+    saveUiPrefs({ sidebarOpen: next })
+  },
+  toggleChat() {
+    const next = !get().chatOpen
+    set({ chatOpen: next })
+    saveUiPrefs({ chatOpen: next })
   },
 
   /* ---------------- 登录 ---------------- */
@@ -82,6 +111,7 @@ export const useStore = create((set, get) => ({
   logout() {
     closeSocket()
     setToken(null)
+    saveUiPrefs({ selectedTaskId: null })
     set({
       token: null,
       authed: false,
@@ -115,6 +145,15 @@ export const useStore = create((set, get) => ({
         conversations: convRes.data || [],
         ...(updRes?.data ? { update: updRes.data } : {}),
       })
+
+      // 恢复上次退出时正在看的对话。放在这里是因为这是登录与自动登录两条路唯一
+      // 都经过的点（login() 内部也调 bootstrap），而且上面 401 分支会提前 return，
+      // 不会出现「token 已失效、却在登录页背后悄悄恢复了选中态」。
+      // 必须先校验任务还在：直接调 selectTask 会在任务被删时白弹一条「任务不存在」。
+      const saved = loadUiPrefs().selectedTaskId
+      if (saved && !get().selectedTaskId && stateRes.data.tasks.some((t) => t.id === saved)) {
+        get().selectTask(saved)
+      }
     } catch (err) {
       if (err.status === 401) {
         // token 过期（比如后端重启过）→ 回到登录页
@@ -140,9 +179,14 @@ export const useStore = create((set, get) => ({
   /* ---------------- 任务详情 ---------------- */
   async selectTask(taskId) {
     if (!taskId) {
-      set({ selectedTaskId: null, detail: null })
+      // detailLoading 也要一起关掉：光靠下面那个慢响应守卫不够，它只在「真的有请求
+      // 在飞」时才收尾，没有在途请求时（比如启动恢复后立刻开新对话）会永远停在
+      // 「加载中…」，空状态引导再也出不来。
+      saveUiPrefs({ selectedTaskId: null })
+      set({ selectedTaskId: null, detail: null, detailLoading: false })
       return
     }
+    saveUiPrefs({ selectedTaskId: taskId })
     set({ selectedTaskId: taskId, detailLoading: true })
     try {
       const res = await api.getTask(taskId)
@@ -233,7 +277,10 @@ export const useStore = create((set, get) => ({
   async deleteTask(id) {
     try {
       await api.deleteTask(id)
-      if (get().selectedTaskId === id) set({ selectedTaskId: null, detail: null })
+      if (get().selectedTaskId === id) {
+        saveUiPrefs({ selectedTaskId: null })
+        set({ selectedTaskId: null, detail: null })
+      }
       get().toast('任务已删除')
     } catch (err) {
       get().toast(err.message, 'error')
@@ -292,7 +339,8 @@ export const useStore = create((set, get) => ({
 
   /** 开一个新对话（清空当前选择，下一条消息会新建任务并自动派单） */
   newConversation() {
-    set({ selectedTaskId: null, detail: null })
+    saveUiPrefs({ selectedTaskId: null })
+    set({ selectedTaskId: null, detail: null, detailLoading: false })
   },
 
   /**
@@ -346,6 +394,7 @@ export const useStore = create((set, get) => ({
   async clearAllTasks() {
     try {
       await api.clearAllTasks()
+      saveUiPrefs({ selectedTaskId: null })
       set({ selectedTaskId: null, detail: null, tasks: [], conversations: [] })
       get().toast('已清空所有任务', 'success')
     } catch (err) {
@@ -616,6 +665,9 @@ function handleServerMessage(msg) {
       break
 
     case 'task:deleted':
+      // 删掉的正好是选中的那个 → 本地偏好里的 id 也必须一起清，
+      // 否则下次启动会拿着一个已经不存在的 id 去恢复
+      if (state.selectedTaskId === payload.id) saveUiPrefs({ selectedTaskId: null })
       useStore.setState({
         tasks: state.tasks.filter((t) => t.id !== payload.id),
         conversations: state.conversations.filter((c) => c.id !== payload.id),
@@ -647,6 +699,7 @@ function handleServerMessage(msg) {
       break
 
     case 'tasks:cleared':
+      saveUiPrefs({ selectedTaskId: null })
       useStore.setState({ tasks: [], conversations: [], selectedTaskId: null, detail: null })
       break
 

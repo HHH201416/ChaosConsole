@@ -125,12 +125,14 @@ function ModelPicker({ task, agent, executors, onChange, disabled }) {
   const currentModel = task?.model || agent?.model || models[0]?.id || ''
 
   return (
-    <div className="flex items-center gap-1.5">
+    /* min-w-0 一路给到 select：窄面板（288px）时这一行只差 1px 就放不下，
+       不给它们让位的空间，右边那句「自动派单」就会被折成两行。 */
+    <div className="flex min-w-0 items-center gap-1.5">
       <select
         value={currentExecutor}
         disabled={disabled}
         onChange={(e) => onChange({ executor: e.target.value, model: '' })}
-        className="rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
+        className="min-w-0 rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
         title="用哪个 CLI 干活"
       >
         {executors.map((e) => (
@@ -145,7 +147,7 @@ function ModelPicker({ task, agent, executors, onChange, disabled }) {
         value={currentModel}
         disabled={disabled || !models.length}
         onChange={(e) => onChange({ model: e.target.value })}
-        className="rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
+        className="min-w-0 rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
         title="这次对话用哪个模型"
       >
         {models.length === 0 && <option value="">无可用模型</option>}
@@ -176,6 +178,7 @@ export default function ChatPanel() {
   const conversations = useStore((s) => s.conversations)
   const selectedTaskId = useStore((s) => s.selectedTaskId)
   const system = useStore((s) => s.system)
+  const chatOpen = useStore((s) => s.chatOpen)
   const { sendChat, selectTask, newConversation, setConversationModel, startTask, cancelTask } =
     useStore()
 
@@ -204,6 +207,11 @@ export default function ChatPanel() {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages.length, events.length])
 
+  // 折叠时把历史浮层一并收掉，否则它（absolute inset-x-0）会挂在一个 0 宽的面板里
+  useEffect(() => {
+    if (!chatOpen) setShowHistory(false)
+  }, [chatOpen])
+
   const submit = () => {
     const text = draft.trim()
     if (!text) return
@@ -220,7 +228,17 @@ export default function ChatPanel() {
   }
 
   return (
-    <aside className="relative flex w-[30rem] shrink-0 flex-col border-l border-ink-600 bg-ink-800">
+    /* 宽度分三档：<1024 288px / ≥1024 320px / ≥1500 480px（desk 档 = 原来的样子）。
+       折叠时这三个类一个都不能少：shrink-0 的 flex item，min-width:auto 会取 min-content
+       （里面的 textarea 约 180px），只写 w-0 根本收不到 0；overflow-hidden 才会把
+       自动最小尺寸置 0，min-w-0 是再兜一层。折叠不用 transform（会裁掉子元素的 fixed 定位）。 */
+    <aside
+      className={`relative flex shrink-0 flex-col bg-ink-800 transition-[width] duration-200 ${
+        chatOpen
+          ? 'w-[18rem] border-l border-ink-600 lg:w-[20rem] desk:w-[30rem]'
+          : 'w-0 min-w-0 overflow-hidden'
+      }`}
+    >
       {showHistory && (
         <HistoryList
           conversations={conversations}
@@ -387,7 +405,7 @@ export default function ChatPanel() {
             onChange={onModelChange}
             disabled={!task || isRunning}
           />
-          <span className="text-[10px] text-slate-600">
+          <span className="shrink-0 whitespace-nowrap pl-1.5 text-[10px] text-slate-600">
             {isRunning ? '执行中 · 可继续补充指令' : task ? '续跑同一会话' : '自动派单'}
           </span>
         </div>

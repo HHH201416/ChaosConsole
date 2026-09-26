@@ -90,31 +90,61 @@ function ConnBadge({ conn }) {
   )
 }
 
+/**
+ * 面板折叠开关。是 <button> 不是 <aside> —— 全应用只有两个 aside（员工列表与对话面板），
+ * 且顺序被 scripts/e2e-check.js 依赖，不能多出第三个。
+ */
+function PaneToggle({ onClick, active, title, glyph }) {
+  return (
+    <button
+      className={`btn-ghost shrink-0 px-2 ${active ? '' : 'bg-ink-600 text-slate-500'}`}
+      onClick={onClick}
+      title={title}
+    >
+      {glyph}
+    </button>
+  )
+}
+
 export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onInstallUpdate }) {
-  const { conn, system, tasks, logout } = useStore()
+  const { conn, system, tasks, logout, sidebarOpen, chatOpen, toggleSidebar, toggleChat } = useStore()
 
   const running = tasks.filter((t) => t.runState === 'running').length
   const version = system?.version ? `v${system.version}` : ''
   const mcpEnabled = system?.mcp?.enabled || 0
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-ink-600 bg-ink-800 px-4">
-      {/* 左：标题 */}
-      <div className="flex items-baseline gap-3">
-        <h1 className="text-[17px] font-bold tracking-wide text-white">AI Agent开发控制台</h1>
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-600">
-          ChaosConsole {version}
-        </span>
-        {running > 0 && (
-          <span className="flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-300">
-            <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
-            {running} 个任务执行中
+    /* 窄屏时这个 header 是唯一「看不见就点不到」的地方（body 是 overflow:hidden，
+       裁掉就真的没了）。所以：标题那一侧 min-w-0 + truncate 可以让步，
+       右侧操作组 shrink-0 一步不让 —— 宁可截断标题，也绝不裁掉按钮。 */
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-ink-600 bg-ink-800 px-4">
+      {/* 左：折叠开关 + 标题 */}
+      <div className="flex min-w-0 items-center gap-3">
+        <PaneToggle
+          onClick={toggleSidebar}
+          active={sidebarOpen}
+          title={sidebarOpen ? '折叠员工列表' : '展开员工列表'}
+          glyph="☰"
+        />
+        {/* 这几项之间是基线对齐的，外面这层不参与，免得按钮把标题挤歪 */}
+        <div className="flex min-w-0 items-baseline gap-3">
+          <h1 className="truncate text-[17px] font-bold tracking-wide text-white">AI Agent开发控制台</h1>
+          {/* 版本号比「任务执行中」徽标先让位：后者是活信息，前者是装饰。
+              阈值也不能再高了 —— 150% 缩放的 1080p 内宽只有约 1264。 */}
+          <span className="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-slate-600 xl:inline">
+            ChaosConsole {version}
           </span>
-        )}
+          {running > 0 && (
+            <span className="hidden shrink-0 items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-300 lg:flex">
+              <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
+              {running} 个任务执行中
+            </span>
+          )}
+        </div>
       </div>
 
       {/* 右：操作 */}
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <ConnBadge conn={conn} />
 
         <div className="mx-1 h-5 w-px bg-ink-500" />
@@ -143,6 +173,13 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
         <button className="btn-ghost" onClick={logout} title="退出登录">
           退出
         </button>
+
+        <PaneToggle
+          onClick={toggleChat}
+          active={chatOpen}
+          title={chatOpen ? '折叠对话面板' : '展开对话面板'}
+          glyph="▤"
+        />
       </div>
     </header>
   )

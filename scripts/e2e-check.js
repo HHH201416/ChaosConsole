@@ -81,12 +81,37 @@ async function main() {
   const { ws, send, evaluate } = await connect()
 
   try {
-    /* ---------- 0. 清掉可能残留的会话，保证从登录页开始 ---------- */
+    /* ---------- 0. 重置：清任务、关掉首启向导、清界面偏好、固定视口 ---------- */
+    // 服务端那两件事走 Node 侧 fetch，完全不碰页面 —— 这样不会在页面里留下 token，
+    // 下面「未登录应停在登录页」那几条断言的前提不受影响。
+    const loginRes = await fetch(`${APP_URL}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: AUTH_CODE }),
+    })
+    const H = { 'Content-Type': 'application/json', 'x-chaos-token': (await loginRes.json()).token }
+    // 清库：本脚本自己会建两条任务且从不清理，不清的话「看板 0 任务」与
+    // 「对话页空状态」跑第二遍必红
+    const cleared = await (await fetch(`${APP_URL}/api/tasks/clear`, { method: 'POST', headers: H })).json()
+    check('重置：清空库里上一次跑剩下的任务', cleared.ok === true)
+
     await evaluate(`
+      // chaos.ui 是跨运行存活的（面板折叠状态 / 上次选中的会话）。上次折叠过侧栏的话，
+      // 这次 aside 里就读不到那 20 个职能名；上次选中过对话的话，对话页就不是空状态。
+      // 和 token 一样必须在 reload 之前清 —— store 只在启动时读一次 localStorage。
       localStorage.removeItem('chaos.token')
+      localStorage.removeItem('chaos.ui')
       return true
     `)
     await send('Page.enable', {})
+    // 固定视口：有几条断言依赖窗口够宽（面板展开宽度、顶栏「N 个任务执行中」在
+    // <1024 时是 display:none）。窗口尺寸现在会被跨重启记住，不固定就得看运气。
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: 1600,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    })
     await send('Page.reload', { ignoreCache: true })
     await sleep(2500)
 
@@ -211,6 +236,50 @@ async function main() {
     check('顶栏有「MCP」按钮', board.hasMcp)
     check('顶栏有「检查更新」按钮', board.hasCheckUpdate)
     check('右侧对话页显示空状态引导', board.hasChatEmpty)
+
+    /* ---------- 4b. 两个面板必须真的是「展开」的 ----------
+       上面的岗位/忙碌/空状态断言全靠 innerText 与 querySelectorAll，而折叠态
+       （侧栏换成 AgentRailRow、对话面板只改 w-0 overflow-hidden）下这些内容
+       要么不在 DOM 里、要么仍在 DOM 里 —— 后者会让断言照常通过却其实看不见。
+       所以这里补一条几何断言，堵住那种「假绿」。 */
+    const panels = await evaluate(`
+      const asides = [...document.querySelectorAll('aside')]
+      return {
+        sidebarW: asides[0] ? Math.round(asides[0].getBoundingClientRect().width) : -1,
+        chatW: asides[1] ? Math.round(asides[1].getBoundingClientRect().width) : -1,
+      }
+    `)
+    check('员工侧栏确实是展开的', panels.sidebarW > 150, `宽 ${panels.sidebarW}px`)
+    check('对话面板确实是展开的', panels.chatW > 200, `宽 ${panels.chatW}px`)
+
+    /* ---------- 4c. 面板折叠状态跨重启保留 ---------- */
+    await evaluate(`
+      localStorage.setItem('chaos.ui', JSON.stringify({ sidebarOpen: false, chatOpen: true, selectedTaskId: null }))
+      return true
+    `)
+    await send('Page.reload', { ignoreCache: false })
+    await sleep(2800)
+    const collapsed = await evaluate(`
+      const a = [...document.querySelectorAll('aside')][0]
+      return {
+        w: a ? Math.round(a.getBoundingClientRect().width) : -1,
+        hasNames: a ? a.innerText.includes('代码实现') : false,
+      }
+    `)
+    check('折叠状态跨重启保留（reload 后侧栏仍是窄条）', collapsed.w > 0 && collapsed.w <= 60, `宽 ${collapsed.w}px`)
+    check('窄条里确实换成了图标版（不再渲染职能名）', collapsed.hasNames === false)
+
+    await evaluate(`
+      localStorage.setItem('chaos.ui', JSON.stringify({ sidebarOpen: true, chatOpen: true, selectedTaskId: null }))
+      return true
+    `)
+    await send('Page.reload', { ignoreCache: false })
+    await sleep(2800)
+    const reExpanded = await evaluate(`
+      const a = [...document.querySelectorAll('aside')][0]
+      return { w: a ? Math.round(a.getBoundingClientRect().width) : -1, hasNames: a ? a.innerText.includes('代码实现') : false }
+    `)
+    check('展开状态同样能恢复（不是只会记住折叠）', reExpanded.w > 150 && reExpanded.hasNames, `宽 ${reExpanded.w}px`)
 
     /* ---------- 5. 实时推送：建任务 → 自动派单 → 卡片落到「进行中」 ---------- */
     const TITLE = `端到端验证任务-${Date.now().toString().slice(-6)}`
@@ -375,6 +444,44 @@ async function main() {
     check('界面提示已自动分配（不显示姓名）', chat.mentionedAutoAssign)
     check('消息以用户气泡形式出现在对话里', chat.hasUserBubble)
 
+    /* ---------- 7e. 上次选中的会话跨重启恢复 ----------
+       放在这里是因为此刻对话页正好选中了刚建的那个 ArkTS 任务。 */
+    const ARK = 'ArkTS'
+    const EMPTY_RE = /自动分配给合适的员工|系统会按内容自动挑一个员工/
+    const beforeReload = await evaluate(`
+      const t = document.querySelector('aside:last-of-type')?.innerText || ''
+      return {
+        hasTask: t.includes(${JSON.stringify(ARK)}),
+        isEmpty: ${EMPTY_RE}.test(t),
+        stored: localStorage.getItem('chaos.ui') || '',
+      }
+    `)
+    check(
+      '选中会话已写进本地偏好',
+      beforeReload.stored.includes('selectedTaskId'),
+      beforeReload.stored.slice(0, 80),
+    )
+
+    await send('Page.reload', { ignoreCache: false })
+    await sleep(3200)
+    const afterReload = await evaluate(`
+      const t = document.querySelector('aside:last-of-type')?.innerText || ''
+      const a = [...document.querySelectorAll('aside')][0]
+      return {
+        hasTask: t.includes(${JSON.stringify(ARK)}),
+        isEmpty: ${EMPTY_RE}.test(t),
+        sidebarW: a ? Math.round(a.getBoundingClientRect().width) : -1,
+      }
+    `)
+    check('刷新后自动回到上次那个对话（而不是空状态）', afterReload.hasTask && !afterReload.isEmpty)
+    check('恢复的同时布局偏好也还在（侧栏仍展开）', afterReload.sidebarW > 150, `宽 ${afterReload.sidebarW}px`)
+
+    // 收尾：把偏好清回默认，免得给下一次运行留状态
+    await evaluate(`
+      localStorage.removeItem('chaos.ui')
+      return true
+    `)
+
     await sleep(11000)
     const chatDone = await evaluate(`
       const t = ${JSON.stringify(CHAT_TEXT)}
@@ -393,6 +500,9 @@ async function main() {
       return { status: r.status }
     `)
     check('伪造 token 访问 API 被拒绝', unauth.status === 401, `HTTP ${unauth.status}`)
+
+    // 撤掉开场设的视口模拟，别把状态留给下一个连上来的脚本
+    await send('Emulation.clearDeviceMetricsOverride', {})
   } finally {
     ws.close()
   }

@@ -36,12 +36,12 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
       </div>
 
       {/* 负责岗位：只显示「是干什么的」，不显示姓名 */}
-      <div className="mt-2 flex items-center gap-1.5 pl-3.5">
+      <div className="mt-2 flex min-w-0 items-center gap-1.5 pl-3.5">
         {agent ? (
           <>
-            <span className="text-[13px] leading-none">{agent.avatar}</span>
-            <span className="text-[11px] text-slate-400">{agent.functionLabel}</span>
-            <span className="font-mono text-[10px] text-slate-600">· {agent.executor}</span>
+            <span className="shrink-0 text-[13px] leading-none">{agent.avatar}</span>
+            <span className="truncate text-[11px] text-slate-400">{agent.functionLabel}</span>
+            <span className="shrink-0 font-mono text-[10px] text-slate-600">· {agent.executor}</span>
           </>
         ) : (
           <span className="text-[11px] italic text-slate-600">未指派（Start 时自动分配空闲岗位）</span>
@@ -70,8 +70,9 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
         </div>
       )}
 
-      {/* 操作 */}
-      <div className="mt-2.5 flex items-center gap-1.5 border-t border-ink-500/70 pt-2 pl-3.5">
+      {/* 操作。三个按钮的 min-content 加起来约 170px，比列地板宽下可用的 148px 还宽，
+          所以要允许换行（窄列时排成两行）。 */}
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-ink-500/70 pt-2 pl-3.5">
         <button
           className="btn-primary px-2 py-1 text-[11px]"
           disabled={isRunning || isDone}

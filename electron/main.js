@@ -18,7 +18,7 @@ const net = require('net')
 const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
-const { app, BrowserWindow, Menu, shell, dialog, session } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session, screen } = require('electron')
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
@@ -731,12 +731,133 @@ function applyCsp() {
   })
 }
 
+/**
+ * 按当前屏幕的工作区（不含任务栏）算初始窗口尺寸。
+ *
+ * 取工作区的 92%，但最外层再对工作区取一次 min —— 因为 lower bound（1024/640）只是
+ * 「别开得太小」的期望值，遇上 150% 缩放的 1080p（工作区只剩约 1280×648）或更小的屏时，
+ * 保证窗口不会反而比屏幕还大。这就是原来写死 1560×940 在 1366×768 笔记本上溢出的原因。
+ *
+ * screen 只能在 app 就绪后碰；createWindow 是在 whenReady 链里调用的，安全。
+ */
+function preferredWindowSize() {
+  const display = screen.getPrimaryDisplay()
+  const { workAreaSize } = display
+  const size = {
+    width: Math.min(1720, workAreaSize.width, Math.max(1024, Math.round(workAreaSize.width * 0.92))),
+    height: Math.min(1080, workAreaSize.height, Math.max(640, Math.round(workAreaSize.height * 0.92))),
+  }
+  console.log(
+    `[electron] 显示器 ${display.size.width}×${display.size.height}（缩放 ${display.scaleFactor}x）` +
+      ` 工作区 ${workAreaSize.width}×${workAreaSize.height} → 窗口 ${size.width}×${size.height}`,
+  )
+  return size
+}
+
+/* ------------------------------------------------------------------ *
+ * 窗口尺寸 / 位置的跨重启记忆
+ * ------------------------------------------------------------------ */
+
+const WINDOW_STATE_FILE = path.join(app.getPath('userData'), 'window-state.json')
+const WINDOW_SAVE_DEBOUNCE_MS = 400
+
+let windowSaveTimer = null
+
+/**
+ * 校验一份存档的窗口矩形还能不能用，不能用就返回 null（调用方退回默认尺寸）。
+ *
+ * 两个必须挡住的情况：
+ *  1. **拔掉外接屏**。位置会落在所有显示器的工作区之外，窗口看不见也拖不回来。
+ *     判据是「与某个工作区的交集至少能看到 120×40」——够抓住标题栏拖回来。
+ *  2. **换了更小的屏**（2560 换 1366）。存档里的宽高会超出新屏，夹进工作区。
+ *
+ * 位置刻意不夹：跨双屏摆一个宽窗口是正常用法，夹进单屏反而会把它挪走。
+ */
+function sanitizeWindowState(saved) {
+  if (!saved || typeof saved !== 'object') return null
+  const { x, y, width, height, maximized } = saved
+  if (![x, y, width, height].every((v) => Number.isFinite(v))) return null
+  // 下限必须与 createWindow 的 minWidth/minHeight 一致。守卫比它松的话，
+  // 一份被手工改过（或旧版本遗留）的 width:500 会通过校验，然后
+  // `new BrowserWindow({ width: 500, minWidth: 900 })` 真的造出一个 500px 的窗口 ——
+  // Electron 的 minWidth 只约束用户拖拽，不约束构造参数。
+  if (width < 900 || height < 560) return null
+
+  const MIN_VISIBLE_W = 120
+  const MIN_VISIBLE_H = 40
+
+  let best = null
+  for (const display of screen.getAllDisplays()) {
+    const wa = display.workArea
+    const overlapW = Math.min(x + width, wa.x + wa.width) - Math.max(x, wa.x)
+    const overlapH = Math.min(y + height, wa.y + wa.height) - Math.max(y, wa.y)
+    if (overlapW >= MIN_VISIBLE_W && overlapH >= MIN_VISIBLE_H) {
+      if (!best || overlapW * overlapH > best.area) best = { area: overlapW * overlapH, wa }
+    }
+  }
+  if (!best) return null
+
+  return {
+    x,
+    y,
+    width: Math.min(width, best.wa.width),
+    height: Math.min(height, best.wa.height),
+    maximized: Boolean(maximized),
+  }
+}
+
+function loadWindowState() {
+  // 逃生口：自检脚本要断言「初始尺寸 = 按工作区算出来的那个值」，而一旦有了存档
+  // 这个前提就不成立了。用 CHAOS_WINDOW_STATE=off 起应用即可让这一次完全走默认尺寸。
+  if (process.env.CHAOS_WINDOW_STATE === 'off') return null
+  try {
+    const state = sanitizeWindowState(JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, 'utf8')))
+    if (state) {
+      console.log(
+        `[electron] 恢复上次的窗口：${state.width}×${state.height} @ ${state.x},${state.y}` +
+          `${state.maximized ? '（最大化）' : ''}`,
+      )
+    }
+    return state
+  } catch (_) {
+    // 文件不存在（第一次启动）或内容损坏 —— 都当作没有存档
+    return null
+  }
+}
+
+function saveWindowState() {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+  // getNormalBounds 而不是 getBounds：最大化时后者返回的是最大化后的尺寸，
+  // 记下来下次「还原」就还原不回去了
+  const { x, y, width, height } = win.getNormalBounds()
+  try {
+    fs.writeFileSync(
+      WINDOW_STATE_FILE,
+      JSON.stringify({ x, y, width, height, maximized: win.isMaximized() }),
+    )
+  } catch (err) {
+    // 写不进去就下次再记，不值得打扰用户
+    console.warn('[electron] 窗口状态保存失败:', err.message)
+  }
+}
+
+/** 拖动/缩放窗口时高频触发，攒一下再写盘 */
+function scheduleSaveWindowState() {
+  if (windowSaveTimer) clearTimeout(windowSaveTimer)
+  windowSaveTimer = setTimeout(saveWindowState, WINDOW_SAVE_DEBOUNCE_MS)
+}
+
 async function createWindow() {
+  const preferred = preferredWindowSize()
+  const saved = loadWindowState()
   mainWindow = new BrowserWindow({
-    width: 1560,
-    height: 940,
-    minWidth: 1100,
-    minHeight: 640,
+    width: saved?.width ?? preferred.width,
+    height: saved?.height ?? preferred.height,
+    // 只在真的有存档时才传坐标，否则会把窗口钉在 (0,0) 而不是交给系统居中
+    ...(saved ? { x: saved.x, y: saved.y } : {}),
+    minWidth: 900,
+    minHeight: 560,
     show: false,
     backgroundColor: '#0b0e14',
     title: 'AI Agent开发控制台',
@@ -749,6 +870,12 @@ async function createWindow() {
     },
   })
 
+  // 上次是最大化退出的，就还它一个最大化。放在 show 之前，避免先闪一下小窗
+  if (saved?.maximized) mainWindow.maximize()
+
+  mainWindow.on('resize', scheduleSaveWindowState)
+  mainWindow.on('move', scheduleSaveWindowState)
+
   // 主窗口能显示了才收闪屏。先补足最短停留时间，否则启动快的时候会一闪而过，
   // 看起来像闪屏出错而不是「启动很快」。
   mainWindow.once('ready-to-show', async () => {
@@ -756,6 +883,9 @@ async function createWindow() {
     if (elapsed < SPLASH_MIN_MS) await sleep(SPLASH_MIN_MS - elapsed)
     pushBootStep('工作台界面就绪', 100)
     await sleep(280)
+    // 隐藏状态下 maximize() 在 Windows 上不一定生效（上面构造完就调过一次了），
+    // show 之前再补一次，保证「上次最大化退出的，这次也是最大化」
+    if (saved?.maximized && !mainWindow?.isMaximized()) mainWindow?.maximize()
     mainWindow?.show()
     mainWindow?.focus()
     closeSplash()
@@ -764,6 +894,9 @@ async function createWindow() {
   // 第一次「关闭」请求先拦下来播退场动画；动画播完后 closeState 不再是 running，
   // 这时 app.quit() 再次关窗就会正常放行。
   mainWindow.on('close', (event) => {
+    // 关窗这一刻的状态才是用户想要的，所以不等防抖计时器，直接落盘。
+    // 这里即使被下面的 preventDefault 拦下来也没关系：窗口还在，坐标就是有效的。
+    saveWindowState()
     if (closeState === 'running') {
       event.preventDefault()
       requestQuit()
@@ -771,6 +904,10 @@ async function createWindow() {
   })
 
   mainWindow.on('closed', () => {
+    if (windowSaveTimer) {
+      clearTimeout(windowSaveTimer)
+      windowSaveTimer = null
+    }
     mainWindow = null
   })
 
@@ -896,6 +1033,11 @@ function quitImmediately() {
 }
 
 app.on('before-quit', (event) => {
+  // 兜一次窗口状态。窗口的 close 事件在这条路上**一次都不会触发**：
+  // 退出流程最后走的是 app.exit(0)，它不会给窗口发 close。平时靠 resize/move 的
+  // 防抖写盘就够了，但用户「拖一下窗口、马上点退出」时那次写盘可能还没落地。
+  saveWindowState()
+
   // 从菜单 / 快捷键退出：退场动画还没播，先补上
   if (closeState === 'running') {
     event.preventDefault()

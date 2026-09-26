@@ -18,8 +18,9 @@
     "start": "cross-env NODE_ENV=production electron .",
     "icon": "node scripts/make-icon.js",
     "regress": "node scripts/regress.js",
-    "dist": "npm run icon && npm run build:web && node scripts/build.js --publish never",
-    "release": "npm run icon && npm run build:web && node scripts/build.js --publish always"
+    "manifest": "node scripts/nsis-manifest.js",
+    "dist": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish never",
+    "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -79,6 +80,7 @@
       "perMachine": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "AI Agent开发控制台",

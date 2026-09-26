@@ -461,17 +461,33 @@ function createDevecoParser(taskId) {
  * 命令行参数
  * ------------------------------------------------------------------ */
 
-function buildClaudeArgs({ resumeSessionId }) {
+function buildClaudeArgs({ resumeSessionId, model }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose']
 
   const mode = store.getSetting('permissionMode', CONFIG.PERMISSION_MODE)
   if (CONFIG.isValidPermissionMode(mode)) args.push('--permission-mode', mode)
+  // 选了模型就必须真的传给 CLI。之前这里只把模型写进事件日志和界面，
+  // claude 一直用它自己的默认模型在跑 —— 用户看到的「claude · haiku」是假的。
+  // 只放行白名单内的 id：这个值能被 API 改写，而它会进 argv。
+  if (model && executors.isValidModel('claude', model)) args.push('--model', model)
   if (resumeSessionId) args.push('--resume', resumeSessionId)
   return args
 }
 
+/**
+ * 路径能不能安全地放进 argv。
+ *
+ * Windows 上 CLI 是 .cmd，只能经 cmd.exe（shell: true）转发，而 Node 在 shell
+ * 模式下不会替数组参数做转义：带空格的路径会被切成两个参数，带 & | < > 的还会
+ * 变成第二条命令。所以这里只放行「不含空白与 shell 元字符」的路径，其余一律
+ * 退回默认工作目录（并记一条事件，让用户知道为什么不是他填的路径）。
+ */
+function isArgvSafePath(p) {
+  return Boolean(p) && !/[\s"&|<>^()%!]/.test(p)
+}
+
 function buildDevecoArgs({ resumeSessionId, model, cwd }) {
-  // 全部是静态 ASCII 或已校验过的 id，用户内容一律走 stdin
+  // 静态 ASCII 或已校验过的值；用户内容一律走 stdin
   const args = ['run', '--format', 'json', '--dir', cwd]
   if (model) args.push('-m', model)
   if (resumeSessionId) args.push('-s', resumeSessionId)
@@ -669,6 +685,19 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     }
   }
 
+  // 模型值来自任务 / 员工记录，而这两处都能被 HTTP API 直接 PATCH，值最终会进
+  // argv（Windows 上经 cmd.exe）。不在白名单里就退回该执行器的默认模型，
+  // 并如实记一条事件 —— 否则界面上会显示一个实际根本没生效的模型。
+  if (model && !executors.isValidModel(executor, model)) {
+    const fallback = executors.defaultModel(executor)
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '模型不可用',
+      content: `「${model}」不在 ${executor} 的可选模型里，本次改用 ${fallback || '执行器默认模型'}。`,
+    })
+    model = fallback || ''
+  }
+
   const prompt = composePrompt({
     systemPrompt: agent.system_prompt || agent.systemPrompt || '',
     task,
@@ -689,11 +718,24 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     return { ...(await runMock({ taskId, task, agent, extraInstruction })), executor }
   }
 
-  const cwd = task.cwd && fs.existsSync(task.cwd) ? task.cwd : CONFIG.ROOT
-
   const isClaude = executor === 'claude'
+
+  let cwd = task.cwd && fs.existsSync(task.cwd) ? task.cwd : CONFIG.ROOT
+  // deveco 会把工作目录塞进 argv（--dir），而 Windows 上的参数不经过转义：
+  // 带空格 / 元字符的路径会把命令行拆坏（"C:\My Projects" 变成两个参数，
+  // 带 & 的甚至拆出第二条命令）。claude 的目录是走 spawn 的 cwd 选项，
+  // 不经 shell，所以不受这个限制。
+  if (!isClaude && !isArgvSafePath(cwd)) {
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '工作目录已替换',
+      content: `「${cwd}」含空格或 shell 特殊字符，无法安全地传给 ${executor}，本次改用 ${CONFIG.ROOT}。`,
+    })
+    cwd = CONFIG.ROOT
+  }
+
   const args = isClaude
-    ? buildClaudeArgs({ resumeSessionId })
+    ? buildClaudeArgs({ resumeSessionId, model })
     : buildDevecoArgs({ resumeSessionId, model, cwd })
   const parser = isClaude ? createClaudeParser(taskId) : createDevecoParser(taskId)
   const label = isClaude ? 'claude' : 'deveco'

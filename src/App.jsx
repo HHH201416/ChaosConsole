@@ -7,6 +7,7 @@ import AgentSidebar from './components/AgentSidebar'
 import Board from './components/Board'
 import ChatPanel from './components/ChatPanel'
 import { NewAgentModal, NewTaskModal, SettingsModal, McpModal } from './components/Modals'
+import { BootScreen, ShutdownOverlay } from './components/LifecycleFx'
 
 function Toasts() {
   const toasts = useStore((s) => s.toasts)
@@ -61,7 +62,10 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="flex h-full items-center justify-center bg-ink-900 text-xs text-slate-600">正在启动…</div>
+      <>
+        <BootScreen />
+        <ShutdownOverlay />
+      </>
     )
   }
 
@@ -70,6 +74,7 @@ export default function App() {
       <>
         <Login />
         <Toasts />
+        <ShutdownOverlay />
       </>
     )
   }
@@ -94,6 +99,7 @@ export default function App() {
       {modal === 'mcp' && <McpModal onClose={() => setModal(null)} />}
 
       <Toasts />
+      <ShutdownOverlay />
     </div>
   )
 }

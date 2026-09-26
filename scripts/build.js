@@ -55,7 +55,9 @@ function fixLatestYml() {
     return
   }
 
-  // 安装包 = release 下体积最大的、且带同名 .blockmap 的 exe
+  const pkg = require(path.join(__dirname, '..', 'package.json'))
+
+  // 安装包 = release 下带同名 .blockmap 的 exe
   const candidates = fs
     .readdirSync(RELEASE_DIR)
     .filter((f) => f.toLowerCase().endsWith('.exe') && !f.startsWith('__'))
@@ -66,9 +68,23 @@ function fixLatestYml() {
     return
   }
 
-  const name = candidates.sort(
-    (a, b) => fs.statSync(path.join(RELEASE_DIR, b)).size - fs.statSync(path.join(RELEASE_DIR, a)).size,
-  )[0]
+  // 必须优先按「当前版本号」精确定位产物，不能只按体积挑。
+  //
+  // release/ 下很容易同时留着多个版本的安装包（回滚、对比，或者上一版忘了清），
+  // 而相邻版本之间的体积可能只差几十字节 —— 按体积挑随时会挑错。挑错的后果不是
+  // 「报个错」，而是 latest.yml 里写着新版本号、实际却指向旧版本的文件：
+  // 自动更新会下载旧包、装完还是旧版本，于是每次启动都提示有更新，无限循环。
+  const versionRe = new RegExp(`(^|[^\\d.])${String(pkg.version).replace(/\./g, '\\.')}([^\\d.]|$)`)
+  const expectedName = `ChaosConsole-Setup-${pkg.version}.exe`
+  let name = candidates.find((f) => f === expectedName)
+  if (!name) name = candidates.find((f) => versionRe.test(f))
+  if (!name) {
+    name = candidates.sort(
+      (a, b) => fs.statSync(path.join(RELEASE_DIR, b)).size - fs.statSync(path.join(RELEASE_DIR, a)).size,
+    )[0]
+    console.warn(`[build] 没找到版本号 ${pkg.version} 对应的安装包，退回按体积挑选：${name}`)
+    console.warn(`[build] 请确认 release/ 下是否残留了旧版本，latest.yml 可能指向错误的文件`)
+  }
 
   const exePath = path.join(RELEASE_DIR, name)
   const blockmapPath = `${exePath}.blockmap`
@@ -76,7 +92,6 @@ function fixLatestYml() {
   const blockMapSize = fs.statSync(blockmapPath).size
   const sha512 = crypto.createHash('sha512').update(fs.readFileSync(exePath)).digest('base64')
 
-  const pkg = require(path.join(__dirname, '..', 'package.json'))
   const releaseDate = new Date().toISOString()
 
   // 引号包起来，避免文件名里的空格让 YAML 解析出错

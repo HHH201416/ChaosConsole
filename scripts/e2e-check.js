@@ -30,7 +30,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 async function connect() {
   const res = await fetch(`${CDP_URL}/json`)
   const targets = await res.json()
-  const page = targets.find((t) => t.type === 'page')
+  // 启动闪屏（electron/splash.html）也是一个 page target。如果它恰好排在前面，
+  // targets.find(type==='page') 会连到闪屏上，所有断言都会莫名其妙地失败。
+  // 所以显式排掉闪屏，只在没有主窗口时才退回第一个 page。
+  const pages = targets.filter((t) => t.type === 'page')
+  const page = pages.find((t) => !/splash\.html/i.test(t.url)) || pages[0]
   if (!page) throw new Error('找不到 page target，Electron 是否带 --remote-debugging-port 启动？')
 
   const ws = new WebSocket(page.webSocketDebuggerUrl)
@@ -99,6 +103,14 @@ async function main() {
     check('页面已加载', loaded.hasRoot && loaded.rootChildren > 0, loaded.url)
     check('窗口标题正确', loaded.title === 'AI Agent开发控制台', loaded.title)
     check('Tailwind 样式表已注入', loaded.styleSheets > 0, `${loaded.styleSheets} 个`)
+
+    /* ---------- 1b. 启动闪屏应当在主窗口就绪后自己关掉 ---------- */
+    const splashTargets = await (async () => {
+      const r = await fetch(`${CDP_URL}/json`)
+      const ts = await r.json()
+      return ts.filter((t) => t.type === 'page' && /splash\.html/i.test(t.url))
+    })()
+    check('启动闪屏已自动关闭', splashTargets.length === 0, `残留 ${splashTargets.length} 个闪屏窗口`)
 
     /* ---------- 2. 登录页 ---------- */
     const loginPage = await evaluate(`

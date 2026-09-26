@@ -40,6 +40,18 @@ let devecoModelsCache = null
 let devecoModelsAt = 0
 const DEVECO_CACHE_MS = 5 * 60 * 1000
 
+/** 上一次真正去跑 `deveco models` 的时间，用来做失败时的负缓存 */
+let devecoLastAttemptAt = 0
+/**
+ * 拿不到模型时的重试间隔。
+ *
+ * 以前只有「成功」才会写缓存，失败一律不记；而 execute() 在每个没有模型的
+ * deveco 回合里都会 await 一次 refreshDevecoModels()，于是每个回合都要白等
+ * 2~30 秒起一个注定失败的子进程。这里给它加一个短负缓存：
+ * 一分钟内不重复尝试，既不拖慢回合，也不会永久放弃。
+ */
+const DEVECO_NEGATIVE_TTL_MS = 60 * 1000
+
 function resolveDevecoBin() {
   if (process.env.CHAOS_DEVECO_BIN && fs.existsSync(process.env.CHAOS_DEVECO_BIN)) {
     return process.env.CHAOS_DEVECO_BIN
@@ -84,11 +96,19 @@ let devecoRefreshInFlight = null
  * /api/state 也跟着卡住，表现为登录后侧边栏好几秒是空的。
  */
 function refreshDevecoModels({ force = false } = {}) {
-  if (!force && devecoModelsCache && Date.now() - devecoModelsAt < DEVECO_CACHE_MS) {
-    return Promise.resolve(devecoModelsCache)
+  if (!force) {
+    // 正缓存：拿到过模型，5 分钟内直接复用
+    if (devecoModelsCache && Date.now() - devecoModelsAt < DEVECO_CACHE_MS) {
+      return Promise.resolve(devecoModelsCache)
+    }
+    // 负缓存：上一次什么都没拿到，一分钟内不再重试（见 DEVECO_NEGATIVE_TTL_MS）
+    if (!devecoModelsCache && Date.now() - devecoLastAttemptAt < DEVECO_NEGATIVE_TTL_MS) {
+      return Promise.resolve([])
+    }
   }
   if (devecoRefreshInFlight) return devecoRefreshInFlight
 
+  devecoLastAttemptAt = Date.now()
   const bin = resolveDevecoBin()
   if (!bin) return Promise.resolve([])
 
@@ -191,6 +211,28 @@ function describe() {
   }))
 }
 
+/**
+ * 模型 id 白名单校验。
+ *
+ * 模型值来自任务 / 员工记录，而这两处都能被 HTTP API 直接改写（PATCH），
+ * 最终它会进 argv；Windows 上两个 CLI 都是经 cmd.exe 转发的（shell: true），
+ * 没校验的值等于把 shell 交给了调用方。所以这里只放行认识的 id。
+ */
+function isValidModel(executor, model) {
+  const id = String(model || '').trim()
+  if (!id) return false
+
+  if (executor === 'deveco') {
+    // deveco 的模型是 vendor/model 形式，列表是动态拉的
+    if (!/^[\w.-]+\/[\w.-]+$/.test(id)) return false
+    const known = listDevecoModels()
+    // 列表还没拉回来时无法比对，放行形式合法的值即可（正则已挡掉危险字符）
+    return known.length === 0 || known.some((m) => m.id === id)
+  }
+
+  return CLAUDE_MODELS.some((m) => m.id === id)
+}
+
 /** 取某个执行器的默认模型（用户没指定员工模型时用） */
 function defaultModel(executor) {
   const e = EXECUTORS.find((x) => x.id === executor)
@@ -206,6 +248,7 @@ module.exports = {
   isValidExecutor,
   describe,
   defaultModel,
+  isValidModel,
   resolveDevecoBin,
   devecoAvailable,
   listDevecoModels,

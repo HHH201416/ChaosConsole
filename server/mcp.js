@@ -256,9 +256,23 @@ function resolveNodeBin() {
       }
     }
   }
-  // 兜底：用 Electron 自带 node 模式跑
+  // 兜底：拿 Electron 可执行文件当 node 用。注意它只有在设置了
+  // ELECTRON_RUN_AS_NODE=1 时才是 node，否则会再拉起一个应用窗口 ——
+  // 该环境变量由 nodeLaunchEnv() 一起写进注册配置。
   cachedNode = process.execPath
   return cachedNode
+}
+
+/**
+ * 兜底成 process.execPath 时要额外注入的环境变量。
+ *
+ * 注册出去的是一条 `命令 + 参数`，由 CLI 自己 spawn，不会经过 Electron 主进程，
+ * 所以必须由我们显式带上 ELECTRON_RUN_AS_NODE=1，否则那条命令启动的是第二个
+ * ChaosConsole 应用（界面看着注册成功，MCP 永远连不上）。
+ * 找到了真 node 时返回空对象，行为与以前完全一致。
+ */
+function nodeLaunchEnv() {
+  return resolveNodeBin() === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}
 }
 
 function entryPath(server) {
@@ -269,10 +283,73 @@ function isPackageInstalled(server) {
   return fs.existsSync(entryPath(server))
 }
 
-/** cmd 转发时给带空格的参数补引号 */
-function quoteIfNeeded(arg) {
+/**
+ * 给参数补引号。
+ *
+ * Windows：runAsync 走 shell:true，参数最终由 cmd.exe 再解析一遍。
+ *  - 只在含空格时才补引号是错的：`&`、`|`、`>` 会被 cmd 当成控制符。
+ *    postgres 连接串 `...?a=1&b=2` 会被从 `&` 处截断后注册（半截字符串），
+ *    `b=2` 还会被当成第二条命令执行 —— 既是静默的参数损坏，也是命令注入。
+ *  - 补了引号还要遵守 CreateProcess/MSVCRT 的解析规则：只有紧跟在引号前的
+ *    `\` 才有转义含义，所以尾随反斜杠必须翻倍，否则 `D:\`（filesystem 的
+ *    allowedDirs 就会传这个）会被解析成 `D:"`。
+ *  - `%VAR%` 在引号内**仍然**会被 cmd 展开，而引号内的 `^` 是普通字符、
+ *    转义无效，所以只能在 `%` 处把引号断开，用引号外的 `^%` 写出字面 `%`。
+ *  - `&|<>()`、`!`、`^` 在引号内本来就是普通字符（`!` 只在 cmd /V:on 下才有
+ *    意义，而 node 起的是 /d /s /c），再补一层 `^` 反而会凭空多出一个 `^`
+ *    字符，所以只靠引号屏蔽，不做 caret 转义。以上几条都是实测过的：
+ *    spawn(shell:true) 起一个只回显 argv 的进程，逐个用例比对原串。
+ *
+ * 非 Windows：runAsync 是 shell:false，参数直接进 argv，一个字都不能动 ——
+ * 补引号会把引号变成路径的一部分（`/home/me/My Projects` 会带上字面引号）。
+ */
+function quoteArg(arg) {
   const s = String(arg)
-  return /\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s
+  if (process.platform !== 'win32') return s
+  // 先按 `%` 切开，每段各自加引号，段间用引号外的 ^% 连接
+  return s.split('%').map(quoteWinSegment).join('^%')
+}
+
+/** 单个片段：双引号包裹，并按 MSVCRT 规则处理内部引号与前置反斜杠 */
+function quoteWinSegment(part) {
+  let out = '"'
+  let backslashes = 0
+  for (const ch of part) {
+    if (ch === '\\') {
+      backslashes++
+      continue
+    }
+    // 引号前的反斜杠要翻倍（2n+1 个才能既保留 n 个 \ 又得到一个字面 "）
+    if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2 + 1) + '"'
+      backslashes = 0
+      continue
+    }
+    out += '\\'.repeat(backslashes) + ch
+    backslashes = 0
+  }
+  return out + '\\'.repeat(backslashes * 2) + '"'
+}
+
+/**
+ * 结束整棵进程树。
+ *
+ * Windows 下 shell:true 时 child 只是包了一层的 cmd.exe，child.kill() 杀掉
+ * 的只是 cmd，真正的活儿（npm install / claude mcp add）会变成孤儿继续跑 ——
+ * 表现为「已经报超时了，node_modules 还在被写」。做法与 runner.js 的
+ * killTree 一致。
+ */
+function killTree(child) {
+  if (!child) return
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+    } else {
+      child.kill('SIGKILL')
+    }
+  } catch (err) {
+    console.error('[mcp] 结束进程失败:', err.message)
+  }
 }
 
 /**
@@ -285,7 +362,12 @@ function runAsync(cmd, args, opts = {}) {
   return new Promise((resolve) => {
     let child
     try {
-      child = spawn(cmd, args, {
+      // 命令名也要走同一套引号处理：Windows 下 shell:true 时 node 只是把
+      // cmd 和 args 用空格拼起来，命令名（例如 claude.cmd 的绝对路径）只要
+      // 含空格就会被 cmd 拆坏，表现为静默失败。实测 `"npm"` 这种写法在
+      // cmd 下正常，所以加引号是安全的。
+      const spawnCmd = process.platform === 'win32' ? quoteArg(cmd) : cmd
+      child = spawn(spawnCmd, args, {
         windowsHide: true,
         shell: process.platform === 'win32',
         cwd: opts.cwd,
@@ -301,11 +383,7 @@ function runAsync(cmd, args, opts = {}) {
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      try {
-        child.kill()
-      } catch (_) {
-        /* ignore */
-      }
+      killTree(child)
       resolve({ status: -1, stdout, stderr: stderr + '\n(执行超时)' })
     }, opts.timeout || 180000)
 
@@ -366,7 +444,7 @@ async function claudeAdd(server, opts = {}) {
   if (!bin) return { ok: false, error: '未检测到 claude CLI' }
 
   const args = ['mcp', 'add', claudeName(server.id), '-s', 'user']
-  const env = { ...(server.env ? server.env() : {}) }
+  const env = { ...nodeLaunchEnv(), ...(server.env ? server.env() : {}) }
   for (const k of server.envKeys || []) {
     if (opts.env && opts.env[k]) env[k] = opts.env[k]
   }
@@ -375,7 +453,7 @@ async function claudeAdd(server, opts = {}) {
   }
   args.push('--', resolveNodeBin(), entryPath(server), ...server.argsFor(opts))
 
-  const r = await runAsync(bin, args.map(quoteIfNeeded))
+  const r = await runAsync(bin, args.map(quoteArg))
   const out = `${r.stdout || ''}${r.stderr || ''}`
   if (r.status !== 0 && !/already exists/i.test(out)) {
     return { ok: false, error: out.slice(-400) || 'claude mcp add 失败' }
@@ -398,22 +476,47 @@ async function claudeRemove(id) {
  * 注册到 deveco（opencode 格式的 jsonc）
  * ------------------------------------------------------------------ */
 
+/**
+ * 读取 deveco.jsonc。
+ *
+ * 返回 { exists, cfg, error }，**必须**区分两种情况：
+ *  - exists=false：文件还不存在，可以放心新建一份
+ *  - error 非空：文件存在但解析不出来（BOM、尾逗号、行内注释…）。
+ *    此时 cfg 为 null，调用方绝不能当成「空配置」写回去 —— 写回等于把用户
+ *    手写的整份配置（models、providers、其它 MCP server）替换成一个只有 mcp
+ *    字段的存根，而界面还会显示启用成功。
+ */
 function readDevecoConfig() {
+  if (!fs.existsSync(DEVECO_CONFIG)) {
+    return { exists: false, cfg: { $schema: 'https://opencode.ai/config.json' }, error: null }
+  }
+  let raw
   try {
-    if (!fs.existsSync(DEVECO_CONFIG)) return { $schema: 'https://opencode.ai/config.json' }
-    const raw = fs.readFileSync(DEVECO_CONFIG, 'utf8')
-    // 配置文件是 .jsonc，可能带注释；先尝试直接解析，失败再剥注释
-    try {
-      return JSON.parse(raw)
-    } catch (_) {
-      const stripped = raw
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '')
-      return JSON.parse(stripped)
-    }
+    raw = fs.readFileSync(DEVECO_CONFIG, 'utf8')
   } catch (err) {
     console.error('[mcp] 读取 deveco 配置失败:', err.message)
-    return { $schema: 'https://opencode.ai/config.json' }
+    return { exists: true, cfg: null, error: `读取 deveco.jsonc 失败: ${err.message}` }
+  }
+  // 配置文件是 .jsonc，可能带注释；先尝试直接解析，失败再剥注释。
+  // BOM 必须先剥掉：编辑器爱写它，而 JSON.parse 见到 BOM 直接抛错
+  // —— 一个不可见的 BOM 就足以让整份配置被判为「解析失败」。
+  const noBom = raw.replace(/^\uFEFF/, '')
+  const uncommented = noBom
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  let lastErr
+  for (const text of [noBom, uncommented]) {
+    try {
+      return { exists: true, cfg: JSON.parse(text), error: null }
+    } catch (err) {
+      lastErr = err
+    }
+  }
+  console.error('[mcp] deveco 配置解析失败:', lastErr.message)
+  return {
+    exists: true,
+    cfg: null,
+    error: `deveco.jsonc 解析失败，为避免覆盖你的配置已中止（${lastErr.message}）`,
   }
 }
 
@@ -424,9 +527,12 @@ function writeDevecoConfig(cfg) {
 }
 
 function devecoRegister(server, opts = {}) {
-  const cfg = readDevecoConfig()
+  const { cfg, error } = readDevecoConfig()
+  // 读不出来就一个字都别写：这里的写回是整体覆盖，拿兜底默认值写回去
+  // 等于把用户手写的 models / providers / 其它 MCP server 全部抹掉。
+  if (error) return { ok: false, error }
   cfg.mcp = cfg.mcp || {}
-  const env = { ...(server.env ? server.env() : {}) }
+  const env = { ...nodeLaunchEnv(), ...(server.env ? server.env() : {}) }
   for (const k of server.envKeys || []) {
     if (opts.env && opts.env[k]) env[k] = opts.env[k]
   }
@@ -441,7 +547,9 @@ function devecoRegister(server, opts = {}) {
 }
 
 function devecoUnregister(id) {
-  const cfg = readDevecoConfig()
+  const { cfg, error } = readDevecoConfig()
+  // 同 devecoRegister：解析失败时写回同样是整体覆盖，宁可不动文件
+  if (error) return { ok: false, error }
   if (cfg.mcp && cfg.mcp[`chaos-${id}`]) {
     delete cfg.mcp[`chaos-${id}`]
     writeDevecoConfig(cfg)
@@ -451,8 +559,9 @@ function devecoUnregister(id) {
 
 /** deveco 的 mcp 配置里已启用的服务器 id（去掉 chaos- 前缀） */
 function devecoRegisteredIds() {
-  const cfg = readDevecoConfig()
-  return Object.keys(cfg.mcp || {})
+  const { cfg } = readDevecoConfig()
+  // cfg 为 null 表示文件存在但解析失败，此时读不出任何 id（不是「没配置」）
+  return Object.keys((cfg && cfg.mcp) || {})
     .filter((k) => k.startsWith('chaos-'))
     .map((k) => k.slice('chaos-'.length))
 }
@@ -489,6 +598,16 @@ async function enable(id, opts = {}) {
   } catch (err) {
     results.deveco = { ok: false, error: err.message }
   }
+
+  // 两个 CLI 一个都没写成时不能报成功：上层只看 result.ok，会弹绿色成功提示，
+  // 但 mcp.list() 里 enabled 仍然是 false —— 用户以为启用了，实际没有。
+  if (!Object.values(results).some((r) => r && r.ok)) {
+    const detail = Object.entries(results)
+      .filter(([, r]) => !r || !r.ok)
+      .map(([who, r]) => `${who}: ${(r && r.error) || '未知错误'}`)
+      .join('；')
+    return { ok: false, error: `注册失败（${detail}）`, results }
+  }
   return { ok: true, results }
 }
 
@@ -504,6 +623,17 @@ async function disable(id) {
     results.deveco = devecoUnregister(id)
   } catch (err) {
     results.deveco = { ok: false, error: err.message }
+  }
+
+  // 与 enable 对称：两边都没成功就不能报成功。
+  // 典型场景是 deveco.jsonc 解析失败 —— 那份配置里可能还留着这个 MCP，
+  // 报个绿灯等于骗用户「已经停用了」。
+  const anyOk = Object.values(results).some((r) => r?.ok)
+  if (!anyOk) {
+    const detail = Object.entries(results)
+      .map(([k, v]) => `${k}: ${v?.error || '失败'}`)
+      .join('；')
+    return { ok: false, error: `停用失败（${detail}）`, results }
   }
   return { ok: true, results }
 }

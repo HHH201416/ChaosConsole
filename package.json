@@ -1,6 +1,6 @@
 {
   "name": "chaos-console",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
   "main": "electron/main.js",
   "author": {
@@ -17,6 +17,7 @@
     "build:web": "vite build",
     "start": "cross-env NODE_ENV=production electron .",
     "icon": "node scripts/make-icon.js",
+    "regress": "node scripts/regress.js",
     "dist": "npm run icon && npm run build:web && node scripts/build.js --publish never",
     "release": "npm run icon && npm run build:web && node scripts/build.js --publish always"
   },
@@ -43,12 +44,6 @@
     "zustand": "^5.0.3"
   },
   "build": {
-"publish": {
-  "provider": "github",
-  "owner": "HHH20416", 
-  "repo": "ChaosConsole",
-  "releaseType": "draft"
-},
     "appId": "com.chaosconsole.boss",
     "productName": "AI Agent开发控制台",
     "copyright": "Copyright © 2026 ChaosConsole",
@@ -75,7 +70,7 @@
       ],
       "icon": "build/icon.ico",
       "executableName": "ChaosConsole",
-      "artifactName": "AI Agent开发控制台 Setup.${ext}",
+      "artifactName": "ChaosConsole-Setup-${version}.${ext}",
       "signAndEditExecutable": false
     },
     "afterPack": "scripts/after-pack.js",
@@ -96,7 +91,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USERNAME",
+        "owner": "HHH201416",
         "repo": "ChaosConsole",
         "releaseType": "release"
       }

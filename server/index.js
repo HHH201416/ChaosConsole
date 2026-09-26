@@ -51,6 +51,22 @@ function requireAuth(req, res, next) {
   next()
 }
 
+/**
+ * 校验请求里带的 执行器 / 模型。两者都会被写进任务或员工记录，最终进 CLI 的
+ * argv，而 Windows 上那两个 CLI 都是经 cmd.exe 转发的 —— 所以只接受白名单里的
+ * 值，别让任意字符串有机会变成命令行的一部分。
+ * 返回错误信息；没问题时返回 null。
+ */
+function validateExecutorModel(executor, model, fallbackExecutor = 'claude') {
+  if (executor !== undefined && executor !== '' && !executors.isValidExecutor(executor)) {
+    return '非法的执行器'
+  }
+  if (model !== undefined && model !== '' && !executors.isValidModel(executor || fallbackExecutor, model)) {
+    return '该执行器没有这个模型'
+  }
+  return null
+}
+
 /* ------------------------------------------------------------------ *
  * Express
  * ------------------------------------------------------------------ */
@@ -155,9 +171,8 @@ app.get('/api/conversations', requireAuth, (_req, res) => {
 
 app.post('/api/chat', requireAuth, (req, res) => {
   const { conversationId, text, cwd, executor, model, agentId } = req.body || {}
-  if (executor !== undefined && executor !== '' && !executors.isValidExecutor(executor)) {
-    return res.status(400).json({ ok: false, error: '非法的执行器' })
-  }
+  const bad = validateExecutorModel(executor, model)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
   const result = chat.send({ conversationId, text, cwd, executor, model, agentId })
   if (!result.ok) return res.status(400).json(result)
   res.json(result)
@@ -165,6 +180,9 @@ app.post('/api/chat', requireAuth, (req, res) => {
 
 /** 一键清空所有任务（让看板回到 0 任务） */
 app.post('/api/tasks/clear', requireAuth, (_req, res) => {
+  // 先掐掉所有在跑的回合再清库：否则进程还在跑，而且 clearAllTasks 会把
+  // 这些 Agent 一律置为空闲，于是同一个员工可能被派上第二个任务并发执行。
+  for (const t of store.listTasks()) queue.forgetTask(t.id)
   store.clearAllTasks()
   res.json({ ok: true })
 })
@@ -180,17 +198,25 @@ app.get('/api/agents', requireAuth, (_req, res) => {
 })
 
 app.post('/api/agents', requireAuth, (req, res) => {
-  const { name, role, avatar, systemPrompt } = req.body || {}
+  // 「新岗位」表单里的职能名 / 执行器 / 模型都要带上：以前这里只透传了
+  // name/role/avatar/systemPrompt，于是用户填的职能名被丢掉，落库变成 role
+  // 的兜底值，执行器和模型也被强制成 claude —— 而且没有编辑入口可以改回来。
+  const { name, role, avatar, systemPrompt, executor, model, functionLabel } = req.body || {}
   if (!name || !String(name).trim()) {
     return res.status(400).json({ ok: false, error: '请填写员工姓名' })
   }
-  res.json({ ok: true, data: store.createAgent({ name, role, avatar, systemPrompt }) })
+  const bad = validateExecutorModel(executor, model)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.createAgent({ name, role, avatar, systemPrompt, executor, model, functionLabel }) })
 })
 
 app.patch('/api/agents/:id', requireAuth, (req, res) => {
-  const agent = store.updateAgent(req.params.id, req.body || {})
-  if (!agent) return res.status(404).json({ ok: false, error: '员工不存在' })
-  res.json({ ok: true, data: agent })
+  const patch = req.body || {}
+  const current = store.getAgent(req.params.id)
+  if (!current) return res.status(404).json({ ok: false, error: '员工不存在' })
+  const bad = validateExecutorModel(patch.executor, patch.model, current.executor)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.updateAgent(req.params.id, patch) })
 })
 
 app.delete('/api/agents/:id', requireAuth, (req, res) => {
@@ -206,11 +232,13 @@ app.get('/api/tasks', requireAuth, (_req, res) => {
 })
 
 app.post('/api/tasks', requireAuth, (req, res) => {
-  const { title, description, tags, cwd, agentId } = req.body || {}
+  const { title, description, tags, cwd, agentId, executor, model } = req.body || {}
   if (!title || !String(title).trim()) {
     return res.status(400).json({ ok: false, error: '请填写任务名称' })
   }
-  res.json({ ok: true, data: store.createTask({ title, description, tags, cwd, agentId }) })
+  const bad = validateExecutorModel(executor, model)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.createTask({ title, description, tags, cwd, agentId, executor, model }) })
 })
 
 app.get('/api/tasks/:id', requireAuth, (req, res) => {
@@ -229,14 +257,19 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
 })
 
 app.patch('/api/tasks/:id', requireAuth, (req, res) => {
-  const task = store.updateTask(req.params.id, req.body || {})
-  if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
-  res.json({ ok: true, data: task })
+  const patch = req.body || {}
+  const current = store.getTask(req.params.id)
+  if (!current) return res.status(404).json({ ok: false, error: '任务不存在' })
+  const bad = validateExecutorModel(patch.executor, patch.model, current.executor)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.updateTask(req.params.id, patch) })
 })
 
 app.delete('/api/tasks/:id', requireAuth, (req, res) => {
-  const ok = store.deleteTask(req.params.id)
-  if (!ok) return res.status(404).json({ ok: false, error: '任务不存在' })
+  if (!store.getTask(req.params.id)) return res.status(404).json({ ok: false, error: '任务不存在' })
+  // 先停掉还在跑的回合，否则进程会继续跑下去，而且它写回的记录没有归属
+  queue.forgetTask(req.params.id)
+  store.deleteTask(req.params.id)
   res.json({ ok: true })
 })
 
@@ -265,7 +298,12 @@ const actions = {
   assign: (id, body) => {
     const agentId = body?.agentId || null
     if (agentId && !store.getAgent(agentId)) return { ok: false, error: '员工不存在' }
+    const before = store.getTask(id)
     store.updateTask(id, { agentId })
+    // 换人之后要把原来那位放回空闲：任务已经不属于它了，settle 时释放的
+    // 只会是新 Agent，不补这一步的话旧 Agent 会永远卡在「忙碌」上，
+    // 再也接不到新任务（重试几次就把空闲员工耗光）。
+    if (before?.agentId && before.agentId !== agentId) store.releaseAgentIfIdle(before.agentId)
     return { ok: true }
   },
 }
@@ -299,9 +337,13 @@ app.post('/api/update/check', requireAuth, async (_req, res) => {
   }
   try {
     const data = await updateHandler()
+    // 记下最近一次结果，供 /api/update/status 查询 —— 以前那个接口读的是一个
+    // 初始化后再也没人写过的 updateState，永远回答 status:'idle'。
+    updateState = { ...data }
     res.json({ ok: true, data })
   } catch (err) {
-    res.json({ ok: false, data: { supported: true, status: 'error', message: err.message } })
+    updateState = { supported: true, status: 'error', message: err.message }
+    res.json({ ok: false, data: updateState })
   }
 })
 
@@ -415,8 +457,7 @@ for (const evt of BRIDGED) {
   store.bus.on(evt, (payload) => broadcast(evt, payload))
 }
 
-// 状态落库之后顺手推一次调度，保证「空闲 Agent 自动接单」
-store.bus.on('task:updated', () => {
+const nudgeDispatch = () => {
   setImmediate(() => {
     try {
       queue.dispatch()
@@ -424,6 +465,15 @@ store.bus.on('task:updated', () => {
       console.error('[dispatch] 调度失败:', err.message)
     }
   })
+}
+
+// 状态落库之后顺手推一次调度，保证「空闲 Agent 自动接单」
+store.bus.on('task:updated', nudgeDispatch)
+
+// 有员工空出来时也推一次：因为没有空闲员工而没起来的任务，只有在这里
+// 才有机会被重新捡起来；光等「任务状态变化」的话它可能一直躺在「进行中」。
+store.bus.on('agent:updated', (agent) => {
+  if (agent?.status === 'idle') nudgeDispatch()
 })
 
 /* ------------------------------------------------------------------ *
@@ -480,7 +530,50 @@ async function start() {
 async function stop() {
   clearInterval(heartbeat)
   for (const id of runner.runningTaskIds()) runner.cancel(id)
-  await new Promise((resolve) => server.close(resolve))
+
+  // WebSocketServer 是挂在同一个 http server 上的，而且升级过的连接不受
+  // server.close() 管辖：只要还留着一个 WS 客户端（界面上就是「已登录」），
+  // server.close() 的回调就永远不会触发，退出流程会死等在这里。
+  // 所以顺序必须是：先掐掉 WS 客户端 → 关 wss → 再关 http。
+  for (const client of wss.clients) {
+    try {
+      client.terminate()
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  await Promise.race([
+    (async () => {
+      await new Promise((resolve) => {
+        try {
+          wss.close(() => resolve())
+        } catch (_) {
+          resolve()
+        }
+      })
+      await new Promise((resolve) => {
+        try {
+          server.close(() => resolve())
+        } catch (_) {
+          resolve()
+          return
+        }
+        // 界面还开着时会有 keep-alive 的 HTTP 长连接，server.close() 要等它们
+        // 自然断开才回调。这里直接全部丢掉，别为了「优雅」多等几十秒。
+        if (typeof server.closeAllConnections === 'function') {
+          try {
+            server.closeAllConnections()
+          } catch (_) {
+            /* ignore */
+          }
+        }
+      })
+    })(),
+    // 兜底：无论连接状态多脏，3 秒内都必须放行，不能让退出挂死
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ])
+
   db.flush()
 }
 

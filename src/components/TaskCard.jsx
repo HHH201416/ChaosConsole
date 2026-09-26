@@ -48,8 +48,10 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
         )}
       </div>
 
-      {/* 标签 */}
-      {(task.tags.length > 0 || isRunning) && (
+      {/* 标签 / 状态标记：needs_input 也要放进来，否则「等待回复」这枚角标
+          只会出现在带标签的任务上，而对话页建的任务 tags 恒为空 —— 也就是
+          说最需要你回话的那张卡片反而没有任何提示。 */}
+      {(task.tags.length > 0 || isRunning || task.status === 'needs_input') && (
         <div className="mt-2 flex flex-wrap items-center gap-1 pl-3.5">
           {task.tags.map((t) => (
             <span key={t} className="chip">

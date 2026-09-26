@@ -206,7 +206,10 @@ export default function ChatPanel() {
 
   const submit = () => {
     const text = draft.trim()
-    if (!text || isRunning) return
+    if (!text) return
+    // 执行中也允许发送：后端会把它排队，等当前回合结束再用同一个会话续跑
+    // （queue.sendInput）—— 上面「执行中 · 可继续补充指令」的提示和这个按钮
+    // 一直是这么承诺的，之前这里却被 isRunning 直接挡掉了，按了没有任何反应。
     setDraft('')
     sendChat({ text })
   }

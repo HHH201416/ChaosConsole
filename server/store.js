@@ -284,6 +284,9 @@ function listMessages(taskId) {
 }
 
 function addMessage(taskId, role, content) {
+  // 解析器是异步收尾的：任务被删掉之后，可能还有几行 stdout 在往回写。
+  // 那些记录会变成永远没人清的孤儿行（task_id 已经没有对应任务了），这里直接丢掉。
+  if (!getTask(taskId)) return null
   const id = db.insert('INSERT INTO messages (task_id, role, content, created_at) VALUES (?, ?, ?, ?)', [
     taskId,
     role,
@@ -300,6 +303,8 @@ function listEvents(taskId) {
 }
 
 function addEvent(taskId, { type, name, content }) {
+  // 同 addMessage：任务已删除时丢弃收尾阶段的写入，避免孤儿行
+  if (!getTask(taskId)) return null
   const id = db.insert(
     'INSERT INTO events (task_id, type, name, content, created_at) VALUES (?, ?, ?, ?, ?)',
     [taskId, type || 'info', name || '', typeof content === 'string' ? content : JSON.stringify(content ?? ''), now()],

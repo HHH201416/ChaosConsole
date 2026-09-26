@@ -118,11 +118,37 @@ async function init() {
       existing = new Uint8Array(fs.readFileSync(CONFIG.DB_FILE))
     } catch (err) {
       console.error('[db] 读取旧库失败，将重建:', err.message)
+      existing = null
     }
   }
 
-  db = existing ? new SQL.Database(existing) : new SQL.Database()
-  db.exec(SCHEMA)
+  // 读得出来不代表它就是合法的 SQLite 库。而且 sql.js 的构造函数不会校验：
+  // 损坏的文件要等到第一次执行语句才报 "file is not a database"。所以必须把
+  // 「打开 + 建表」整个放进 try 里，否则这个异常会冒到启动流程，变成
+  // 「每次启动都弹后端启动失败」，用户只能自己去数据目录删库才能恢复。
+  // 这里的做法是：坏库改名留档，然后重建一个空库，保证应用永远起得来。
+  if (existing) {
+    try {
+      const candidate = new SQL.Database(existing)
+      candidate.exec(SCHEMA)
+      db = candidate
+    } catch (err) {
+      const backup = `${CONFIG.DB_FILE}.corrupt-${Date.now()}`
+      try {
+        fs.renameSync(CONFIG.DB_FILE, backup)
+        console.error(`[db] 数据文件已损坏（${err.message}），已备份为 ${backup}，将重建空库`)
+      } catch (renameErr) {
+        console.error(`[db] 数据文件已损坏（${err.message}），备份也失败（${renameErr.message}），直接重建`)
+      }
+      db = null
+    }
+  }
+
+  if (!db) {
+    db = new SQL.Database()
+    db.exec(SCHEMA)
+  }
+
   migrate()
   persistNow()
   return db

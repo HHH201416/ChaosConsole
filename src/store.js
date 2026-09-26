@@ -141,7 +141,15 @@ export const useStore = create((set, get) => ({
     try {
       const res = await api.getTask(taskId)
       // 防止慢响应覆盖掉更新的选择
-      if (get().selectedTaskId !== taskId) return
+      if (get().selectedTaskId !== taskId) {
+        // 这次的响应已经过期。如果期间用户是「取消选择」（新对话 / 删除任务 /
+        // 清空看板都会把 selectedTaskId 置空），就不会再有别的请求来收尾了，
+        // 必须自己把加载态关掉 —— 否则 detailLoading 会一直停在 true，
+        // 对话页永远显示「加载中…」。只是切到另一个任务的话，
+        // 那个请求会负责收尾，这里不要抢。
+        if (get().selectedTaskId === null) set({ detailLoading: false })
+        return
+      }
       set({ detail: res.data, detailLoading: false })
     } catch (err) {
       set({ detailLoading: false })
@@ -481,11 +489,24 @@ function handleServerMessage(msg) {
         agents: state.agents.some((a) => a.id === payload.id)
           ? state.agents.map((a) => (a.id === payload.id ? payload : a))
           : [...state.agents, payload],
+        // 对话页顶部的岗位徽标 / 执行器 / 模型也是从 detail.agent 取的，
+        // 不同步的话员工信息改了、对话页还显示旧的。
+        detail:
+          state.detail && state.detail.agent?.id === payload.id
+            ? { ...state.detail, agent: payload }
+            : state.detail,
       })
       break
 
     case 'agent:deleted':
-      useStore.setState({ agents: state.agents.filter((a) => a.id !== payload.id) })
+      useStore.setState({
+        agents: state.agents.filter((a) => a.id !== payload.id),
+        // 员工被解雇后，对话页不能继续挂着一个已经不存在的人
+        detail:
+          state.detail && state.detail.agent?.id === payload.id
+            ? { ...state.detail, agent: null }
+            : state.detail,
+      })
       break
 
     case 'task:updated':
@@ -497,11 +518,32 @@ function handleServerMessage(msg) {
       if (state.detail && state.detail.task.id === payload.id) {
         useStore.setState({ detail: { ...state.detail, task: payload } })
       }
+      // 历史对话列表同步更新：它以前只在「发消息」时刷新，任务跑完了还挂着
+      // 呼吸点、排序也停在旧位置。running 用 runState 反推，和服务端
+      // runner.isRunning() 的口径一致。
+      if (state.conversations.some((c) => c.id === payload.id)) {
+        useStore.setState({
+          conversations: state.conversations
+            .map((c) =>
+              c.id === payload.id
+                ? {
+                    ...c,
+                    status: payload.status,
+                    runState: payload.runState,
+                    updatedAt: payload.updatedAt,
+                    running: payload.runState === 'running' || payload.runState === 'queued',
+                  }
+                : c,
+            )
+            .sort((a, b) => b.updatedAt - a.updatedAt),
+        })
+      }
       break
 
     case 'task:deleted':
       useStore.setState({
         tasks: state.tasks.filter((t) => t.id !== payload.id),
+        conversations: state.conversations.filter((c) => c.id !== payload.id),
         selectedTaskId: state.selectedTaskId === payload.id ? null : state.selectedTaskId,
         detail: state.detail && state.detail.task.id === payload.id ? null : state.detail,
       })

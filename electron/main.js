@@ -24,10 +24,20 @@ const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
 process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath('userData'), 'data')
 
 const serverModule = require('../server/index.js')
+const storeModule = require('../server/store.js')
 
 let mainWindow = null
 let serverPort = null
 let ownsServer = false
+let splashWindow = null
+let splashStartedAt = 0
+
+/** 闪屏最短停留时间，避免启动太快时闪一下就没了，反而像闪屏故障 */
+const SPLASH_MIN_MS = 1400
+/** 退场动画时长，比渲染进程的动画（LifecycleFx 里 1500ms）多留一点，别把收尾切掉 */
+const EXIT_ANIM_MS = 1650
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
  * 开发时 `npm run dev` 会同时起一个独立后端（dev:server，支持单独重启），
@@ -154,6 +164,101 @@ function checkForUpdates() {
     Promise.resolve(updater.checkForUpdates()).catch(onError)
     setTimeout(() => finish({ supported: true, status: 'timeout', message: '检查更新超时，请稍后重试。' }), 30000)
   })
+}
+
+/* ------------------------------------------------------------------ *
+ * 启动闪屏
+ * ------------------------------------------------------------------ */
+
+/**
+ * 闪屏是一个独立无边框窗口，盖在启动期上面。
+ * 它的动画全在 electron/splash.html 里用 CSS 做，这里只负责：
+ *   1. 尽早把它显示出来（后端还没起，主窗口还是空白）；
+ *   2. 用 executeJavaScript 往里面追加真实的启动日志；
+ *   3. 主窗口能显示了就淡出关掉它。
+ *
+ * 日志用 executeJavaScript 注入而不是 IPC，是因为闪屏不需要 preload，
+ * 而且 executeJavaScript 不受页面 CSP 限制（打包后主进程会注入严格 CSP）。
+ */
+function createSplash() {
+  splashStartedAt = Date.now()
+  splashWindow = new BrowserWindow({
+    width: 560,
+    height: 340,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: { contextIsolation: true, nodeIntegration: false, spellcheck: false },
+  })
+
+  splashWindow.once('ready-to-show', () => splashWindow?.show())
+  splashWindow.on('closed', () => {
+    splashWindow = null
+  })
+
+  // 页脚的版本号在 HTML 里是个占位符，这里填成真实版本
+  splashWindow.webContents.once('did-finish-load', () => {
+    splashWindow?.webContents
+      .executeJavaScript(
+        `(() => {
+          const el = document.getElementById('foot-right')
+          if (el) el.textContent = ${JSON.stringify(`v${app.getVersion()}`)}
+          return true
+        })()`,
+        true,
+      )
+      .catch(() => {})
+  })
+
+  splashWindow.loadFile(path.join(__dirname, 'splash.html')).catch((err) => {
+    console.error('[electron] 闪屏加载失败:', err.message)
+  })
+
+  return splashWindow
+}
+
+/** 往闪屏里追加一行启动日志，并推进进度条。闪屏没了就静默跳过。 */
+function pushBootStep(text, progress) {
+  if (!splashWindow || splashWindow.isDestroyed()) return
+  splashWindow.webContents
+    .executeJavaScript(
+      `(() => {
+        const log = document.getElementById('log')
+        if (log) {
+          for (const old of log.querySelectorAll('.line.now')) old.classList.remove('now')
+          const line = document.createElement('div')
+          line.className = 'line now'
+          line.textContent = ${JSON.stringify(String(text))}
+          log.appendChild(line)
+          while (log.children.length > 4) log.removeChild(log.firstChild)
+        }
+        const bar = document.getElementById('bar')
+        if (bar) bar.style.width = ${JSON.stringify(`${progress}%`)}
+        return true
+      })()`,
+      true,
+    )
+    .catch(() => {
+      /* 闪屏还没加载完 / 已被关掉，忽略 */
+    })
+}
+
+/** 让闪屏淡出后关闭；调用方不 await，免得拖慢主窗口显示 */
+async function closeSplash() {
+  const win = splashWindow
+  if (!win || win.isDestroyed()) return
+  splashWindow = null
+  try {
+    await win.webContents.executeJavaScript(`document.body.classList.add('closing'); true`, true)
+  } catch (_) {
+    /* 注入失败就直接关 */
+  }
+  await sleep(320)
+  if (!win.isDestroyed()) win.close()
 }
 
 /* ------------------------------------------------------------------ *
@@ -302,7 +407,27 @@ async function createWindow() {
     },
   })
 
-  mainWindow.once('ready-to-show', () => mainWindow.show())
+  // 主窗口能显示了才收闪屏。先补足最短停留时间，否则启动快的时候会一闪而过，
+  // 看起来像闪屏出错而不是「启动很快」。
+  mainWindow.once('ready-to-show', async () => {
+    const elapsed = Date.now() - splashStartedAt
+    if (elapsed < SPLASH_MIN_MS) await sleep(SPLASH_MIN_MS - elapsed)
+    pushBootStep('工作台界面就绪', 100)
+    await sleep(280)
+    mainWindow?.show()
+    mainWindow?.focus()
+    closeSplash()
+  })
+
+  // 第一次「关闭」请求先拦下来播退场动画；动画播完后 closeState 不再是 running，
+  // 这时 app.quit() 再次关窗就会正常放行。
+  mainWindow.on('close', (event) => {
+    if (closeState === 'running') {
+      event.preventDefault()
+      requestQuit()
+    }
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -329,28 +454,36 @@ async function createWindow() {
  * ------------------------------------------------------------------ */
 
 app.whenReady().then(async () => {
+  createSplash()
+  pushBootStep('初始化运行时环境', 6)
+
   if (USE_EXTERNAL_SERVER) {
     serverPort = Number(process.env.CHAOS_PORT || 43117)
     console.log(`[electron] 使用外部后端（端口 ${serverPort}），本进程不再启动服务`)
+    pushBootStep(`连接外部服务 127.0.0.1:${serverPort}`, 30)
     if (!(await probe(`http://127.0.0.1:${serverPort}`))) {
       dialog.showErrorBox(
         '后端未就绪',
         `CHAOS_EXTERNAL_SERVER=1 表示后端由外部提供，但 127.0.0.1:${serverPort} 上没有服务在监听。\n` +
           '请先启动 npm run dev:server，或去掉该环境变量让 Electron 自己启动后端。',
       )
-      app.quit()
+      quitImmediately()
       return
     }
+    pushBootStep('外部服务已响应', 62)
   } else {
+    pushBootStep('启动本地服务 (HTTP + WebSocket)', 26)
     try {
       const { port } = await serverModule.start()
       serverPort = port
       ownsServer = true
       console.log(`[electron] 后端已就绪，端口 ${port}`)
+      pushBootStep(`本地服务已就绪 · 端口 ${port}`, 58)
+      pushBootStep(`载入员工编制 ${storeModule.listAgents().length} 名`, 76)
     } catch (err) {
       console.error('[electron] 后端启动失败:', err)
       dialog.showErrorBox('后端启动失败', String(err?.stack || err))
-      app.quit()
+      quitImmediately()
       return
     }
   }
@@ -359,6 +492,7 @@ app.whenReady().then(async () => {
   initUpdater()
   applyCsp()
   buildMenu()
+  pushBootStep('装载工作台界面', 88)
   await createWindow()
 
   app.on('activate', () => {
@@ -370,20 +504,77 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-let shuttingDown = false
-app.on('before-quit', async (event) => {
-  if (shuttingDown) return
-  shuttingDown = true
-  event.preventDefault()
-  // 只关自己启动的后端；外部后端由 npm run dev 的 concurrently 负责收尾
-  if (ownsServer) {
+/* ------------------------------------------------------------------ *
+ * 退出：先播退场动画，再停服务、落盘、退出
+ *
+ *   running    → 正常服务中
+ *   closing    → 界面正在播退场动画，这期间不许真的关窗
+ *   finalizing → 动画已播完（或启动期直接失败），正在收尾
+ * ------------------------------------------------------------------ */
+
+let closeState = 'running'
+let finalized = false
+
+/** 请求退出：广播退场动画，等它播完再交给 before-quit 收尾 */
+function requestQuit() {
+  if (closeState !== 'running') return
+  closeState = 'closing'
+
+  // 闪屏还盖在上面就先收掉，否则退场动画被它挡住，用户什么也看不见
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close()
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
     try {
-      await serverModule.stop()
-    } catch (err) {
-      console.error('[electron] 关闭后端出错:', err.message)
+      mainWindow.webContents.send('app:quitting')
+    } catch (_) {
+      /* 界面不可用不影响退出 */
     }
   }
-  app.exit(0)
+
+  // 固定等 EXIT_ANIM_MS，而不是等渲染进程回报「动画播完了」：
+  // 界面卡死 / 崩溃时也必须退得掉，所以这里不能用握手。
+  setTimeout(() => {
+    closeState = 'finalizing'
+    app.quit()
+  }, EXIT_ANIM_MS)
+}
+
+/** 启动期致命错误：还没有界面可播动画，直接跳过退场 */
+function quitImmediately() {
+  closeState = 'finalizing'
+  app.quit()
+}
+
+app.on('before-quit', (event) => {
+  // 从菜单 / 快捷键退出：退场动画还没播，先补上
+  if (closeState === 'running') {
+    event.preventDefault()
+    requestQuit()
+    return
+  }
+  // 动画还没播完，别在这时候把窗口收掉
+  if (closeState === 'closing') {
+    event.preventDefault()
+    return
+  }
+  // finalizing：这里才是真正的收尾
+  if (finalized) return
+  finalized = true
+  event.preventDefault()
+  ;(async () => {
+    // 只关自己启动的后端；外部后端由 npm run dev 的 concurrently 负责收尾
+    if (ownsServer) {
+      try {
+        // stop() 内部已经会掐掉 WS 客户端并强制断开连接；这里再兜一层超时，
+        // 保证「退出」这个动作永远不会因为后端没收干净而卡住 —— 这一步一旦
+        // 挂住，app.exit(0) 就永远执行不到，窗口关不掉、进程也退不了。
+        await Promise.race([serverModule.stop(), sleep(5000)])
+      } catch (err) {
+        console.error('[electron] 关闭后端出错:', err.message)
+      }
+    }
+    app.exit(0)
+  })()
 })
 
 process.on('uncaughtException', (err) => {

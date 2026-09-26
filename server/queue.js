@@ -20,6 +20,12 @@ const CONFIG = require('./config')
 const pendingInputs = new Map()
 
 /**
+ * 正在跑回合的 taskId（同步登记，用来堵住 runner.isRunning 之前的空窗期，
+ * 见 runTurn 里的说明）。
+ */
+const activeTurns = new Set()
+
+/**
  * 职能关键词画像：用来把一句需求路由给最合适的 Agent。
  * 命中越多分越高。对话页的自动派单和看板的自动派单共用这一份。
  */
@@ -47,6 +53,24 @@ function scoreAgent(agent, task) {
   // 职能名本身命中时权重更高（用户直接说「文档」「测试」这种）
   if (agent.functionLabel && haystack.includes(agent.functionLabel.toLowerCase())) score += 4
   return score
+}
+
+/**
+ * 这个 Agent 是不是正忙着别的任务。
+ *
+ * 判据用 runState 而不是 tasks.status：needs_input 的任务虽然还算「在它名下」，
+ * 但回合早就结束了，Agent 应该已经空闲下来。
+ */
+function agentIsBusy(agentId, exceptTaskId) {
+  if (!agentId) return false
+  return store
+    .listTasks()
+    .some(
+      (t) =>
+        t.agentId === agentId &&
+        t.id !== exceptTaskId &&
+        (t.runState === 'running' || t.runState === 'queued'),
+    )
 }
 
 /** 挑一个空闲 Agent；没有空闲的返回 null */
@@ -94,44 +118,69 @@ async function runTurn(taskId, { extraInstruction = '' } = {}) {
   const task = store.getTask(taskId)
   if (!task) return
   if (runner.isRunning(taskId)) return
+  // runner.isRunning 只在 runner.execute 真正拉起进程之后才为真，而 deveco 那条路
+  // 在拉进程之前还要 await 一次模型列表（冷启动时好几秒）。光靠它挡不住
+  // 「这段空窗期内又来一次 runTurn」，会变成同一个任务跑两个回合。
+  // activeTurns 是同步打上的标记，专门用来补这个空窗。
+  if (activeTurns.has(taskId)) return
+  activeTurns.add(taskId)
 
-  const agent = store.getAgent(task.agentId)
-  if (!agent) {
-    store.updateTask(taskId, { runState: 'error', error: '没有可用的 Agent' })
-    store.addEvent(taskId, { type: 'error', name: '派单失败', content: '任务没有绑定 Agent，且当前没有空闲员工。' })
-    return
-  }
-
-  store.updateTask(taskId, { runState: 'running', status: 'in_progress', error: '' })
-  store.updateAgent(agent.id, { status: 'working' })
-  // 事件里也只写「是干什么的」，跟界面保持一致，不暴露姓名
-  const who = agent.functionLabel || agent.role
-  store.addEvent(taskId, {
-    type: 'status',
-    name: extraInstruction ? '续跑' : '开始执行',
-    content: extraInstruction
-      ? `向「${who}」发送补充指令`
-      : `「${who}」接手任务（${agent.executor}），工作目录 ${task.cwd}`,
-  })
-
-  let result
+  // 整个回合体都包在 try/finally 里：中间任何一条提前 return（比如任务没有
+  // 可用的 Agent）都必须把标记撤掉，否则这个任务会被永久锁住，再也跑不起来。
   try {
-    result = await runner.execute({
-      task: store.getTask(taskId),
-      agent,
-      extraInstruction,
-      resumeSessionId: extraInstruction ? store.getTask(taskId).sessionId : null,
-    })
-  } catch (err) {
-    result = { ok: false, error: err.message || String(err) }
-  }
+    const agent = store.getAgent(task.agentId)
+    if (!agent) {
+      store.updateTask(taskId, { runState: 'error', error: '没有可用的 Agent' })
+      store.addEvent(taskId, { type: 'error', name: '派单失败', content: '任务没有绑定 Agent，且当前没有空闲员工。' })
+      return
+    }
 
-  return settle(taskId, result)
+    store.updateTask(taskId, { runState: 'running', status: 'in_progress', error: '' })
+    store.updateAgent(agent.id, { status: 'working' })
+    // 事件里也只写「是干什么的」，跟界面保持一致，不暴露姓名
+    const who = agent.functionLabel || agent.role
+    store.addEvent(taskId, {
+      type: 'status',
+      name: extraInstruction ? '续跑' : '开始执行',
+      content: extraInstruction
+        ? `向「${who}」发送补充指令`
+        : `「${who}」接手任务（${agent.executor}），工作目录 ${task.cwd}`,
+    })
+
+    let result
+    try {
+      result = await runner.execute({
+        task: store.getTask(taskId),
+        agent,
+        extraInstruction,
+        resumeSessionId: extraInstruction ? store.getTask(taskId).sessionId : null,
+      })
+    } catch (err) {
+      result = { ok: false, error: err.message || String(err) }
+    }
+
+    // settle 里可能会通过 drainPending 立刻派下一个回合，所以要等 settle 跑完
+    // 再撤掉标记，否则中间那一瞬间又会被放进来。
+    return settle(taskId, result)
+  } finally {
+    activeTurns.delete(taskId)
+  }
 }
 
 function settle(taskId, result) {
   const task = store.getTask(taskId)
   if (!task) return
+
+  // 用户可能在这一回合还没跑完时就手动把卡片拖走 / 标记完成 / 取消了，
+  // 那些操作会立刻改写 status 和 runState。此时这一回合的结果已经过期：
+  // 再按结果落位就会把卡片从用户放的位置拽回去（看起来像卡片「自己跳回原列」）。
+  // runTurn 开始时把状态设成 in_progress + running，所以只要这两个值还保持着，
+  // 就说明这一回合仍然是最新的那个。
+  if (task.status !== 'in_progress' || task.runState !== 'running') {
+    pendingInputs.delete(taskId)
+    store.releaseAgentIfIdle(task.agentId)
+    return
+  }
 
   if (result.sessionId) store.updateTask(taskId, { sessionId: result.sessionId })
 
@@ -196,16 +245,24 @@ function drainPending(taskId) {
  * ------------------------------------------------------------------ */
 
 /** 开始 / 继续一个任务 */
-function startTask(taskId) {
+function startTask(taskId, { quiet = false } = {}) {
   const task = store.getTask(taskId)
   if (!task) return { ok: false, error: '任务不存在' }
   if (runner.isRunning(taskId)) return { ok: false, error: '任务已在执行中' }
 
   let agentId = task.agentId
-  if (!agentId || !store.getAgent(agentId)) {
+  const boundAgent = agentId ? store.getAgent(agentId) : null
+  // 两种情况下要换人：绑定的员工已经不存在，或者它正在忙别的任务。
+  // 「同一个员工同一时刻只干一个任务」是 queue 的既定约束（见文件头），
+  // 由这里守住 —— 否则对话页收到一条正好命中某个忙碌员工的消息时，
+  // 会在同一个人身上并发跑起两个 CLI。
+  if (!boundAgent || agentIsBusy(agentId, taskId)) {
     const agent = pickIdleAgent(task)
     if (!agent) {
-      store.addEvent(taskId, { type: 'error', name: '无空闲员工', content: '所有员工都在忙，请稍后再试。' })
+      // dispatch 会自动重试，别让它每次都往事件流里写一条同样的抱怨
+      if (!quiet) {
+        store.addEvent(taskId, { type: 'error', name: '无空闲员工', content: '所有员工都在忙，请稍后再试。' })
+      }
       return { ok: false, error: '没有空闲员工' }
     }
     agentId = agent.id
@@ -283,6 +340,16 @@ function cancelTask(taskId) {
   return { ok: true }
 }
 
+/**
+ * 任务被删除 / 被清空时调用：掐掉还在跑的回合，并丢掉排队的补充指令。
+ * 这里刻意不写任何事件 —— 调用方紧接着就会把这个任务的所有记录删掉。
+ */
+function forgetTask(taskId) {
+  runner.cancel(taskId)
+  pendingInputs.delete(taskId)
+  activeTurns.delete(taskId)
+}
+
 /** 手动标记完成 */
 function markDone(taskId) {
   const task = store.getTask(taskId)
@@ -309,11 +376,34 @@ function moveTask(taskId, status) {
     if (status === 'backlog') store.releaseAgentIfIdle(task.agentId)
   }
 
-  const runState = status === 'complete' ? 'done' : status === 'backlog' ? 'idle' : task.runState
+  // 手动拖列时 runState 也要落到一个自洽的值：沿用旧的 runState 会让
+  // 「进行中 → 需要输入」留下 runState=running，卡片上同时挂着「执行中」标记，
+  // 但进程其实已经被上面掐掉了。
+  const runState =
+    status === 'complete'
+      ? 'done'
+      : status === 'backlog'
+        ? 'idle'
+        : status === 'needs_input'
+          ? 'waiting'
+          : task.runState
   store.updateTask(taskId, { status, runState })
   store.addEvent(taskId, { type: 'status', name: '状态变更', content: `移动到「${status}」` })
 
-  if (status === 'in_progress') startTask(taskId)
+  if (status === 'in_progress') {
+    const started = startTask(taskId)
+    // 起不来（最常见的是所有员工都在忙）：把卡片退回原列并说明原因，
+    // 否则它会停在「进行中」假装在跑，既没有进程也没有 Agent。
+    if (started && started.ok === false) {
+      store.updateTask(taskId, { status: task.status, runState: task.runState })
+      store.addEvent(taskId, {
+        type: 'error',
+        name: '无法开始',
+        content: started.error || '没有可用的员工，任务已退回原列。',
+      })
+      return started
+    }
+  }
   return { ok: true }
 }
 
@@ -350,7 +440,8 @@ function dispatch() {
     if (t.status !== 'in_progress') continue
     if (runner.isRunning(t.id)) continue
     if (t.runState === 'running' || t.runState === 'queued') continue
-    startTask(t.id)
+    // quiet：这是自动重试，失败时不要反复往事件流里写「无空闲员工」
+    startTask(t.id, { quiet: true })
   }
 }
 
@@ -358,6 +449,7 @@ module.exports = {
   startTask,
   sendInput,
   cancelTask,
+  forgetTask,
   markDone,
   moveTask,
   dispatch,

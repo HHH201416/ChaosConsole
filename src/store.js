@@ -52,6 +52,9 @@ export const useStore = create((set, get) => ({
   mcpSummary: null,
   mcpLoading: false,
 
+  /* 更新状态。权威来源是 Electron 主进程，这里只是经 update:status 推送来的投影 */
+  update: { status: 'idle', message: '', percent: 0 },
+
   toasts: [],
 
   /* ---------------- 提示条 ---------------- */
@@ -98,16 +101,19 @@ export const useStore = create((set, get) => ({
     set({ token, authed: true })
 
     try {
-      const [stateRes, sysRes, convRes] = await Promise.all([
+      const [stateRes, sysRes, convRes, updRes] = await Promise.all([
         api.state(),
         api.system(),
         api.conversations().catch(() => ({ data: [] })),
+        // 刷新页面或 WS 重连后补一次更新状态，否则正在下载的进度会凭空消失
+        api.updateStatus().catch(() => ({ data: null })),
       ])
       set({
         agents: stateRes.data.agents,
         tasks: stateRes.data.tasks,
         system: sysRes.data,
         conversations: convRes.data || [],
+        ...(updRes?.data ? { update: updRes.data } : {}),
       })
     } catch (err) {
       if (err.status === 401) {
@@ -394,17 +400,60 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /* ---------------- 更新 ---------------- */
+
   async checkUpdate() {
     get().toast('正在检查更新…')
     try {
       const res = await api.checkUpdate()
       const d = res.data || {}
-      const kind = d.status === 'error' ? 'error' : d.status === 'available' || d.status === 'downloaded' ? 'success' : 'info'
+      set({ update: { ...get().update, ...d } })
+      const kind = d.status === 'error' ? 'error' : d.status === 'available' ? 'success' : 'info'
       get().toast(d.message || '检查完成', kind)
       return d
     } catch (err) {
       get().toast(err.message, 'error')
       return null
+    }
+  },
+
+  /** 用户点「下载」才会走到这里 —— autoDownload 已经关掉了 */
+  async downloadUpdate() {
+    try {
+      const res = await api.downloadUpdate()
+      const d = res.data || {}
+      set({ update: { ...get().update, ...d } })
+      if (d.status === 'error') get().toast(d.message || '下载失败', 'error')
+      return d
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return null
+    }
+  },
+
+  /** 用户点「安装并重启」并确认后调用 */
+  async installUpdate() {
+    try {
+      const res = await api.installUpdate()
+      const d = res.data || {}
+      set({ update: { ...get().update, ...d } })
+      return d
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return null
+    }
+  },
+
+  async setAutoUpdateWhenIdle(enabled) {
+    try {
+      await api.setSettings({ autoUpdateWhenIdle: enabled })
+      await get().refreshSystem()
+      get().toast(
+        enabled ? '已开启：空闲时自动检查并下载更新（安装仍需你确认）' : '已关闭空闲时自动更新',
+        'success',
+      )
+    } catch (err) {
+      get().toast(err.message, 'error')
     }
   },
 }))
@@ -578,6 +627,34 @@ function handleServerMessage(msg) {
     case 'unauthorized':
       useStore.setState({ conn: 'closed' })
       break
+
+    /* 更新状态（含下载进度）。这一路以前没人在听，广播过来直接掉进 default 被丢掉，
+       所以「检查更新」的结果从来没在界面上体现过。 */
+    case 'update:status': {
+      if (!payload || typeof payload !== 'object') break
+      // 刻意不用 switch 前那个 state 快照：进度帧是高频的，快照会丢帧，
+      // toast 去重也必须读实时值
+      const prev = useStore.getState().update
+      const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+      useStore.setState({
+        update: {
+          ...prev,
+          ...payload,
+          percent: num(payload.percent),
+          transferred: num(payload.transferred),
+          total: num(payload.total),
+          bytesPerSecond: num(payload.bytesPerSecond),
+        },
+      })
+      const next = useStore.getState().update
+      // 只在「刚下好」这一跃迁上提示一次，别每帧都弹
+      if (next.status === 'downloaded' && prev.status !== 'downloaded') {
+        useStore
+          .getState()
+          .toast(`新版本 v${next.version} 已下载完成，点右上角「安装并重启」生效`, 'success')
+      }
+      break
+    }
 
     default:
       break

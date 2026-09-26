@@ -126,3 +126,17 @@ export function relativeTime(ts) {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
   return `${Math.floor(diff / 86_400_000)} 天前`
 }
+
+/** 字节数格式化。更新进度里直接摆 90951519 这种数字没人看得懂 */
+export function fmtBytes(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let x = v
+  let i = 0
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024
+    i += 1
+  }
+  return `${i > 0 && x < 10 ? x.toFixed(1) : Math.round(x)} ${units[i]}`
+}

@@ -92,6 +92,9 @@ export const api = {
   setPermissionMode: (permissionMode) => post('/api/settings', { permissionMode }),
   setSettings: (patch) => post('/api/settings', patch),
   checkUpdate: () => post('/api/update/check'),
+  downloadUpdate: () => post('/api/update/download'),
+  installUpdate: () => post('/api/update/install'),
+  updateStatus: () => get('/api/update/status'),
 
   // 执行器与模型
   executors: () => get('/api/executors'),

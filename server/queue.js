@@ -40,7 +40,18 @@ const FUNCTION_KEYWORDS = {
   Writer: ['文档', 'readme', '说明', '写作', '手册', '注释', 'doc', '教程', '介绍'],
   Security: ['安全', '漏洞', '审计', '权限', '加密', '攻击', 'security', '注入', '越权'],
   PM: ['需求', '排期', '计划', '拆解', '管理', '协调', '项目', '优先级', '里程碑'],
-  HarmonyOS: ['鸿蒙', 'harmonyos', 'arkts', 'arkui', 'deveco', '元服务', 'hvigor', 'ohos', '华为'],
+  /* DevEco 那 10 位。关键词一律带鸿蒙限定，别用「界面」「布局」「构建」这种
+     泛用词 —— 否则会把本该给 Claude 岗位的活抢过来。 */
+  HarmonyOS: ['鸿蒙', 'harmonyos', 'arkts', 'deveco', 'ohos', '华为'],
+  HarmonyUI: ['arkui', '鸿蒙界面', '鸿蒙布局', '声明式ui', '声明式 ui', '@state', '@prop', '@link', '鸿蒙动效', '鸿蒙适配'],
+  HarmonyAtomic: ['元服务', '服务卡片', '万能卡片', '免安装', '原子化', '卡片刷新', 'form'],
+  HarmonyArchitect: ['鸿蒙架构', '鸿蒙工程', 'har', 'hsp', 'ohpm', '多目标构建', 'build-profile', '鸿蒙模块'],
+  HarmonyTester: ['hypium', '鸿蒙测试', '鸿蒙用例', '鸿蒙回归', '鸿蒙验证'],
+  HarmonyBuild: ['hvigor', '鸿蒙打包', '鸿蒙构建', '鸿蒙签名', 'appgallery', 'p7b', 'p12', '鸿蒙上架'],
+  HarmonyDistributed: ['分布式', '流转', '软总线', '跨设备', '设备发现', '接续', '多端协同'],
+  HarmonyData: ['preferences', 'rdb', 'kvstore', '鸿蒙数据', '分布式数据', '首选项'],
+  HarmonyPerf: ['鸿蒙性能', '启动优化', '帧率', '丢帧', '功耗', 'profiler', '鸿蒙内存'],
+  HarmonySecurity: ['鸿蒙权限', '隐私合规', '个人信息保护', '动态授权', '鸿蒙安全', '上架审核'],
 }
 
 function scoreAgent(agent, task) {

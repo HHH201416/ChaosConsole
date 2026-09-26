@@ -99,10 +99,14 @@ app.get('/api/system', requireAuth, (_req, res) => {
       claudeAvailable: runner.claudeAvailable(),
       devecoBin: executors.resolveDevecoBin() || null,
       devecoAvailable: executors.devecoAvailable(),
+      // DevEco Studio 的 hvigorw / hdc / ohpm 绝对路径。Studio 不把它们加进 PATH，
+      // Agent 要用绝对路径调用，界面上也便于排查「为什么构建跑不起来」。
+      devecoTools: executors.resolveDevecoTools(),
       executors: executors.describe(),
       permissionMode: store.getSetting('permissionMode', CONFIG.PERMISSION_MODE),
       validPermissionModes: CONFIG.VALID_PERMISSION_MODES,
       devecoAutoApprove: store.getSetting('devecoAutoApprove', '0') === '1',
+      autoUpdateWhenIdle: store.getSetting('autoUpdateWhenIdle', '0') === '1',
       defaultCwd: CONFIG.DEFAULT_CWD,
       platform: process.platform,
       runningTaskIds: runner.runningTaskIds(),
@@ -113,7 +117,7 @@ app.get('/api/system', requireAuth, (_req, res) => {
 })
 
 app.post('/api/settings', requireAuth, (req, res) => {
-  const { permissionMode, devecoAutoApprove, mcpAllowedDirs } = req.body || {}
+  const { permissionMode, devecoAutoApprove, mcpAllowedDirs, autoUpdateWhenIdle } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
       return res.status(400).json({ ok: false, error: '非法的权限模式' })
@@ -122,6 +126,11 @@ app.post('/api/settings', requireAuth, (req, res) => {
   }
   if (devecoAutoApprove !== undefined) {
     store.setSetting('devecoAutoApprove', devecoAutoApprove ? '1' : '0')
+  }
+  // 空闲时自动检查并下载更新（默认关）。只影响「下不下」，
+  // 「装不装」始终要用户确认。
+  if (autoUpdateWhenIdle !== undefined) {
+    store.setSetting('autoUpdateWhenIdle', autoUpdateWhenIdle ? '1' : '0')
   }
   if (Array.isArray(mcpAllowedDirs)) {
     mcp.setAllowedDirs(mcpAllowedDirs)
@@ -324,6 +333,49 @@ function setUpdateHandler(fn) {
   updateHandler = fn
 }
 
+/* 下载与安装同样由主进程提供实现。autoDownload 关掉之后，下载必须由用户
+   在界面上显式点击触发，所以这里是独立于「检查」的一步。 */
+let downloadHandler = null
+function setDownloadHandler(fn) {
+  downloadHandler = fn
+}
+
+let installHandler = null
+function setInstallHandler(fn) {
+  installHandler = fn
+}
+
+/* 主进程持有实时的更新状态（含下载进度），进度不经过 updateState，
+   所以查询接口优先问它 */
+let updateStatusHandler = null
+function setUpdateStatusHandler(fn) {
+  updateStatusHandler = fn
+}
+
+const UPDATER_UNAVAILABLE = {
+  supported: false,
+  status: 'unsupported',
+  message: '当前运行在开发模式（未打包），自动更新不可用。打包安装后才生效。',
+}
+
+/** 把「下载」和「安装」的路由收敛成一个，两者形状完全一致 */
+function makeUpdateActionRoute(getHandler) {
+  return async (_req, res) => {
+    const handler = getHandler()
+    if (!handler) {
+      return res.json({ ok: true, data: { ...UPDATER_UNAVAILABLE } })
+    }
+    try {
+      const data = await handler()
+      updateState = { ...data }
+      res.json({ ok: true, data })
+    } catch (err) {
+      updateState = { supported: true, status: 'error', message: err.message }
+      res.json({ ok: false, data: updateState })
+    }
+  }
+}
+
 app.post('/api/update/check', requireAuth, async (_req, res) => {
   if (!updateHandler) {
     return res.json({
@@ -347,7 +399,31 @@ app.post('/api/update/check', requireAuth, async (_req, res) => {
   }
 })
 
+/* 开始下载。autoDownload 关掉之后，「发现新版本」不再自动下载，
+   必须由用户在界面上显式点这一下。 */
+app.post(
+  '/api/update/download',
+  requireAuth,
+  makeUpdateActionRoute(() => downloadHandler),
+)
+
+/* 安装。前端会先让用户确认，确认后才调到这里。 */
+app.post(
+  '/api/update/install',
+  requireAuth,
+  makeUpdateActionRoute(() => installHandler),
+)
+
 app.get('/api/update/status', requireAuth, (_req, res) => {
+  // 下载进度只存在于主进程，不经过 updateState，所以优先问它要实时状态；
+  // 拿不到（例如外部后端模式）再退回缓存的 updateState。
+  if (updateStatusHandler) {
+    try {
+      return res.json({ ok: true, data: updateStatusHandler() })
+    } catch (_) {
+      /* 退回缓存 */
+    }
+  }
   res.json({ ok: true, data: updateState })
 })
 
@@ -581,7 +657,18 @@ function getPort() {
   return actualPort
 }
 
-module.exports = { start, stop, getPort, setUpdateHandler, broadcast, app, server }
+module.exports = {
+  start,
+  stop,
+  getPort,
+  setUpdateHandler,
+  setDownloadHandler,
+  setInstallHandler,
+  setUpdateStatusHandler,
+  broadcast,
+  app,
+  server,
+}
 
 /* 直接 `node server/index.js` 时自启动 */
 if (require.main === module) {

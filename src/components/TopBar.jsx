@@ -1,4 +1,79 @@
 import { useStore } from '../store'
+import { fmtBytes } from '../lib/meta'
+
+/**
+ * 更新控件。状态由 Electron 主进程推送（update:status），这里只负责呈现。
+ *
+ * 默认什么都不做；用户点「检查更新」、确实有新版本时，才出现「下载」；
+ * 下载过程显示实时进度；下好之后才出现「安装并重启」。
+ * 不存在静默下载，也不会自动安装。
+ */
+function UpdateControl({ onInstallUpdate }) {
+  const update = useStore((s) => s.update)
+  const checkUpdate = useStore((s) => s.checkUpdate)
+  const downloadUpdate = useStore((s) => s.downloadUpdate)
+  const status = update?.status || 'idle'
+  const percent = Math.min(100, Math.max(0, update?.percent || 0))
+
+  if (status === 'checking') {
+    return (
+      <button className="btn-ghost" disabled>
+        ⟳ 检查中…
+      </button>
+    )
+  }
+
+  if (status === 'downloading') {
+    return (
+      <span
+        className="flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-300"
+        title={`${fmtBytes(update.transferred)} / ${fmtBytes(update.total)} · ${fmtBytes(update.bytesPerSecond)}/s`}
+      >
+        <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
+        ↓ {percent}%
+        <span className="progress-track">
+          <span className="progress-fill" style={{ width: `${percent}%` }} />
+        </span>
+      </span>
+    )
+  }
+
+  if (status === 'downloaded') {
+    return (
+      <button className="btn-success" onClick={onInstallUpdate} title="安装已下载的新版本">
+        ⤓ 安装并重启
+      </button>
+    )
+  }
+
+  if (status === 'installing') {
+    return (
+      <button className="btn-ghost" disabled>
+        正在安装…
+      </button>
+    )
+  }
+
+  if (status === 'available') {
+    return (
+      <button className="btn-primary" onClick={() => downloadUpdate()} title={update.message}>
+        ↓ 下载 v{update.version}
+      </button>
+    )
+  }
+
+  // idle / latest / error / timeout / unsupported 都落在这里
+  return (
+    <button
+      className="btn-ghost"
+      onClick={checkUpdate}
+      disabled={status === 'unsupported'}
+      title={status === 'unsupported' ? update.message : '检查 GitHub Releases 上的新版本'}
+    >
+      {status === 'error' ? '⟳ 重试' : '⟳ 检查更新'}
+    </button>
+  )
+}
 
 function ConnBadge({ conn }) {
   const map = {
@@ -15,8 +90,8 @@ function ConnBadge({ conn }) {
   )
 }
 
-export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp }) {
-  const { conn, system, checkUpdate, tasks, logout } = useStore()
+export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onInstallUpdate }) {
+  const { conn, system, tasks, logout } = useStore()
 
   const running = tasks.filter((t) => t.runState === 'running').length
   const version = system?.version ? `v${system.version}` : ''
@@ -58,9 +133,7 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp }) {
           ⛓ MCP
           {mcpEnabled > 0 && <span className="ml-1 font-mono text-[10px] text-emerald-400">{mcpEnabled}</span>}
         </button>
-        <button className="btn-ghost" onClick={checkUpdate} title="检查 GitHub Releases 上的新版本">
-          ⟳ 检查更新
-        </button>
+        <UpdateControl onInstallUpdate={onInstallUpdate} />
 
         <div className="mx-1 h-5 w-px bg-ink-500" />
 

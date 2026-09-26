@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { ROLE_PRESETS } from '../lib/meta'
+import { ROLE_PRESETS, fmtBytes } from '../lib/meta'
 
 function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
   useEffect(() => {
@@ -487,6 +487,7 @@ export function SettingsModal({ onClose }) {
   const system = useStore((s) => s.system)
   const setPermissionMode = useStore((s) => s.setPermissionMode)
   const setDevecoAutoApprove = useStore((s) => s.setDevecoAutoApprove)
+  const setAutoUpdateWhenIdle = useStore((s) => s.setAutoUpdateWhenIdle)
   const clearAllTasks = useStore((s) => s.clearAllTasks)
   const [busy, setBusy] = useState(false)
 
@@ -558,6 +559,27 @@ export function SettingsModal({ onClose }) {
           </label>
         </div>
 
+        {/* 更新 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-boss"
+              checked={Boolean(system.autoUpdateWhenIdle)}
+              onChange={(e) => setAutoUpdateWhenIdle(e.target.checked)}
+            />
+            <span>
+              <span className="block text-[12px] font-medium text-slate-200">空闲时自动检查并下载更新</span>
+              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                只在<b className="text-slate-400">没有任何任务在执行</b>的时候才会去检查并开始下载，
+                下载进度显示在顶栏。<b className="text-emerald-400">安装始终需要你确认</b>——
+                下载完只会出现「安装并重启」按钮，不会自己装上。
+                <b className="text-slate-400"> 默认关闭</b>：不打开时，只有你点「检查更新」才会去查。
+              </span>
+            </span>
+          </label>
+        </div>
+
         {/* 数据 */}
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-ink-600 pt-3 text-[11px]">
           {[
@@ -598,6 +620,56 @@ export function SettingsModal({ onClose }) {
       <div className="mt-5 flex justify-end">
         <button className="btn-ghost" onClick={onClose}>
           关闭
+        </button>
+      </div>
+    </Shell>
+  )
+}
+
+/**
+ * 安装更新的最后一道确认。这是唯一必须打断用户的地方 ——
+ * 下载全程都不弹窗，只有「装不装」要问一次。
+ */
+export function InstallUpdateModal({ onClose }) {
+  const update = useStore((s) => s.update)
+  const system = useStore((s) => s.system)
+  const installUpdate = useStore((s) => s.installUpdate)
+  const running = useStore((s) => s.tasks.filter((t) => t.runState === 'running').length)
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <Shell
+      title="安装更新"
+      subtitle={`v${system?.version ?? '?'} → v${update?.version ?? '?'}`}
+      onClose={onClose}
+    >
+      <div className="space-y-3 text-[12px]">
+        <p className="leading-relaxed text-slate-400">
+          安装包已下载完成{update?.total ? `（${fmtBytes(update.total)}）` : ''}。点「安装并重启」后
+          应用会退出，安装程序自动完成安装并重新打开，大约需要一分钟。
+        </p>
+
+        {running > 0 && (
+          <p className="rounded-lg border border-rose-600/60 bg-rose-900/30 px-3 py-2 leading-relaxed text-rose-200">
+            当前有 <b>{running}</b> 个任务正在执行，安装会中断它们。建议等任务跑完再来。
+          </p>
+        )}
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button className="btn-ghost" onClick={onClose} disabled={busy}>
+          稍后
+        </button>
+        <button
+          className="btn-success"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            await installUpdate()
+            onClose()
+          }}
+        >
+          安装并重启
         </button>
       </div>
     </Shell>

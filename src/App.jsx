@@ -6,7 +6,7 @@ import TopBar from './components/TopBar'
 import AgentSidebar from './components/AgentSidebar'
 import Board from './components/Board'
 import ChatPanel from './components/ChatPanel'
-import { NewAgentModal, NewTaskModal, SettingsModal, McpModal } from './components/Modals'
+import { NewAgentModal, NewTaskModal, SettingsModal, McpModal, InstallUpdateModal } from './components/Modals'
 import { BootScreen, ShutdownOverlay } from './components/LifecycleFx'
 
 function Toasts() {
@@ -86,6 +86,7 @@ export default function App() {
         onNewTask={() => setModal('task')}
         onSettings={() => setModal('settings')}
         onMcp={() => setModal('mcp')}
+        onInstallUpdate={() => setModal('update')}
       />
       <div className="flex min-h-0 flex-1">
         <AgentSidebar onNewAgent={() => setModal('agent')} />
@@ -97,6 +98,7 @@ export default function App() {
       {modal === 'task' && <NewTaskModal onClose={() => setModal(null)} />}
       {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} />}
       {modal === 'mcp' && <McpModal onClose={() => setModal(null)} />}
+      {modal === 'update' && <InstallUpdateModal onClose={() => setModal(null)} />}
 
       <Toasts />
       <ShutdownOverlay />

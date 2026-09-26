@@ -196,10 +196,13 @@ function displayToolName(raw) {
  * 提示词组装
  * ------------------------------------------------------------------ */
 
-function composePrompt({ systemPrompt, task, extraInstruction, isResume }) {
+function composePrompt({ systemPrompt, task, extraInstruction, isResume, envNote }) {
   const parts = []
   if (systemPrompt && !isResume) {
     parts.push(systemPrompt.trim())
+    // 执行器的本地环境（如 DevEco 工具链绝对路径）。只在首次回合拼，
+    // 续跑时上下文里已经有了。
+    if (envNote) parts.push(`\n${envNote.trim()}`)
     parts.push('\n---\n')
   }
   if (extraInstruction) {
@@ -703,6 +706,7 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     task,
     extraInstruction,
     isResume,
+    envNote: executor === 'deveco' ? executors.devecoEnvNote() : '',
   })
 
   const bin = executorBinary(executor)

@@ -25,6 +25,8 @@ process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath
 
 const serverModule = require('../server/index.js')
 const storeModule = require('../server/store.js')
+// 与 server/index.js 同进程，拿到的是同一个单例，用来判断「有没有任务在跑」
+const runnerModule = require('../server/runner.js')
 
 let mainWindow = null
 let serverPort = null
@@ -32,8 +34,8 @@ let ownsServer = false
 let splashWindow = null
 let splashStartedAt = 0
 
-/** 闪屏最短停留时间，避免启动太快时闪一下就没了，反而像闪屏故障 */
-const SPLASH_MIN_MS = 1400
+/** 闪屏停留时长。启动通常远快于此，所以实际效果就是「启动页显示 5 秒」 */
+const SPLASH_MIN_MS = 5000
 /** 退场动画时长，比渲染进程的动画（LifecycleFx 里 1500ms）多留一点，别把收尾切掉 */
 const EXIT_ANIM_MS = 1650
 
@@ -70,6 +72,58 @@ if (!gotLock) {
 let updater = null
 let updaterError = null
 
+/**
+ * 更新运行时状态。唯一事实来源，经 update:status 广播给界面。
+ * status: idle | checking | latest | available | downloading | downloaded | installing | error
+ */
+let updateRuntime = {
+  supported: Boolean(process.versions.electron),
+  status: 'idle',
+  message: '尚未检查更新',
+}
+
+let downloading = false
+let installingUpdate = false
+/** 检查序号：HTTP 路由与「空闲时自动」都可能发起检查，用它防止结果串台 */
+let checkSeq = 0
+
+/** 进度广播节流：事件本身可能高频，别把 WebSocket 打爆 */
+const PROGRESS_MIN_INTERVAL_MS = 800
+const PROGRESS_MIN_DELTA = 1
+let lastProgressAt = 0
+let lastProgressPercent = -1
+
+function setRuntime(patch, { broadcast = true } = {}) {
+  updateRuntime = { ...updateRuntime, ...patch }
+  if (broadcast && ownsServer) {
+    try {
+      serverModule.broadcast('update:status', updateRuntime)
+    } catch (_) {
+      /* 广播失败不影响主流程 */
+    }
+  }
+  return updateRuntime
+}
+
+function pushProgress(p) {
+  const now = Date.now()
+  const percent = Math.round(p.percent * 10) / 10
+  // 既不太频繁、进度也没实质变化，就丢掉这一帧
+  if (now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS && Math.abs(percent - lastProgressPercent) < PROGRESS_MIN_DELTA) {
+    return
+  }
+  lastProgressAt = now
+  lastProgressPercent = percent
+  setRuntime({
+    status: 'downloading',
+    percent,
+    transferred: p.transferred,
+    total: p.total,
+    bytesPerSecond: p.bytesPerSecond,
+    message: `正在下载 ${percent.toFixed(1)}%`,
+  })
+}
+
 function initUpdater() {
   try {
     // electron-updater 只在打包后可 require（它依赖 app-update.yml）
@@ -79,28 +133,30 @@ function initUpdater() {
     return null
   }
 
-  updater.autoDownload = true
+  // 两条自动行为都必须关掉：
+  //   autoDownload          —— 否则检查到新版本就静默下载，界面上什么也看不见
+  //   autoInstallOnAppQuit  —— 它默认 true，下载完成后只要正常退出就会自动装上，
+  //                            而我们的要求是「安装必须经用户确认」
+  updater.autoDownload = false
+  updater.autoInstallOnAppQuit = false
 
-  updater.on('update-downloaded', async (info) => {
-    if (ownsServer) {
-      serverModule.broadcast('update:status', { status: 'downloaded', message: `新版本 ${info.version} 已下载` })
-    }
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      buttons: ['立即重启', '稍后'],
-      defaultId: 0,
-      cancelId: 1,
-      title: '更新已就绪',
-      message: `新版本 ${info.version} 已下载完成`,
-      detail: '重启应用即可完成安装。',
+  updater.on('download-progress', pushProgress)
+
+  updater.on('update-downloaded', (info) => {
+    downloading = false
+    lastProgressPercent = -1
+    setRuntime({
+      status: 'downloaded',
+      version: info?.version,
+      percent: 100,
+      message: `新版本 ${info?.version} 已下载，等待你确认安装`,
     })
-    if (response === 0) {
-      setImmediate(() => updater.quitAndInstall())
-    }
   })
 
   updater.on('error', (err) => {
+    downloading = false
     console.error('[updater] 出错:', err.message)
+    setRuntime({ status: 'error', message: `更新出错：${err.message}` })
   })
 
   return updater
@@ -127,6 +183,10 @@ function checkForUpdates() {
       })
     }
 
+    // 串台守卫：先发起的检查若晚于后发起的返回（例如 30s 超时兜底），
+    // 不应把后一次的结果改写成 timeout
+    const seq = ++checkSeq
+
     let settled = false
     const cleanup = () => {
       updater.removeListener('update-available', onAvailable)
@@ -137,6 +197,11 @@ function checkForUpdates() {
       if (settled) return
       settled = true
       cleanup()
+      // 只有自己仍是最新一次检查时才写共享状态，否则只把结果回给调用方
+      if (seq === checkSeq) {
+        // 让界面立刻跟上（按钮从「检查中」变成「下载」/「已是最新」）
+        setRuntime(data)
+      }
       resolve(data)
     }
 
@@ -145,7 +210,7 @@ function checkForUpdates() {
         supported: true,
         status: 'available',
         version: info?.version,
-        message: `发现新版本 ${info?.version}，正在后台下载…`,
+        message: `发现新版本 ${info?.version}，点击「下载」开始`,
       })
     const onNotAvailable = (info) =>
       finish({
@@ -161,9 +226,166 @@ function checkForUpdates() {
     updater.once('update-not-available', onNotAvailable)
     updater.once('error', onError)
 
+    setRuntime({ status: 'checking', message: '正在检查更新…' })
     Promise.resolve(updater.checkForUpdates()).catch(onError)
     setTimeout(() => finish({ supported: true, status: 'timeout', message: '检查更新超时，请稍后重试。' }), 30000)
   })
+}
+
+const UPDATER_UNAVAILABLE = {
+  supported: false,
+  status: 'unsupported',
+  message: `自动更新组件不可用：${updaterError || '开发模式（未打包）'}。`,
+}
+
+/**
+ * 供 /api/update/download 调用。
+ * autoDownload 关掉之后，只有用户点了「下载」才会走到这里。
+ */
+async function startDownload() {
+  if (!app.isPackaged || !updater) return { ...UPDATER_UNAVAILABLE }
+
+  // 已在下载 / 已下好 / 正在安装 —— 不重复触发，把现状回给界面。
+  // 注意 downloadUpdate() 在 finally 里会把内部 promise 置空，库自己挡不住
+  // 第二次调用（会真的重新下一遍），所以这道闸必须由我们来把。
+  if (downloading || installingUpdate || updateRuntime.status === 'downloaded') {
+    return { ...updateRuntime }
+  }
+
+  // electron-updater 的 downloadUpdate() 在「还没 check 过」时会直接 reject
+  // （"Please check update first"），所以先补一次检查再决定要不要下。
+  if (updateRuntime.status !== 'available') {
+    const checked = await checkForUpdates()
+    if (checked.status !== 'available') return checked
+  }
+
+  downloading = true
+  lastProgressAt = 0
+  lastProgressPercent = -1
+  setRuntime({
+    status: 'downloading',
+    percent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+    message: '正在下载更新…',
+  })
+
+  try {
+    await updater.downloadUpdate()
+    // 正常结束时 update-downloaded 事件已把状态改成 downloaded
+  } catch (err) {
+    // 下载失败 / 被取消都会 reject，不能让界面卡在「下载中」
+    downloading = false
+    setRuntime({ status: 'error', message: `下载失败：${err.message}` })
+  }
+  return { ...updateRuntime }
+}
+
+function getUpdateStatus() {
+  return updateRuntime
+}
+
+/**
+ * 供 /api/update/install 调用：用户点「安装并重启」并确认后才走到这里。
+ *
+ * 这里不直接调 quitAndInstall()，而是把 intent 记下来、走既有的退出状态机
+ * （requestQuit → 退场动画 → 停后端 → before-quit 的 finalizing 阶段才拉起安装器）。
+ * 这样「先停服务、再装」的顺序与普通退出完全一致，不会出现后端还占着文件时
+ * 安装器就要覆盖的情况。
+ */
+function installUpdate() {
+  if (!app.isPackaged || !updater) return { ...UPDATER_UNAVAILABLE }
+  if (installingUpdate) return { ...updateRuntime }
+  if (updateRuntime.status !== 'downloaded') {
+    return { ...updateRuntime, message: '还没有已下载的更新可以安装。' }
+  }
+  // 已经在退出途中就别再插一脚，否则界面会显示「正在安装」而实际只是普通退出
+  if (closeState !== 'running') {
+    return { ...updateRuntime, message: '应用正在退出，未开始安装。' }
+  }
+  // 安装包可能已被清理（杀软、磁盘清理）。提前挡住，否则 quitAndInstall() 会
+  // 静默失败，用户以为装上了其实没有。
+  if (!updater.installerPath) {
+    return setRuntime({ status: 'error', message: '安装包已不存在，请重新下载。' })
+  }
+
+  installingUpdate = true
+  installRequested = true
+  setRuntime({ status: 'installing', message: '正在退出并安装…' })
+  requestQuit()
+  return { ...updateRuntime }
+}
+
+/* ------------------------------------------------------------------ *
+ * 空闲时自动检查并下载（默认关闭，设置里开启）
+ *
+ * 「空闲」取业务语义：没有任务在执行。定时器放主进程而不是渲染进程 ——
+ * 窗口最小化或不可见时渲染进程的定时器会被节流，主进程不会。
+ * 注意：即便自动下载，装不装仍然要用户点确认。
+ * ------------------------------------------------------------------ */
+
+/** 判定节拍：只做轻量判断，几乎零成本 */
+const AUTO_TICK_MS = 60 * 1000
+/** 真正打 GitHub 的最小间隔：2 次/小时，远低于未认证 API 的 60 次/小时配额 */
+const AUTO_MIN_INTERVAL_MS = 30 * 60 * 1000
+/** 启动后先让应用喘口气，别和启动期抢资源 */
+const AUTO_BOOT_DELAY_MS = 90 * 1000
+
+let autoTimer = null
+let lastAutoCheckAt = 0
+
+/**
+ * 「空闲」= 没有任务在执行。
+ *
+ * runningTaskIds() 只覆盖「进程已经拉起来」的任务；而 runState 在 runner.execute
+ * 之前就已经写成 running，两者都看才盖得住「已派单但进程还没起来」的空窗。
+ */
+function isBusinessIdle() {
+  try {
+    if ((runnerModule.runningTaskIds() || []).length > 0) return false
+    return !(storeModule.listTasks() || []).some(
+      (t) => t.runState === 'running' || t.runState === 'queued',
+    )
+  } catch (_) {
+    // 读不出状态（例如 CHAOS_EXTERNAL_SERVER=1 时主进程没初始化过 db）
+    // → 按「忙」处理，宁可不自动也不误判
+    return false
+  }
+}
+
+function autoUpdateEnabled() {
+  try {
+    return storeModule.getSetting('autoUpdateWhenIdle', '0') === '1'
+  } catch (_) {
+    return false
+  }
+}
+
+async function maybeAutoUpdateWhenIdle() {
+  if (!app.isPackaged || !updater) return
+  if (!autoUpdateEnabled()) return
+  // 已经在下载 / 下好待装 / 安装中，都别插手
+  if (['downloading', 'downloaded', 'installing'].includes(updateRuntime.status)) return
+  if (Date.now() - lastAutoCheckAt < AUTO_MIN_INTERVAL_MS) return
+  if (!isBusinessIdle()) return
+
+  lastAutoCheckAt = Date.now()
+  const res = await checkForUpdates()
+  // 检查期间可能刚有任务起来 —— 再确认一次。
+  // 但一旦开始下载就不再打断：下到一半停下比下完更糟。
+  if (res && res.status === 'available' && autoUpdateEnabled() && isBusinessIdle()) {
+    await startDownload()
+  }
+}
+
+function scheduleIdleAutoUpdate() {
+  if (!app.isPackaged || !updater || autoTimer) return
+  // 预置 lastAutoCheckAt，使第一次真正可查落在启动后约 AUTO_BOOT_DELAY_MS
+  lastAutoCheckAt = Date.now() + AUTO_BOOT_DELAY_MS - AUTO_MIN_INTERVAL_MS
+  autoTimer = setInterval(() => {
+    maybeAutoUpdateWhenIdle().catch(() => {})
+  }, AUTO_TICK_MS)
 }
 
 /* ------------------------------------------------------------------ *
@@ -300,76 +522,9 @@ async function resolveTarget() {
 }
 
 function buildMenu() {
-  const template = [
-    {
-      label: '文件',
-      submenu: [
-        {
-          label: '新建任务',
-          accelerator: 'CmdOrCtrl+N',
-          click: () => mainWindow?.webContents.send('menu:new-task'),
-        },
-        { type: 'separator' },
-        { label: '退出', role: 'quit' },
-      ],
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { label: '撤销', role: 'undo' },
-        { label: '重做', role: 'redo' },
-        { type: 'separator' },
-        { label: '剪切', role: 'cut' },
-        { label: '复制', role: 'copy' },
-        { label: '粘贴', role: 'paste' },
-        { label: '全选', role: 'selectAll' },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { label: '重新加载', role: 'reload' },
-        { label: '强制重载', role: 'forceReload' },
-        { label: '开发者工具', role: 'toggleDevTools' },
-        { type: 'separator' },
-        { label: '实际大小', role: 'resetZoom' },
-        { label: '放大', role: 'zoomIn' },
-        { label: '缩小', role: 'zoomOut' },
-        { type: 'separator' },
-        { label: '全屏', role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: '帮助',
-      submenu: [
-        {
-          label: '打开数据目录',
-          click: () => shell.openPath(process.env.CHAOS_DATA_DIR),
-        },
-        {
-          label: '检查更新',
-          click: () => mainWindow?.webContents.send('menu:check-update'),
-        },
-        { type: 'separator' },
-        {
-          label: `关于 AI Agent开发控制台 v${app.getVersion()}`,
-          click: () =>
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: '关于',
-              message: 'AI Agent开发控制台 (ChaosConsole)',
-              detail:
-                `版本 v${app.getVersion()}\n` +
-                `Electron ${process.versions.electron}\n` +
-                `Node ${process.versions.node}\n\n` +
-                `数据目录：${process.env.CHAOS_DATA_DIR}`,
-              buttons: ['好'],
-            }),
-        },
-      ],
-    },
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  // 界面上所有功能都有对应按钮，菜单栏纯属多余的一条横杠，去掉。
+  // 随之移除的还有它带走的快捷键（Ctrl+N 新建任务等）——工具栏已经覆盖这些入口。
+  Menu.setApplicationMenu(null)
 }
 
 function applyCsp() {
@@ -489,7 +644,11 @@ app.whenReady().then(async () => {
   }
 
   serverModule.setUpdateHandler(checkForUpdates)
+  serverModule.setDownloadHandler(startDownload)
+  serverModule.setInstallHandler(installUpdate)
+  serverModule.setUpdateStatusHandler(getUpdateStatus)
   initUpdater()
+  scheduleIdleAutoUpdate()
   applyCsp()
   buildMenu()
   pushBootStep('装载工作台界面', 88)
@@ -514,6 +673,8 @@ app.on('window-all-closed', () => {
 
 let closeState = 'running'
 let finalized = false
+/** 用户已确认安装更新：退出收尾时不走 app.exit(0)，而是拉起安装器 */
+let installRequested = false
 
 /** 请求退出：广播退场动画，等它播完再交给 before-quit 收尾 */
 function requestQuit() {
@@ -573,6 +734,22 @@ app.on('before-quit', (event) => {
         console.error('[electron] 关闭后端出错:', err.message)
       }
     }
+
+    if (installRequested && updater) {
+      // 走到这里：退场动画已播完、后端已停、WS 已断。quitAndInstall() 内部会
+      // 先同步 spawn 安装器（detached + unref），再 setImmediate(app.quit())。
+      // 此刻 finalized 已为 true，上面的 before-quit 分支会直接放行，
+      // 不会被二次 preventDefault 卡住。
+      try {
+        updater.quitAndInstall(false, true)
+      } catch (err) {
+        console.error('[updater] 拉起安装器失败:', err.message)
+      }
+      // 兜底：安装器没能把应用带走（被杀软拦截、提权失败）时也要退得掉
+      setTimeout(() => app.exit(0), 1500)
+      return
+    }
+
     app.exit(0)
   })()
 })

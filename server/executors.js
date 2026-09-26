@@ -81,6 +81,82 @@ function devecoAvailable() {
   return Boolean(resolveDevecoBin())
 }
 
+/* ------------------------------------------------------------------ *
+ * DevEco Studio 工具链
+ *
+ * 装了 DevEco Studio 的机器上，hvigorw / hdc / ohpm 都在安装目录里，但 Studio
+ * 默认不把它们加进 PATH。结果是 Agent 明明可以构建、可以连设备，却因为敲不到
+ * 命令而干不成事。这里统一探一遍，结果会写进 DevEco Agent 的提示词。
+ * ------------------------------------------------------------------ */
+
+const DEVECO_TOOLS_TTL_MS = 5 * 60 * 1000
+let devecoToolsCache = null
+let devecoToolsAt = 0
+
+const DEVECO_STUDIO_CANDIDATES = [
+  process.env.CHAOS_DEVECO_STUDIO,
+  'D:\\DevEco Studio',
+  'C:\\Program Files\\Huawei\\DevEco Studio',
+  path.join(os.homedir(), 'DevEco Studio'),
+].filter(Boolean)
+
+function isFile(p) {
+  try {
+    return Boolean(p) && fs.existsSync(p) && fs.statSync(p).isFile()
+  } catch (_) {
+    return false
+  }
+}
+
+function resolveDevecoTools() {
+  if (devecoToolsCache && Date.now() - devecoToolsAt < DEVECO_TOOLS_TTL_MS) return devecoToolsCache
+
+  const isWin = process.platform === 'win32'
+  const out = { found: false, studio: '', studioExe: '', hvigorw: '', hdc: '', ohpm: '', sdk: '' }
+  const firstFile = (...cands) => cands.find((p) => isFile(p)) || ''
+
+  for (const root of DEVECO_STUDIO_CANDIDATES) {
+    if (!root || !fs.existsSync(root)) continue
+    out.studio = root
+    out.studioExe = firstFile(
+      path.join(root, 'bin', isWin ? 'devecostudio64.exe' : 'devecostudio'),
+      path.join(root, 'bin', 'devecostudio.bat'),
+    )
+    out.hvigorw = firstFile(
+      path.join(root, 'tools', 'hvigor', 'bin', isWin ? 'hvigorw.bat' : 'hvigorw'),
+      path.join(root, 'tools', 'hvigor', 'bin', 'hvigorw'),
+    )
+    out.ohpm = firstFile(path.join(root, 'tools', 'ohpm', 'bin', isWin ? 'ohpm.bat' : 'ohpm'))
+    out.hdc = firstFile(
+      path.join(root, 'sdk', 'default', 'openharmony', 'toolchains', isWin ? 'hdc.exe' : 'hdc'),
+    )
+    const sdkDir = path.join(root, 'sdk')
+    if (fs.existsSync(sdkDir)) out.sdk = sdkDir
+    out.found = true
+    break
+  }
+
+  devecoToolsCache = out
+  devecoToolsAt = Date.now()
+  return out
+}
+
+/**
+ * 给 DevEco Agent 的环境说明。拼进提示词，免得每个回合都浪费一轮去找命令。
+ * 没探到 Studio 时返回空串，让 Agent 按自己的判断来。
+ */
+function devecoEnvNote() {
+  const t = resolveDevecoTools()
+  if (!t.found) return ''
+  const lines = ['## 本机 DevEco 工具链', 'DevEco Studio 没有把这些命令加进 PATH，用绝对路径调用：']
+  if (t.hvigorw) lines.push(`- 构建：\`"${t.hvigorw}" assembleHap --mode module -p product=default\`（在工程根目录执行）`)
+  if (t.ohpm) lines.push(`- 依赖：\`"${t.ohpm}" install\``)
+  if (t.hdc) lines.push(`- 设备：\`"${t.hdc}" list targets\`、\`"${t.hdc}" install <hap 路径>\`、\`"${t.hdc}" hilog\``)
+  if (t.studioExe) lines.push(`- 打开 IDE：\`"${t.studioExe}" <工程目录>\``)
+  if (t.sdk) lines.push(`- SDK：${t.sdk}`)
+  return lines.join('\n')
+}
+
 /** 直接从缓存取，不会阻塞（缓存为空就先返回空数组，后台会补上） */
 function listDevecoModels() {
   return devecoModelsCache || []
@@ -251,6 +327,8 @@ module.exports = {
   isValidModel,
   resolveDevecoBin,
   devecoAvailable,
+  resolveDevecoTools,
+  devecoEnvNote,
   listDevecoModels,
   refreshDevecoModels,
   warmup,

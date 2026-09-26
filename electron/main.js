@@ -15,6 +15,9 @@
 
 const path = require('path')
 const net = require('net')
+const fs = require('fs')
+const os = require('os')
+const { spawn } = require('child_process')
 const { app, BrowserWindow, Menu, shell, dialog, session } = require('electron')
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
@@ -286,6 +289,181 @@ function getUpdateStatus() {
   return updateRuntime
 }
 
+/* ------------------------------------------------------------------ *
+ * 版本回退
+ *
+ * electron-updater 只会「升到最新」，没有「装回指定版本」这种能力 —— 它的
+ * 整个模型就是拿当前版本和 feed 里的最新版比较。所以回退这条路自己实现：
+ * 直接查 GitHub Releases，挑出目标版本的安装包，下下来，然后拉起它。
+ * ------------------------------------------------------------------ */
+
+/** 回退时下载好的安装包。非空时安装走它，而不是走 electron-updater。 */
+let pendingInstallerPath = ''
+let pendingInstallerVersion = ''
+
+const GITHUB_API = 'https://api.github.com'
+
+/** 从 app-update.yml 读出发布源。打包后它就在 resources 下。 */
+function readFeedConfig() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'app-update.yml'),
+    path.join(__dirname, '..', 'dev-app-update.yml'),
+  ]
+  for (const p of candidates) {
+    try {
+      const txt = fs.readFileSync(p, 'utf8')
+      const pick = (k) => {
+        const m = txt.match(new RegExp(`^${k}:\\s*(.+)$`, 'm'))
+        return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : ''
+      }
+      const owner = pick('owner')
+      const repo = pick('repo')
+      if (owner && repo) return { owner, repo }
+    } catch (_) {
+      /* 换下一个 */
+    }
+  }
+  return { owner: '', repo: '' }
+}
+
+function ghHeaders() {
+  return {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'ChaosConsole-Updater',
+  }
+}
+
+/** 列出仓库的 Release，供设置里的「版本回退」选择。 */
+async function listReleases() {
+  const { owner, repo } = readFeedConfig()
+  if (!owner || !repo) {
+    return { supported: false, error: '读不到发布源配置（app-update.yml），无法列出历史版本。', releases: [] }
+  }
+  try {
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=50`, {
+      headers: ghHeaders(),
+      signal: AbortSignal.timeout(20000),
+    })
+    if (!res.ok) {
+      return { supported: true, error: `GitHub 返回 HTTP ${res.status}`, releases: [] }
+    }
+    const raw = await res.json()
+    const current = `v${app.getVersion()}`
+    const releases = (Array.isArray(raw) ? raw : [])
+      .filter((r) => !r.draft)
+      .map((r) => {
+        const exe = (r.assets || []).find((a) => /\.exe$/i.test(a.name) && !/blockmap/i.test(a.name))
+        return {
+          tag: r.tag_name,
+          name: r.name || r.tag_name,
+          publishedAt: r.published_at,
+          prerelease: Boolean(r.prerelease),
+          current: r.tag_name === current || r.tag_name === app.getVersion(),
+          size: exe ? exe.size : 0,
+          assetName: exe ? exe.name : '',
+          downloadUrl: exe ? exe.browser_download_url : '',
+        }
+      })
+      .filter((r) => r.downloadUrl)
+    return { supported: true, current, releases }
+  } catch (err) {
+    return { supported: true, error: `列出历史版本失败：${err.message}`, releases: [] }
+  }
+}
+
+/**
+ * 下载指定版本的安装包。进度复用 update:status 广播，界面不用再写一套。
+ * 下载完把状态置为 downloaded 并带上 rollbackTo，前端据此把按钮变成「安装并重启」。
+ */
+async function downloadReleaseByTag(tag) {
+  const list = await listReleases()
+  const target = (list.releases || []).find((r) => r.tag === tag)
+  if (!target) {
+    return setRuntime({ status: 'error', message: `找不到版本 ${tag} 的安装包。` })
+  }
+  if (downloading || installingUpdate) {
+    return { ...updateRuntime }
+  }
+
+  downloading = true
+  lastProgressAt = 0
+  lastProgressPercent = -1
+  setRuntime({
+    status: 'downloading',
+    rollbackTo: tag,
+    version: tag,
+    percent: 0,
+    transferred: 0,
+    total: target.size || 0,
+    bytesPerSecond: 0,
+    message: `正在下载 ${tag}…`,
+  })
+
+  const outPath = path.join(os.tmpdir(), `chaos-rollback-${tag.replace(/[^\w.-]/g, '_')}.exe`)
+  try {
+    const res = await fetch(target.downloadUrl, {
+      headers: { 'User-Agent': 'ChaosConsole-Updater' },
+      signal: AbortSignal.timeout(30 * 60 * 1000),
+      redirect: 'follow',
+    })
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+
+    const total = Number(res.headers.get('content-length')) || target.size || 0
+    const chunks = []
+    let received = 0
+    let markAt = Date.now()
+    let markBytes = 0
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      received += value.length
+      const now = Date.now()
+      if (now - markAt >= 900) {
+        const bps = Math.round(((received - markBytes) * 1000) / (now - markAt))
+        markAt = now
+        markBytes = received
+        const percent = total ? Math.round((received * 1000) / total) / 10 : 0
+        if (Math.abs(percent - lastProgressPercent) >= 1 || percent >= 100) {
+          lastProgressPercent = percent
+          setRuntime({
+            status: 'downloading',
+            rollbackTo: tag,
+            percent,
+            transferred: received,
+            total,
+            bytesPerSecond: bps,
+            message: `正在下载 ${tag} ${percent.toFixed(1)}%`,
+          })
+        }
+      }
+    }
+    fs.writeFileSync(outPath, Buffer.concat(chunks.map((c) => Buffer.from(c))))
+    pendingInstallerPath = outPath
+    pendingInstallerVersion = tag
+    downloading = false
+    setRuntime({
+      status: 'downloaded',
+      rollbackTo: tag,
+      version: tag,
+      percent: 100,
+      transferred: received,
+      total,
+      message: `${tag} 已下载（版本回退），点「安装并重启」生效`,
+    })
+  } catch (err) {
+    downloading = false
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath)
+    } catch (_) {
+      /* ignore */
+    }
+    setRuntime({ status: 'error', message: `下载 ${tag} 失败：${err.message}` })
+  }
+  return { ...updateRuntime }
+}
+
 /**
  * 供 /api/update/install 调用：用户点「安装并重启」并确认后才走到这里。
  *
@@ -304,15 +482,24 @@ function installUpdate() {
   if (closeState !== 'running') {
     return { ...updateRuntime, message: '应用正在退出，未开始安装。' }
   }
-  // 安装包可能已被清理（杀软、磁盘清理）。提前挡住，否则 quitAndInstall() 会
-  // 静默失败，用户以为装上了其实没有。
-  if (!updater.installerPath) {
+  // 版本回退走自己下载的安装包，此时不校验 electron-updater 的状态
+  if (pendingInstallerPath) {
+    if (!fs.existsSync(pendingInstallerPath)) {
+      pendingInstallerPath = ''
+      return setRuntime({ status: 'error', message: '回退安装包已被清理，请重新下载。' })
+    }
+  } else if (!updater.installerPath) {
+    // 安装包可能已被清理（杀软、磁盘清理）。提前挡住，否则 quitAndInstall() 会
+    // 静默失败，用户以为装上了其实没有。
     return setRuntime({ status: 'error', message: '安装包已不存在，请重新下载。' })
   }
 
   installingUpdate = true
   installRequested = true
-  setRuntime({ status: 'installing', message: '正在退出并安装…' })
+  setRuntime({
+    status: 'installing',
+    message: pendingInstallerVersion ? `正在退出并安装 ${pendingInstallerVersion}…` : '正在退出并安装…',
+  })
   requestQuit()
   return { ...updateRuntime }
 }
@@ -647,6 +834,8 @@ app.whenReady().then(async () => {
   serverModule.setDownloadHandler(startDownload)
   serverModule.setInstallHandler(installUpdate)
   serverModule.setUpdateStatusHandler(getUpdateStatus)
+  serverModule.setReleasesHandler(listReleases)
+  serverModule.setRollbackHandler(downloadReleaseByTag)
   initUpdater()
   scheduleIdleAutoUpdate()
   applyCsp()
@@ -735,13 +924,18 @@ app.on('before-quit', (event) => {
       }
     }
 
-    if (installRequested && updater) {
-      // 走到这里：退场动画已播完、后端已停、WS 已断。quitAndInstall() 内部会
-      // 先同步 spawn 安装器（detached + unref），再 setImmediate(app.quit())。
-      // 此刻 finalized 已为 true，上面的 before-quit 分支会直接放行，
-      // 不会被二次 preventDefault 卡住。
+    if (installRequested) {
+      // 走到这里：退场动画已播完、后端已停、WS 已断。
       try {
-        updater.quitAndInstall(false, true)
+        if (pendingInstallerPath) {
+          // 版本回退：直接拉起我们自己下好的安装包，不经过 electron-updater
+          spawn(pendingInstallerPath, [], { detached: true, stdio: 'ignore' }).unref()
+        } else if (updater) {
+          // 正常升级：quitAndInstall() 内部会先同步 spawn 安装器（detached + unref），
+          // 再 setImmediate(app.quit())。此刻 finalized 已为 true，
+          // 上面的 before-quit 分支会直接放行，不会被二次 preventDefault 卡住。
+          updater.quitAndInstall(false, true)
+        }
       } catch (err) {
         console.error('[updater] 拉起安装器失败:', err.message)
       }

@@ -96,6 +96,15 @@ const CATALOG = [
     argsFor: () => [],
   },
   {
+    // 本地服务器：随应用发布，不经过 npm。用 localEntry 而不是 pkg/entry。
+    id: 'deveco-studio',
+    label: 'DevEco Studio 控制',
+    desc: '操作鸿蒙 IDE：启动/打开工程、截图看界面、跑 hvigorw 构建、用 hdc 装到设备或模拟器',
+    localEntry: path.join(__dirname, 'mcp-servers', 'deveco-studio', 'index.js'),
+    category: 'installable',
+    argsFor: () => [],
+  },
+  {
     id: 'everything',
     label: '官方参考实现',
     desc: 'MCP 官方示例服务器，用于验证客户端连接与工具发现是否正常',
@@ -276,10 +285,15 @@ function nodeLaunchEnv() {
 }
 
 function entryPath(server) {
+  // localEntry：随应用一起发布、存在于仓库里的服务器，不需要 npm install。
+  // 例如 DevEco Studio 控制，它是为本项目写的一次性集成，不可能发到 npm 上。
+  if (server.localEntry) return server.localEntry
   return path.join(MCP_DIR, 'node_modules', ...server.pkg.split('/'), ...server.entry.split('/'))
 }
 
 function isPackageInstalled(server) {
+  // 本地入口没有「安装」这一步，文件在就等于就绪
+  if (server.localEntry) return true
   return fs.existsSync(entryPath(server))
 }
 
@@ -421,8 +435,12 @@ async function installPackages(ids) {
   const pkgFile = path.join(MCP_DIR, 'package.json')
   const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'))
   pkg.dependencies = pkg.dependencies || {}
-  for (const s of servers) pkg.dependencies[s.pkg] = 'latest'
+  // 本地入口的服务器没有 npm 包，不用装
+  const fromNpm = servers.filter((s) => !s.localEntry && s.pkg)
+  for (const s of fromNpm) pkg.dependencies[s.pkg] = 'latest'
   fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 2))
+
+  if (!fromNpm.length) return { ok: true }
 
   const r = await runAsync('npm', ['install', '--no-fund', '--no-audit'], { cwd: MCP_DIR, timeout: 600000 })
   if (r.status !== 0) {

@@ -136,3 +136,6 @@ dist
 .pnp.*
 release/
 dist/
+# Python 字节码缓存（deveco-studio.py 被 import 时会产生）
+__pycache__/
+*.pyc

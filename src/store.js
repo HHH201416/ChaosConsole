@@ -444,6 +444,32 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /** 拉取历史版本列表（设置里的「版本回退」用） */
+  async loadReleases() {
+    try {
+      const res = await api.releases()
+      return res.data || { supported: false, releases: [] }
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return { supported: false, releases: [], error: err.message }
+    }
+  },
+
+  /** 回退到指定版本：下载该版本的安装包，下好后仍要用户点「安装并重启」 */
+  async rollbackTo(tag) {
+    try {
+      const res = await api.rollback(tag)
+      const d = res.data || {}
+      set({ update: { ...get().update, ...d } })
+      if (d.status === 'error') get().toast(d.message || '回退失败', 'error')
+      else get().toast(`正在下载 ${tag}，下载完点顶栏「安装并重启」生效`, 'info')
+      return d
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return null
+    }
+  },
+
   async setAutoUpdateWhenIdle(enabled) {
     try {
       await api.setSettings({ autoUpdateWhenIdle: enabled })

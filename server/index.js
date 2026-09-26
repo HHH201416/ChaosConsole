@@ -352,6 +352,17 @@ function setUpdateStatusHandler(fn) {
   updateStatusHandler = fn
 }
 
+/* 版本回退：列历史版本、按 tag 下载并安装。都由主进程实现（它才有网络与安装能力） */
+let releasesHandler = null
+function setReleasesHandler(fn) {
+  releasesHandler = fn
+}
+
+let rollbackHandler = null
+function setRollbackHandler(fn) {
+  rollbackHandler = fn
+}
+
 const UPDATER_UNAVAILABLE = {
   supported: false,
   status: 'unsupported',
@@ -413,6 +424,35 @@ app.post(
   requireAuth,
   makeUpdateActionRoute(() => installHandler),
 )
+
+/* 历史版本列表，供设置里的「版本回退」选择 */
+app.get('/api/update/releases', requireAuth, async (_req, res) => {
+  if (!releasesHandler) {
+    return res.json({ ok: true, data: { supported: false, error: '当前环境不支持列出历史版本。', releases: [] } })
+  }
+  try {
+    res.json({ ok: true, data: await releasesHandler() })
+  } catch (err) {
+    res.json({ ok: false, data: { supported: true, error: err.message, releases: [] } })
+  }
+})
+
+/* 下载并安装指定版本（含降级） */
+app.post('/api/update/rollback', requireAuth, async (req, res) => {
+  if (!rollbackHandler) {
+    return res.json({ ok: true, data: { supported: false, error: '当前环境不支持版本回退。' } })
+  }
+  const tag = String((req.body || {}).tag || '').trim()
+  if (!tag) return res.status(400).json({ ok: false, error: '缺少 tag' })
+  try {
+    const data = await rollbackHandler(tag)
+    updateState = { ...data }
+    res.json({ ok: true, data })
+  } catch (err) {
+    updateState = { supported: true, status: 'error', message: err.message }
+    res.json({ ok: false, data: updateState })
+  }
+})
 
 app.get('/api/update/status', requireAuth, (_req, res) => {
   // 下载进度只存在于主进程，不经过 updateState，所以优先问它要实时状态；
@@ -665,6 +705,8 @@ module.exports = {
   setDownloadHandler,
   setInstallHandler,
   setUpdateStatusHandler,
+  setReleasesHandler,
+  setRollbackHandler,
   broadcast,
   app,
   server,

@@ -488,6 +488,11 @@ export function SettingsModal({ onClose }) {
   const setPermissionMode = useStore((s) => s.setPermissionMode)
   const setDevecoAutoApprove = useStore((s) => s.setDevecoAutoApprove)
   const setAutoUpdateWhenIdle = useStore((s) => s.setAutoUpdateWhenIdle)
+  const loadReleases = useStore((s) => s.loadReleases)
+  const rollbackTo = useStore((s) => s.rollbackTo)
+  const update = useStore((s) => s.update)
+  const [rel, setRel] = useState(null)
+  const [relBusy, setRelBusy] = useState(false)
   const clearAllTasks = useStore((s) => s.clearAllTasks)
   const [busy, setBusy] = useState(false)
 
@@ -578,6 +583,64 @@ export function SettingsModal({ onClose }) {
               </span>
             </span>
           </label>
+        </div>
+
+        {/* 版本回退 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[12px] font-medium text-slate-200">版本回退</span>
+            <button
+              className="btn-ghost"
+              disabled={relBusy}
+              onClick={async () => {
+                setRelBusy(true)
+                setRel(await loadReleases())
+                setRelBusy(false)
+              }}
+            >
+              {relBusy ? '读取中…' : rel ? '刷新' : '加载历史版本'}
+            </button>
+          </div>
+          <p className="mb-2 text-[10.5px] leading-relaxed text-slate-500">
+            列出 GitHub Releases 上的全部版本。选一个会下载它的安装包（进度显示在顶栏），
+            下好后仍需点顶栏「安装并重启」才真正替换 —— 与升级共用同一套确认流程，
+            不会自己装上。
+          </p>
+
+          {rel?.error && <p className="text-[11px] text-rose-300">{rel.error}</p>}
+          {rel && !rel.error && (rel.releases || []).length === 0 && (
+            <p className="text-[11px] text-slate-500">没有可用的版本。</p>
+          )}
+
+          <div className="space-y-1.5">
+            {(rel?.releases || []).map((r) => (
+              <div
+                key={r.tag}
+                className="flex items-center gap-2 rounded border border-ink-600 bg-ink-800 px-2.5 py-1.5"
+              >
+                <span className="font-mono text-[11px] text-slate-300">{r.tag}</span>
+                {r.current && <span className="chip bg-emerald-900/50 text-emerald-300">当前</span>}
+                {r.prerelease && <span className="chip">预发布</span>}
+                <span className="ml-auto text-[10px] text-slate-600">
+                  {r.size ? fmtBytes(r.size) : ''} {r.publishedAt ? r.publishedAt.slice(0, 10) : ''}
+                </span>
+                <button
+                  className="btn-ghost"
+                  disabled={r.current || !r.size}
+                  onClick={() => rollbackTo(r.tag)}
+                  title={r.current ? '当前已是这个版本' : `下载并准备安装 ${r.tag}`}
+                >
+                  {r.current ? '已是此版' : '切换'}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {update?.rollbackTo && update.status === 'downloading' && (
+            <p className="mt-2 text-[11px] text-sky-300">
+              正在下载 {update.rollbackTo}… {update.percent || 0}%
+            </p>
+          )}
         </div>
 
         {/* 数据 */}

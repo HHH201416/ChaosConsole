@@ -95,6 +95,8 @@ export const api = {
   downloadUpdate: () => post('/api/update/download'),
   installUpdate: () => post('/api/update/install'),
   updateStatus: () => get('/api/update/status'),
+  releases: () => get('/api/update/releases'),
+  rollback: (tag) => post('/api/update/rollback', { tag }),
 
   // 执行器与模型
   executors: () => get('/api/executors'),

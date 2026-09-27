@@ -717,7 +717,7 @@ export function SettingsModal({ onClose }) {
           <p className="mb-2 text-[10.5px] leading-relaxed text-slate-500">
             列出 GitHub Releases 上的全部版本。选一个会下载它的安装包（进度显示在顶栏），
             下好后仍需点顶栏「安装并重启」才真正替换 —— 与升级共用同一套确认流程，
-            不会自己装上。
+            不会自己装上；点下去之后会静默安装完并自动重新打开。
           </p>
 
           {rel?.error && <p className="text-[11px] text-rose-300">{rel.error}</p>}
@@ -813,7 +813,9 @@ export function InstallUpdateModal({ onClose }) {
       <div className="space-y-3 text-[12px]">
         <p className="leading-relaxed text-slate-400">
           安装包已下载完成{update?.total ? `（${fmtBytes(update.total)}）` : ''}。点「安装并重启」后
-          应用会退出，安装程序自动完成安装并重新打开，大约需要一分钟。
+          应用会退出并<b className="text-slate-300">静默安装</b>
+          （不会再弹安装向导，屏幕上会安静十几秒），装完<b className="text-slate-300">自动重新打开</b>，
+          不需要你再点任何东西。
         </p>
 
         {running > 0 && (

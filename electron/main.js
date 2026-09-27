@@ -1207,13 +1207,33 @@ app.on('before-quit', (event) => {
       // 走到这里：退场动画已播完、后端已停、WS 已断。
       try {
         if (pendingInstallerPath) {
-          // 版本回退：直接拉起我们自己下好的安装包，不经过 electron-updater
-          spawn(pendingInstallerPath, [], { detached: true, stdio: 'ignore' }).unref()
+          // 版本回退：直接拉起我们自己下好的安装包，不经过 electron-updater。
+          //
+          // 三个参数缺一不可，而且「装完自动把应用拉起来」这件事完全靠它们：
+          //   --updated    告诉安装器这是原地升级：它会据此 taskkill 掉还在跑的旧进程
+          //                （`_CHECK_APP_RUNNING` 里 isUpdated 分支），并跳过若干页面
+          //   /S           静默安装
+          //   --force-run  装完启动应用
+          // electron-builder 的 assisted 安装器里，自动启动的条件是写死的：
+          //     ${if} ${isForceRun} ${andIf} ${Silent} → doStartApp
+          // 少了 /S 就只会弹一个「完成」页，等用户点那个默认勾选的复选框 ——
+          // 用户点了「安装并重启」，结果还得自己再点一次「完成」，这就是之前的毛病。
+          //
+          // 不传 /currentuser 或 /allusers：安装器在页面之前就会读注册表，
+          // 沿用已有安装的范围（assistedInstaller.nsh 的 if/elseif 链）。主动传反而
+          // 危险 —— 传错了会跑到另一个范围又装一份，还可能先把原来那份卸掉。
+          spawn(pendingInstallerPath, ['--updated', '/S', '--force-run'], {
+            detached: true,
+            stdio: 'ignore',
+          }).unref()
         } else if (updater) {
-          // 正常升级：quitAndInstall() 内部会先同步 spawn 安装器（detached + unref），
-          // 再 setImmediate(app.quit())。此刻 finalized 已为 true，
-          // 上面的 before-quit 分支会直接放行，不会被二次 preventDefault 卡住。
-          updater.quitAndInstall(false, true)
+          // 正常升级：交给 electron-updater。第二个参数 isForceRunAfter=true 让它带上
+          // --force-run，第一个参数 isSilent=true 让它带上 /S —— 同样是为了凑齐
+          // 「静默 + 强制启动」这对条件，否则它只会弹安装向导。
+          // 它内部会先同步 spawn 安装器，再 setImmediate(app.quit())；此刻
+          // finalized 已为 true，上面的 before-quit 分支会直接放行，不会被二次
+          // preventDefault 卡住。
+          updater.quitAndInstall(true, true)
         }
       } catch (err) {
         console.error('[updater] 拉起安装器失败:', err.message)

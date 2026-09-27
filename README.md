@@ -44,6 +44,7 @@
 | **模型可换** | 每个岗位可单独指定执行器与模型；对话页底部也能随时切换当前对话用的模型 |
 | **MCP 管理** | 应用内一键启用/停用 MCP 服务器，同时写入 claude 与 deveco 两边的配置 |
 | **真实更新** | 对接 GitHub Releases，`latest.yml` 自动生成并上传 |
+| **下载加速镜像** | 可选：升级与版本回退的安装包走第三方镜像前缀（实测 0.1MB/s → 5MB/s），下载后强制 sha512 校验，不符就丢弃不装 |
 | **首次启动 0 任务** | 不预置任何示例任务，看板干净地从零开始 |
 
 ---
@@ -265,8 +266,8 @@ npm run dist
 
 ```
 release/
-├── ChaosConsole-Setup-3.0.0.exe          ← 安装程序，双击即可安装
-├── ChaosConsole-Setup-3.0.0.exe.blockmap ← 增量更新用的差分信息
+├── ChaosConsole-Setup-3.1.0.exe          ← 安装程序，双击即可安装
+├── ChaosConsole-Setup-3.1.0.exe.blockmap ← 增量更新用的差分信息
 ├── latest.yml                        ← 自动更新的版本清单（关键文件）
 └── win-unpacked/                     ← 免安装的绿色版目录
 ```
@@ -505,6 +506,44 @@ npm run dist      # 只打包，产物在 release/
 
 **开发模式下这个按钮不会真的检查更新**——`app.isPackaged` 为 `false` 时直接返回
 「开发模式不可用」。要验证更新，必须打包安装之后再用。
+
+### 下载太慢怎么办：加速镜像
+
+本机的 hosts 被加速器改过，GitHub 的**发布包域名**（`objects.githubusercontent.com`）
+被指到 `127.0.0.1`，于是所有安装包下载都被强制过本机的加速器代理。实测那条链路只有
+**~0.1MB/s**——87MB 的安装包要十几分钟，看起来像卡死。
+
+绕过它直连真实 IP 更慢（26KB/s）；实测有效的是给地址套一个公共镜像前缀：
+
+| 路由 | 实测速度 | 87MB 需要 |
+|---|---|---|
+| 加速器代理（默认） | ~0.1 MB/s | 约 15 分钟 |
+| 直连真实 IP | 0.026 MB/s | 约 55 分钟 |
+| `ghfast.top` | 0.13 MB/s | 约 11 分钟 |
+| **`gh-proxy.com`** | **5.06 MB/s** | **约 17 秒** |
+
+所以设置里有一个**下载加速镜像**（默认关）。填了之后：
+
+- **升级**：`applyUpdateFeed()` 把 electron-updater 换成 `generic` feed，URL 指向
+  `<镜像>/https://github.com/<owner>/<repo>/releases/latest/download`。选这个路径是因为
+  GitHub 的 `releases/latest/download/<文件名>` 是稳定的，镜像只要会转发 github.com 就行。
+  清空镜像会切回 `app-update.yml` 里的 GitHub provider，行为与以前完全一致。
+- **版本回退**：下载地址套同一个前缀。
+
+**安全**：镜像返回的就是接下来会被执行的安装包，等于把下载交给了第三方。所以
+
+- 校验基准**只从 GitHub API 取**（`fetchReleaseHash()`，不经镜像）——否则等于拿镜像
+  自己的说法证明镜像可信，那道校验就白做了
+- 下载完对 sha512，不符就**删除文件、报错、不装**（实测用一个只会返回垃圾字节的假镜像
+  验证过：报「校验不通过，已丢弃」，磁盘上无残留）
+- 体积对不上也会先被拦（断流、镜像给错文件都表现成这个）
+- 升级那条路由 electron-updater 自己按 `latest.yml` 的 sha512 校验，同样兜得住
+
+拿不到基准的版本（老 Release 没带 `latest.yml`）会跳过校验并**如实提示**
+「这个版本没有 sha512 基准，未能校验完整性」——不会伪装成校验通过。
+
+代码在 `server/download-mirror.js`（纯函数，不依赖 electron，`npm run regress` 直接测）
+和 `electron/main.js` 的 `applyUpdateFeed()` / `fetchReleaseHash()`。
 
 ---
 

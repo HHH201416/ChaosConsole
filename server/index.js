@@ -21,6 +21,7 @@ const { WebSocketServer } = require('ws')
 const CONFIG = require('./config')
 const db = require('./db')
 const store = require('./store')
+const dm = require('./download-mirror')
 const runner = require('./runner')
 const queue = require('./queue')
 const chat = require('./chat')
@@ -107,6 +108,7 @@ app.get('/api/system', requireAuth, (_req, res) => {
       validPermissionModes: CONFIG.VALID_PERMISSION_MODES,
       devecoAutoApprove: store.getSetting('devecoAutoApprove', '0') === '1',
       autoUpdateWhenIdle: store.getSetting('autoUpdateWhenIdle', '0') === '1',
+      downloadMirror: store.getSetting('downloadMirror', ''),
       defaultCwd: CONFIG.DEFAULT_CWD,
       platform: process.platform,
       runningTaskIds: runner.runningTaskIds(),
@@ -117,7 +119,7 @@ app.get('/api/system', requireAuth, (_req, res) => {
 })
 
 app.post('/api/settings', requireAuth, (req, res) => {
-  const { permissionMode, devecoAutoApprove, mcpAllowedDirs, autoUpdateWhenIdle } = req.body || {}
+  const { permissionMode, devecoAutoApprove, mcpAllowedDirs, autoUpdateWhenIdle, downloadMirror } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
       return res.status(400).json({ ok: false, error: '非法的权限模式' })
@@ -134,6 +136,19 @@ app.post('/api/settings', requireAuth, (req, res) => {
   }
   if (Array.isArray(mcpAllowedDirs)) {
     mcp.setAllowedDirs(mcpAllowedDirs)
+  }
+  // 下载加速镜像（默认空 = 直连）。写库前规范化：非法值直接拒绝，不要静默当成
+  // 「关掉」—— 用户明明填了东西却毫无反应，比报错更难查。
+  if (downloadMirror !== undefined) {
+    const raw = String(downloadMirror || '').trim()
+    const norm = dm.normalizeMirror(raw)
+    if (raw && !norm) {
+      return res.status(400).json({
+        ok: false,
+        error: '镜像地址要以 http:// 或 https:// 开头，且带主机名，例如 https://gh-proxy.com',
+      })
+    }
+    store.setSetting('downloadMirror', norm)
   }
   res.json({ ok: true })
 })

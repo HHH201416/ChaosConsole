@@ -17,6 +17,7 @@ const path = require('path')
 const net = require('net')
 const fs = require('fs')
 const os = require('os')
+const dm = require('../server/download-mirror.js')
 const { spawn } = require('child_process')
 const { app, BrowserWindow, Menu, shell, dialog, session, screen, net: electronNet } = require('electron')
 
@@ -74,6 +75,8 @@ if (!gotLock) {
 
 let updater = null
 let updaterError = null
+/** 更新 feed 当前用的是哪套：'github'（app-update.yml）还是 'generic'（走镜像） */
+let appliedFeedKind = 'github'
 
 /**
  * 更新运行时状态。唯一事实来源，经 update:status 广播给界面。
@@ -166,6 +169,40 @@ function initUpdater() {
 }
 
 /**
+ * 按「下载加速镜像」这个设置决定升级走哪个 feed。
+ *
+ * - 配了镜像 → generic provider，URL 指向
+ *   `<镜像>/https://github.com/<owner>/<repo>/releases/latest/download`。
+ *   GitHub 的 `releases/latest/download/<文件名>` 是稳定的（自动指向最新 Release），
+ *   镜像只要会转发 github.com 就能用。校验不用担心：electron-updater 本来就会按
+ *   latest.yml 里的 sha512 校验下载到的安装包。
+ * - 没配（或用户清空了）→ 回到 app-update.yml 里的 GitHub provider，行为与以前一致。
+ *
+ * 只在「开始检查」前调用：feed 变了之后上一次解析出来的 updateInfo 就失效了，
+ * 下载前再调会把刚检查到的结果弄丢（downloadUpdate 会报 "Please check update first"）。
+ */
+function applyUpdateFeed() {
+  if (!updater) return
+  const { owner, repo } = readFeedConfig()
+  if (!owner || !repo) return
+
+  const mirror = getDownloadMirror()
+  if (mirror) {
+    updater.setFeedURL({
+      provider: 'generic',
+      url: `${mirror}/https://github.com/${owner}/${repo}/releases/latest/download`,
+      // 有些镜像不支持多段 Range 请求，关掉更稳；差量下载会因此退回全量，
+      // 但配上镜像之后全量本来就够快，不值得为它冒兼容风险
+      useMultipleRangeRequest: false,
+    })
+    appliedFeedKind = 'generic'
+  } else if (appliedFeedKind === 'generic') {
+    updater.setFeedURL({ provider: 'github', owner, repo, releaseType: 'release' })
+    appliedFeedKind = 'github'
+  }
+}
+
+/**
  * 供 /api/update/check 调用。等待「有更新 / 无更新 / 出错」三者之一，
  * 并加一个超时兜底，避免前端按钮一直转圈。
  */
@@ -230,6 +267,7 @@ function checkForUpdates() {
     updater.once('error', onError)
 
     setRuntime({ status: 'checking', message: '正在检查更新…' })
+    applyUpdateFeed()
     Promise.resolve(updater.checkForUpdates()).catch(onError)
     setTimeout(() => finish({ supported: true, status: 'timeout', message: '检查更新超时，请稍后重试。' }), 30000)
   })
@@ -352,6 +390,44 @@ function ghFetch(url, init) {
   return fetch(url, init)
 }
 
+/**
+ * 当前的下载加速镜像；'' 表示直连。设置改了立刻生效，不需要重启。
+ * 读的是数据库里的设置（主进程能直接访问 store），不是启动时的快照。
+ */
+function getDownloadMirror() {
+  try {
+    return dm.normalizeMirror(storeModule.getSetting('downloadMirror', ''))
+  } catch (_) {
+    return ''
+  }
+}
+
+/**
+ * 取某个 Release 自己 latest.yml 里声明的 sha512。
+ * 刻意走 GitHub API（不经镜像）：校验基准若也来自镜像，就等于用镜像自己的说法
+ * 证明镜像可信，这道校验也就白做了。
+ */
+async function fetchReleaseHash(owner, repo, tag, assetName) {
+  try {
+    const res = await ghFetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`,
+      { headers: ghHeaders(), signal: AbortSignal.timeout(20000) },
+    )
+    if (!res.ok) return null
+    const rel = await res.json()
+    const ymlAsset = (rel.assets || []).find((a) => a.name === 'latest.yml')
+    if (!ymlAsset) return null
+    const res2 = await ghFetch(ymlAsset.browser_download_url, {
+      headers: { 'User-Agent': 'ChaosConsole-Updater' },
+      signal: AbortSignal.timeout(20000),
+    })
+    if (!res2.ok) return null
+    return dm.pickFileHash(dm.parseLatestYml(await res2.text()), assetName)
+  } catch (_) {
+    return null
+  }
+}
+
 /** 列出仓库的 Release，供设置里的「版本回退」选择。 */
 async function listReleases() {
   const { owner, repo } = readFeedConfig()
@@ -407,6 +483,7 @@ async function downloadReleaseByTag(tag) {
     return { ...updateRuntime }
   }
 
+  const mirror = getDownloadMirror()
   downloading = true
   lastProgressAt = 0
   lastProgressPercent = -1
@@ -418,12 +495,16 @@ async function downloadReleaseByTag(tag) {
     transferred: 0,
     total: target.size || 0,
     bytesPerSecond: 0,
-    message: `正在下载 ${tag}…`,
+    message: mirror ? `正在下载 ${tag}（经加速镜像）…` : `正在下载 ${tag}…`,
   })
 
   const outPath = path.join(os.tmpdir(), `chaos-rollback-${tag.replace(/[^\w.-]/g, '_')}.exe`)
+  // 基准从 GitHub API 取（不经镜像），下载才走镜像 —— 否则等于拿镜像自己的说法
+  // 证明镜像可信。取不到基准（老 Release 没带 latest.yml）就跳过校验并如实提示。
+  const { owner: feedOwner, repo: feedRepo } = readFeedConfig()
+  const expected = await fetchReleaseHash(feedOwner, feedRepo, tag, target.assetName)
   try {
-    const res = await ghFetch(target.downloadUrl, {
+    const res = await ghFetch(dm.applyMirror(target.downloadUrl, mirror), {
       headers: { 'User-Agent': 'ChaosConsole-Updater' },
       signal: AbortSignal.timeout(30 * 60 * 1000),
       redirect: 'follow',
@@ -462,6 +543,34 @@ async function downloadReleaseByTag(tag) {
       }
     }
     fs.writeFileSync(outPath, Buffer.concat(chunks.map((c) => Buffer.from(c))))
+
+    // 体积不对就没必要再算 sha512 了（断流、镜像给了个错误文件都会表现成这个）
+    if (total && received !== total) {
+      try { fs.unlinkSync(outPath) } catch (_) {}
+      downloading = false
+      return setRuntime({
+        status: 'error',
+        rollbackTo: '',
+        message: `下载不完整（收到 ${received} 字节，应为 ${total} 字节），已丢弃。请重试。`,
+      })
+    }
+
+    // 完整性：过了镜像就一定对一遍 sha512。校验不过说明镜像给的不是它该给的东西，
+    // 直接丢弃 —— 这个文件接下来是要被执行的，宁可不装。
+    const check = dm.verifyFile(outPath, expected && expected.sha512)
+    if (!check.ok) {
+      try { fs.unlinkSync(outPath) } catch (_) {}
+      downloading = false
+      console.error(`[updater] ${tag} sha512 校验不通过：期望 ${expected.sha512} 实际 ${check.actual}`)
+      return setRuntime({
+        status: 'error',
+        rollbackTo: '',
+        message: mirror
+          ? `下载的文件校验不通过（sha512 不符），已丢弃 —— 可能是加速镜像返回了被改动过的文件。可在设置里换镜像或关掉它重试。`
+          : `下载的文件校验不通过（sha512 不符），已丢弃。请重试。`,
+      })
+    }
+
     pendingInstallerPath = outPath
     pendingInstallerVersion = tag
     downloading = false
@@ -472,7 +581,9 @@ async function downloadReleaseByTag(tag) {
       percent: 100,
       transferred: received,
       total,
-      message: `${tag} 已下载（版本回退），点「安装并重启」生效`,
+      message: check.skipped
+        ? `${tag} 已下载（版本回退），但这个版本没有 sha512 基准，未能校验完整性`
+        : `${tag} 已下载并通过 sha512 校验${mirror ? '（经加速镜像）' : ''}，点「安装并重启」生效`,
     })
   } catch (err) {
     downloading = false

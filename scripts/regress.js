@@ -275,6 +275,83 @@ async function main() {
     for (const a of store.listAgents()) store.updateAgent(a.id, { status: 'idle' })
   }
 
+  /* ---- 11. 下载加速镜像：URL 改写、latest.yml 解析、sha512 校验 ---- */
+  {
+    const dmod = require('../server/download-mirror.js')
+    const ghUrl =
+      'https://github.com/HHH201416/ChaosConsole/releases/download/v1.0.1/ChaosConsole-Setup-1.0.1.exe'
+
+    check(
+      '镜像前缀规范化：去尾斜杠、非法值一律当没配',
+      dmod.normalizeMirror('https://gh-proxy.com/') === 'https://gh-proxy.com' &&
+        dmod.normalizeMirror('  https://ghfast.top  ') === 'https://ghfast.top' &&
+        dmod.normalizeMirror('gh-proxy.com') === '' &&
+        dmod.normalizeMirror('ftp://x.com') === '' &&
+        dmod.normalizeMirror('') === '',
+    )
+
+    check(
+      '只改写 github.com 的地址，其它原样返回',
+      dmod.applyMirror(ghUrl, 'https://gh-proxy.com') === `https://gh-proxy.com/${ghUrl}` &&
+        dmod.applyMirror('https://api.github.com/x', 'https://gh-proxy.com') ===
+          'https://api.github.com/x' &&
+        dmod.applyMirror(ghUrl, '') === ghUrl,
+    )
+
+    const yml = [
+      'version: 3.0.0',
+      'files:',
+      '  - url: ChaosConsole-Setup-3.0.0.exe',
+      '    sha512: AAA=',
+      '    size: 91100997',
+      '    blockMapSize: 93119',
+      "path: 'ChaosConsole-Setup-3.0.0.exe'",
+      'sha512: AAA=',
+      "releaseDate: '2026-09-27T03:53:23.783Z'",
+    ].join('\n')
+    const info = dmod.parseLatestYml(yml)
+    check(
+      '解析 latest.yml（版本 / 文件 / sha512 / size）',
+      info.version === '3.0.0' &&
+        info.files.length === 1 &&
+        info.files[0].url === 'ChaosConsole-Setup-3.0.0.exe' &&
+        info.files[0].sha512 === 'AAA=' &&
+        info.files[0].size === 91100997 &&
+        info.files[0].blockMapSize === 93119 &&
+        info.sha512 === 'AAA=',
+      `${info.version} / ${info.files.length} 项`,
+    )
+
+    check(
+      '按文件名取 sha512：命中就取；只有一个文件时退回它；没有基准返回 null',
+      dmod.pickFileHash(info, 'ChaosConsole-Setup-3.0.0.exe')?.sha512 === 'AAA=' &&
+        dmod.pickFileHash(info, 'ChaosConsole-Setup-9.9.9.exe')?.sha512 === 'AAA=' &&
+        dmod.pickFileHash({ files: [], sha512: '' }, 'x.exe') === null,
+    )
+
+    const probe = path.join(DATA_DIR, 'sha-probe.bin')
+    fs.writeFileSync(probe, 'chaos-mirror-probe')
+    const good = dmod.sha512Of(probe)
+    check(
+      'sha512 校验：对得上通过、对不上拒绝、没基准标记为「跳过」而不是「通过」',
+      dmod.verifyFile(probe, good).ok === true &&
+        dmod.verifyFile(probe, 'WRONG=').ok === false &&
+        dmod.verifyFile(probe, '').ok === true &&
+        dmod.verifyFile(probe, '').skipped === true,
+    )
+
+    // 非法镜像必须在写库前被挡住：不能静默存成空值让用户以为设上了
+    const bad = await api('POST', '/api/settings', { downloadMirror: 'gh-proxy.com' })
+    const goodSet = await api('POST', '/api/settings', { downloadMirror: 'https://gh-proxy.com/' })
+    const sys = (await api('GET', '/api/system')).body.data
+    check(
+      '非法镜像被拒（400），合法镜像存的是规范化后的值',
+      bad.status === 400 && goodSet.status === 200 && sys.downloadMirror === 'https://gh-proxy.com',
+      `非法 HTTP ${bad.status}，存下来的是「${sys.downloadMirror}」`,
+    )
+    await api('POST', '/api/settings', { downloadMirror: '' })
+  }
+
   await server.stop()
 
   const passed = results.filter((r) => r.ok).length

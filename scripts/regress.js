@@ -46,6 +46,20 @@ async function api(method, p, body) {
 
 const MOCK_TURN_MS = 9000 // 模拟回合总时长约 7.8s，留点余量
 
+/**
+ * 轮询等条件成立。自动换岗/退避这些用例的时序是「失败 → 退避 → 重跑」，
+ * 总时长随重试次数变，靠固定 sleep 会变成 flaky 测试。
+ */
+async function waitUntil(fn, timeoutMs = 60000, step = 400) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const v = await fn()
+    if (v) return v
+    if (Date.now() > deadline) return null
+    await sleep(step)
+  }
+}
+
 async function main() {
   fs.rmSync(DATA_DIR, { recursive: true, force: true })
   await server.start()
@@ -361,6 +375,385 @@ async function main() {
     await api('POST', '/api/settings', { downloadMirror: '' })
     const off = (await api('GET', '/api/system')).body.data
     check('显式写空 = 关掉（不会又退回默认值）', off.downloadMirror === '', `当前「${off.downloadMirror}」`)
+  }
+
+  /* ---- 12. 「取消」的落地契约：换岗/自动重试这些新路径不许改变它 ----
+   *
+   * 注意：模拟执行器里取消走的是内存标记，所以这一例在修复前后**都**会通过 ——
+   * 它钉的是契约，不是那个 Windows 上的落地 bug。真机上取消走 `taskkill /T /F`，
+   * close 回来是 code=1/signal=null，修复前会被判成「退出码 1 的失败」落进
+   * needs_input/error；修复后由 runner 的 stopIntent 决定落地，不再依赖信号。 */
+  {
+    const t = (await api('POST', '/api/tasks', { title: '回归-取消落地', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(500)
+    await api('POST', `/api/tasks/${t.id}/cancel`)
+    await sleep(MOCK_TURN_MS)
+    const after = (await api('GET', `/api/tasks/${t.id}`)).body.data.task
+    check(
+      '「取消」落成 待处理/已取消（而不是 需要输入/出错）',
+      after.status === 'backlog' && after.runState === 'cancelled',
+      `实际=${after.status}/${after.runState}`,
+    )
+  }
+
+  /* ---- 13. 流水线解析（纯函数）＋ agent 发出的阶段指令被识别 ---- */
+  {
+    const pl = require('../server/pipeline.js')
+    const claudeAgent = { role: 'Coder', executor: 'claude', pipeline: [] }
+    const devecoAgent = { role: 'HarmonyOS', executor: 'deveco', pipeline: [] }
+
+    const claudePipe = pl.resolve({ pipeline: [] }, claudeAgent, true, null)
+    const devecoPipe = pl.resolve({ pipeline: [] }, devecoAgent, true, null)
+    check(
+      '默认流水线按执行器分：claude 走 方案→编码→构建→测试，deveco 走鸿蒙岗',
+      pl.describe(claudePipe) === '方案 → 编码 → 构建 → 测试' &&
+        pl.stageRole(claudePipe, 'build') === 'DevOps' &&
+        pl.stageRole(devecoPipe, 'build') === 'HarmonyBuild',
+      `${pl.describe(claudePipe)} / ${pl.describe(devecoPipe)}`,
+    )
+
+    // 任务覆盖 > 岗位；总闸关掉则一律为空
+    const overridden = pl.resolve(
+      { pipeline: [{ stage: 'x', role: 'Writer' }] },
+      { role: 'Coder', executor: 'claude', pipeline: [{ stage: 'y', role: 'Analyst' }] },
+      true,
+      null,
+    )
+    check(
+      '任务上的流水线覆盖岗位的，关掉总闸一律为空',
+      overridden.length === 1 &&
+        overridden[0].stage === 'x' &&
+        pl.resolve({ pipeline: [] }, claudeAgent, false, null).length === 0,
+    )
+
+    check(
+      '阶段后继与校验：nextAfter 取顺序后继、末尾返回 null；非法流水线被拒',
+      pl.nextAfter(claudePipe, 'code').stage === 'build' &&
+        pl.nextAfter(claudePipe, 'test') === null &&
+        pl.nextAfter(claudePipe, '').stage === 'plan' &&
+        pl.validate([{ stage: 'a', role: '不存在的岗位' }], ['Coder']) !== null &&
+        pl.validate([{ stage: 'a', role: 'Coder' }], ['Coder']) === null,
+    )
+
+    const t = (await api('POST', '/api/tasks', { title: '[STAGE:code→build] 回归-阶段指令', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(MOCK_TURN_MS)
+    const detail = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    const stageEvents = detail.events.filter((e) => e.name === '阶段指令')
+    check(
+      'agent 输出里的 CHAOS_STAGE 指令被识别并记成事件',
+      stageEvents.length === 1 && /CHAOS_STAGE/.test(stageEvents[0].content),
+      `阶段指令事件 ${stageEvents.length} 条`,
+    )
+
+    // 回归：任务级流水线必须挺过 updateTask（曾经被「只留字符串元素」的序列化
+    // 静默清成 []，表现为「流水线建完就没了」）
+    const tp = (
+      await api('POST', '/api/tasks', {
+        title: '回归-流水线不被清空',
+        description: 'x',
+        pipeline: [
+          { stage: 'plan', role: 'Architect' },
+          { stage: 'code', role: 'Coder' },
+        ],
+      })
+    ).body.data
+    await api('POST', `/api/tasks/${tp.id}/start`)
+    await sleep(800)
+    const tpAfter = (await api('GET', `/api/tasks/${tp.id}`)).body.data.task
+    check(
+      '任务级流水线在起跑后仍然完整（且阶段定位到第一站）',
+      tpAfter.pipeline.length === 2 && tpAfter.pipeline[1].role === 'Coder' && tpAfter.stage === 'plan',
+      `pipeline=${tpAfter.pipeline.length} 站，stage=${tpAfter.stage}`,
+    )
+    await api('DELETE', `/api/tasks/${tp.id}`)
+
+    // 没有显式流水线的任务：起跑时把默认链快照到任务上（卡片徽章/换岗弹窗要用）
+    const td = (await api('POST', '/api/tasks', { title: '回归-默认流水线快照', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${td.id}/start`)
+    await sleep(800)
+    const tdAfter = (await api('GET', `/api/tasks/${td.id}`)).body.data.task
+    check(
+      '没有显式流水线的任务会快照 executor 默认链（claude 四站）',
+      tdAfter.pipeline.length === 4 && tdAfter.stage === 'plan',
+      `pipeline=${tdAfter.pipeline.length} 站，stage=${tdAfter.stage}`,
+    )
+    await api('DELETE', `/api/tasks/${td.id}`)
+  }
+
+  /* ---- 14. 失败自动换岗（不限次数 + 护栏 1） ---- */
+  {
+    const t = (await api('POST', '/api/tasks', { title: '[FAIL_ONCE] 回归-失败换岗', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(800)
+    const firstAgent = (await api('GET', `/api/tasks/${t.id}`)).body.data.task.agentId
+
+    const done = await waitUntil(async () => {
+      const task = (await api('GET', `/api/tasks/${t.id}`)).body.data.task
+      return task.runState === 'done' || task.runState === 'error' ? task : null
+    })
+
+    check(
+      '失败一次后自动换岗重试并最终完成（attempts=1、换了人）',
+      Boolean(done) && done.attempts === 1 && done.agentId !== firstAgent && done.status === 'complete',
+      done
+        ? `attempts=${done.attempts} 换人=${done.agentId !== firstAgent} 终态=${done.status}/${done.runState}`
+        : '超时没等到终态',
+    )
+  }
+
+  /* ---- 15. 换岗/重试期间排队的补充指令只投递一次 ---- */
+  {
+    const t = (await api('POST', '/api/tasks', { title: '[FAIL_ONCE] 回归-换岗不丢指令', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(1500)
+    await api('POST', `/api/tasks/${t.id}/input`, { text: '把接口文档也补上' })
+
+    await waitUntil(async () => {
+      const task = (await api('GET', `/api/tasks/${t.id}`)).body.data.task
+      return task.runState === 'done' || task.runState === 'error' ? task : null
+    })
+    const detail = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    const delivered = detail.messages.filter((m) => m.content.includes('把接口文档也补上') && m.role !== 'user')
+    check(
+      '换岗/重试期间排队的指令最终只投递给 Agent 一次',
+      delivered.length === 1,
+      `投递 ${delivered.length} 次`,
+    )
+  }
+
+  /* ---- 16. 运行中手动换岗：不是取消、原岗位释放、任务继续 ---- */
+  {
+    const t = (await api('POST', '/api/tasks', { title: '回归-运行中手动换岗', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(1500)
+    const before = (await api('GET', `/api/tasks/${t.id}`)).body.data.task.agentId
+
+    const r = await api('POST', `/api/tasks/${t.id}/handoff`, { role: 'Writer', reason: '回归用例手动换岗' })
+    await sleep(1200)
+    const detail = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    const oldAgent = store.getAgent(before)
+
+    check(
+      '运行中手动换岗：没落回待处理、换了岗位、原岗位被释放、有换岗事件',
+      r.status === 200 &&
+        detail.task.status === 'in_progress' &&
+        detail.task.agentId !== before &&
+        detail.task.runState !== 'cancelled' &&
+        oldAgent &&
+        oldAgent.status === 'idle' &&
+        detail.events.some((e) => e.name === '换岗'),
+      `终态=${detail.task.status}/${detail.task.runState} 换人=${detail.task.agentId !== before} 原岗位=${
+        oldAgent && oldAgent.status
+      }`,
+    )
+
+    // 让它跑完，别把还在跑的回合留给后面的用例
+    await waitUntil(async () => {
+      const task = (await api('GET', `/api/tasks/${t.id}`)).body.data.task
+      return task.runState === 'done' || task.runState === 'error' ? task : null
+    })
+  }
+
+  /* ---- 17. 重试上限：到顶就转人工，不无限烧下去 ---- */
+  {
+    await api('POST', '/api/settings', { maxAttempts: 2 })
+    const t = (await api('POST', '/api/tasks', { title: '[FAIL_ALWAYS] 回归-重试上限', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+
+    const settled = await waitUntil(async () => {
+      const task = (await api('GET', `/api/tasks/${t.id}`)).body.data.task
+      return task.runState === 'error' || task.runState === 'done' ? task : null
+    })
+    const detail = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    const handoverEvents = detail.events.filter((e) => e.name === '转人工')
+
+    check(
+      '达到重试上限后转人工（attempts=3、停在需要输入）',
+      Boolean(settled) &&
+        detail.task.status === 'needs_input' &&
+        detail.task.runState === 'error' &&
+        detail.task.attempts === 3 &&
+        handoverEvents.length === 1,
+      `attempts=${detail.task.attempts} 转人工事件=${handoverEvents.length} 终态=${detail.task.status}/${detail.task.runState}`,
+    )
+
+    await api('POST', '/api/settings', { maxAttempts: 0 })
+  }
+
+  /* ---- 18. 停止重试：退避中喊停就不再自动换岗 ---- */
+  {
+    const t = (await api('POST', '/api/tasks', { title: '[FAIL_ALWAYS] 回归-停止重试', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+
+    // 等它第一次失败并进入退避
+    await waitUntil(async () => {
+      const events = (await api('GET', `/api/tasks/${t.id}`)).body.data.events
+      return events.some((e) => e.name === '自动换岗') ? true : null
+    })
+
+    const r = await api('POST', `/api/tasks/${t.id}/retry`, { enabled: false })
+    await sleep(600)
+    const mid = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    const countBefore = mid.events.filter((e) => e.name === '自动换岗').length
+    await sleep(5000)
+    const after = (await api('GET', `/api/tasks/${t.id}`)).body.data
+
+    check(
+      '停止重试后不再自动换岗，任务停在「需要输入」',
+      r.status === 200 &&
+        after.task.status === 'needs_input' &&
+        after.task.runState === 'waiting' &&
+        after.events.filter((e) => e.name === '自动换岗').length === countBefore,
+      `终态=${after.task.status}/${after.task.runState} 换岗事件 ${countBefore} → ${
+        after.events.filter((e) => e.name === '自动换岗').length
+      }`,
+    )
+  }
+
+  /* ---- 19. 护栏 1/2 的机制：候选被排除光就没有下一个 ---- */
+  {
+    const allIds = new Set(store.listAgents().map((a) => a.id))
+    const none = queue.pickAgentForStage({ title: 'x', description: '' }, 'Writer', { exclude: allIds })
+    const some = queue.pickAgentForStage({ title: 'x', description: '' }, 'Writer', { exclude: new Set() })
+    check(
+      '排除掉所有岗位后 pickAgentForStage 返回 null（护栏「试过的不再用」的机制）',
+      none === null && some !== null,
+      none === null ? '排除后为 null' : '排除后仍有候选',
+    )
+  }
+
+  /* ---- 20. 按岗位挂载 MCP（离线断言，不真的起 CLI） ---- */
+  {
+    const scope = require('../server/mcp-scope.js')
+    const mcpMod = require('../server/mcp.js')
+    const agents = store.listAgents()
+    const coder = agents.find((a) => a.role === 'Coder')
+    const harmony = agents.find((a) => a.role === 'HarmonyBuild')
+
+    const coderList = scope.resolveRoleMcp(coder)
+    const harmonyList = scope.resolveRoleMcp(harmony)
+    check(
+      '岗位默认挂载：鸿蒙岗拿到 deveco-studio、代码岗拿到 playwright，两边都带换岗工具',
+      harmonyList.includes('deveco-studio') &&
+        !coderList.includes('deveco-studio') &&
+        coderList.includes('playwright') &&
+        coderList.includes('handoff') &&
+        harmonyList.includes('handoff'),
+      `代码岗 ${coderList.length} 项 / 鸿蒙岗 ${harmonyList.length} 项`,
+    )
+
+    const task = {
+      id: 'task_scope_probe',
+      title: 'x',
+      description: 'x',
+      cwd: DATA_DIR,
+      stage: 'code',
+      pipeline: [],
+    }
+    const realBin = require('../server/runner.js').resolveClaudeBin()
+    const cfgPath = scope.buildClaudeConfig(task, harmony, { token: 'tok-regress', claudeBin: realBin })
+    let cfgOk = false
+    if (cfgPath) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+      const names = Object.keys(cfg.mcpServers)
+      const env = cfg.mcpServers['chaos-handoff']?.env || {}
+      cfgOk =
+        names.includes('chaos-deveco-studio') &&
+        !names.includes('chaos-playwright') &&
+        env.CHAOS_TASK_ID === 'task_scope_probe' &&
+        env.CHAOS_HANDOFF_TOKEN === 'tok-regress' &&
+        Boolean(env.CHAOS_SERVER_URL)
+      scope.removeRunFile(task.id)
+    }
+    check(
+      'claude 侧：运行期配置只含本岗的服务器 + 带令牌的换岗工具，跑完即删',
+      cfgOk && !fs.existsSync(scope.runFilePath(task.id)),
+      cfgPath ? '配置已按岗位裁剪' : '（本机 claude 不支持 --mcp-config，走了降级）',
+    )
+
+    const nullCfg = scope.buildClaudeConfig(task, harmony, { token: 't', claudeBin: 'no-such-claude-bin' })
+    check('claude 不支持 --mcp-config 时降级为 null，而不是抛错或空跑', nullCfg === null)
+
+    const env = scope.buildDevecoEnv(task, harmony, { token: 'tok-regress' })
+    const m = JSON.parse(env.DEVECO_CONFIG_CONTENT || '{}').mcp || {}
+    const onIds = Object.entries(m).filter(([, v]) => v.enabled !== false).map(([k]) => k)
+    const offIds = Object.entries(m).filter(([, v]) => v.enabled === false).map(([k]) => k)
+    check(
+      'deveco 侧：角色要的启用、其余显式 enabled:false（否则全局注册会一起生效）',
+      onIds.includes('chaos-deveco-studio') && !onIds.includes('chaos-playwright') && offIds.length > 0,
+      `启用 ${onIds.length} 个 / 显式关闭 ${offIds.length} 个`,
+    )
+    check(
+      '本地服务器复制到稳定目录（含 deveco-studio 要调的 Python 脚本）',
+      mcpMod.entryPath(mcpMod.CATALOG_BY_ID.handoff).startsWith(mcpMod.MCP_DIR) &&
+        mcpMod.entryPath(mcpMod.CATALOG_BY_ID['deveco-studio']).startsWith(mcpMod.MCP_DIR) &&
+        fs.existsSync(mcpMod.stableLocalEntry('handoff')) &&
+        fs.existsSync(path.join(mcpMod.MCP_DIR, 'servers', 'deveco-studio', 'tools', 'deveco-studio.py')),
+    )
+
+    // 打包清单必须带上那个 .py —— 不带的话打包版里 deveco-studio 一调用就找不到脚本
+    // （开发模式脚本就在仓库里，所以这个坑只在打包版暴露，必须靠清单断言钉住）
+    check(
+      '打包清单包含 deveco-studio 依赖的 Python 脚本',
+      (require('../package.json').build.files || []).includes('scripts/deveco-studio.py'),
+    )
+  }
+
+  /* ---- 21. 换岗的 MCP 工具通道（内部接口 + 一次性令牌） ---- */
+  {
+    const runtime = require('../server/runtime.js')
+    const t = (await api('POST', '/api/tasks', { title: '回归-MCP 换岗通道', description: 'x' })).body.data
+    await api('POST', `/api/tasks/${t.id}/start`)
+    await sleep(1200)
+    const before = (await api('GET', `/api/tasks/${t.id}`)).body.data.task.agentId
+
+    const bad = await fetch(`${BASE}/api/internal/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: t.id, token: 'not-the-token', role: 'Writer', reason: 'x' }),
+    })
+    check('内部换岗接口拒绝无效令牌（不依赖登录态，只认一次性令牌）', bad.status === 403, `HTTP ${bad.status}`)
+
+    const token = runtime.mintHandoffToken(t.id)
+    const okRes = await fetch(`${BASE}/api/internal/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        taskId: t.id,
+        token,
+        role: 'Writer',
+        reason: '来自 MCP 工具',
+        summary: '做到一半，剩下的交给文档岗',
+      }),
+    })
+    const okBody = await okRes.json()
+    await sleep(1500)
+    const after = (await api('GET', `/api/tasks/${t.id}`)).body.data
+    check(
+      '用一次性令牌调内部接口能换岗（Agent 主动交接那条通道）',
+      okRes.status === 200 &&
+        okBody.ok !== false &&
+        after.task.agentId !== before &&
+        after.events.some((e) => e.name === '换岗'),
+      `HTTP ${okRes.status} 换人=${after.task.agentId !== before}`,
+    )
+    check(
+      '交接说明里带上了 Agent 自己写的 summary',
+      (after.task.handoffNote || '').includes('做到一半'),
+      `handoffNote=${(after.task.handoffNote || '').slice(0, 24)}…`,
+    )
+
+    runtime.revokeHandoffToken(t.id)
+    const afterRevoke = await fetch(`${BASE}/api/internal/handoff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: t.id, token, role: 'Writer', reason: 'x' }),
+    })
+    check('令牌吊销后同一条令牌不再可用', afterRevoke.status === 403, `HTTP ${afterRevoke.status}`)
+
+    await api('DELETE', `/api/tasks/${t.id}`)
   }
 
   await server.stop()

@@ -27,6 +27,9 @@ const queue = require('./queue')
 const chat = require('./chat')
 const mcp = require('./mcp')
 const executors = require('./executors')
+const pipeline = require('./pipeline')
+const mcpScope = require('./mcp-scope')
+const runtime = require('./runtime')
 
 /* ------------------------------------------------------------------ *
  * 授权
@@ -116,12 +119,32 @@ app.get('/api/system', requireAuth, (_req, res) => {
       runningTaskIds: runner.runningTaskIds(),
       isElectron: Boolean(process.versions.electron),
       mcp: mcp.summary(),
+      // V3.6.0：换岗与阶段流水线
+      pipelineEnabled: store.getSetting('pipelineEnabled', '1') === '1',
+      // 0 = 不限次数（默认）。设成 N 就最多自动换岗 N 次
+      maxAttempts: Number(store.getSetting('maxAttempts', '0')) || 0,
+      pipeline: pipeline.CLAUDE_PIPELINE,
+      // 按岗位挂载 MCP
+      mcpScopeEnabled: store.getSetting('mcpScopeEnabled', '1') === '1',
+      mcpStrict: store.getSetting('mcpStrict', '1') === '1',
+      mcpHandoffTool: store.getSetting('mcpHandoffTool', '1') === '1',
     },
   })
 })
 
 app.post('/api/settings', requireAuth, (req, res) => {
-  const { permissionMode, devecoAutoApprove, mcpAllowedDirs, autoUpdateWhenIdle, downloadMirror } = req.body || {}
+  const {
+    permissionMode,
+    devecoAutoApprove,
+    mcpAllowedDirs,
+    autoUpdateWhenIdle,
+    downloadMirror,
+    maxAttempts,
+    pipelineEnabled,
+    mcpScopeEnabled,
+    mcpStrict,
+    mcpHandoffTool,
+  } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
       return res.status(400).json({ ok: false, error: '非法的权限模式' })
@@ -152,6 +175,21 @@ app.post('/api/settings', requireAuth, (req, res) => {
     }
     store.setSetting('downloadMirror', norm)
   }
+  // 自动换岗重试上限：0 = 不限。负数/非数字当非法拒掉，别静默变成 0
+  if (maxAttempts !== undefined) {
+    const n = Number(maxAttempts)
+    if (!Number.isInteger(n) || n < 0) {
+      return res.status(400).json({ ok: false, error: '重试上限要填 0 或正整数（0 = 不限次数）' })
+    }
+    store.setSetting('maxAttempts', String(n))
+  }
+  if (pipelineEnabled !== undefined) {
+    store.setSetting('pipelineEnabled', pipelineEnabled ? '1' : '0')
+  }
+  // 按岗位挂 MCP（总闸 / 严格模式 / 给 agent 的换岗工具）
+  if (mcpScopeEnabled !== undefined) store.setSetting('mcpScopeEnabled', mcpScopeEnabled ? '1' : '0')
+  if (mcpStrict !== undefined) store.setSetting('mcpStrict', mcpStrict ? '1' : '0')
+  if (mcpHandoffTool !== undefined) store.setSetting('mcpHandoffTool', mcpHandoffTool ? '1' : '0')
   res.json({ ok: true })
 })
 
@@ -161,7 +199,77 @@ app.get('/api/executors', requireAuth, (_req, res) => {
   res.json({ ok: true, data: executors.describe() })
 })
 
+/* ---- 阶段流水线 ---- */
+
+app.get('/api/pipeline', requireAuth, (_req, res) => {
+  res.json({
+    ok: true,
+    data: {
+      stages: pipeline.STAGES,
+      labels: pipeline.STAGE_LABELS,
+      claude: pipeline.CLAUDE_PIPELINE,
+      deveco: pipeline.DEVECO_PIPELINE,
+      // 岗位清单只给 role 与职能（界面从不显示姓名）
+      roles: store.listAgents().map((a) => ({ role: a.role, functionLabel: a.functionLabel })),
+    },
+  })
+})
+
 /* ---- MCP ---- */
+
+/* ---- 内部：Agent 的「换岗」MCP 工具回调 ----
+ *
+ * 刻意**不走 requireAuth**：调用方是本次运行的 MCP 子进程，它拿不到（也不该拿到）
+ * 用户的登录令牌。改用每次运行铸的一次性令牌 —— 令牌只写进那次运行的 MCP 配置，
+ * 运行结束即吊销，所以跑完的、或别的任务里的进程都切不动任务。
+ * 这两个路由不是给界面用的。 */
+app.post('/api/internal/handoff', (req, res) => {
+  const { taskId, token, role, stage, reason, summary } = req.body || {}
+  if (!runtime.checkHandoffToken(taskId, token)) {
+    return res.status(403).json({ ok: false, error: '令牌无效或已过期' })
+  }
+  if (!store.getTask(taskId)) return res.status(404).json({ ok: false, error: '任务不存在' })
+  const r = queue.requestHandoff(taskId, {
+    role: role || '',
+    stage: stage || '',
+    reason: reason || 'Agent 请求交接',
+    summary: summary || '',
+    source: 'mcp',
+  })
+  res.status(r.ok === false ? 400 : 200).json(r)
+})
+
+app.get('/api/internal/handoff', (req, res) => {
+  const { taskId, token } = req.query || {}
+  if (!runtime.checkHandoffToken(taskId, token)) {
+    return res.status(403).json({ ok: false, error: '令牌无效或已过期' })
+  }
+  const task = store.getTask(taskId)
+  if (!task) return res.status(404).json({ ok: false, error: '任务不存在' })
+  const agent = task.agentId ? store.getAgent(task.agentId) : null
+  const stages = pipeline.resolve(
+    task,
+    agent,
+    store.getSetting('pipelineEnabled', '1') === '1',
+    null,
+  )
+  res.json({
+    ok: true,
+    data: {
+      title: task.title,
+      stage: task.stage,
+      pipeline: stages.map((s) => ({
+        stage: s.stage,
+        label: pipeline.labelOf(s.stage),
+        role: s.role,
+      })),
+      role: agent ? agent.role : '',
+      functionLabel: agent ? agent.functionLabel : '',
+      attempts: task.attempts || 0,
+      roles: store.listAgents().map((a) => ({ role: a.role, functionLabel: a.functionLabel })),
+    },
+  })
+})
 
 app.get('/api/mcp', requireAuth, (_req, res) => {
   res.json({ ok: true, data: { servers: mcp.list(), summary: mcp.summary(), allowedDirs: mcp.allowedDirs() } })
@@ -242,6 +350,11 @@ app.patch('/api/agents/:id', requireAuth, (req, res) => {
   if (!current) return res.status(404).json({ ok: false, error: '员工不存在' })
   const bad = validateExecutorModel(patch.executor, patch.model, current.executor)
   if (bad) return res.status(400).json({ ok: false, error: bad })
+  // 岗位的流水线要校验：阶段名不能重复、role 必须是真实存在的岗位
+  if (patch.pipeline !== undefined) {
+    const reason = pipeline.validate(patch.pipeline, store.listAgents().map((a) => a.role))
+    if (reason) return res.status(400).json({ ok: false, error: reason })
+  }
   res.json({ ok: true, data: store.updateAgent(req.params.id, patch) })
 })
 
@@ -258,13 +371,29 @@ app.get('/api/tasks', requireAuth, (_req, res) => {
 })
 
 app.post('/api/tasks', requireAuth, (req, res) => {
-  const { title, description, tags, cwd, agentId, executor, model } = req.body || {}
+  const { title, description, tags, cwd, agentId, executor, model, pipeline: pipelineOverride } = req.body || {}
   if (!title || !String(title).trim()) {
     return res.status(400).json({ ok: false, error: '请填写任务名称' })
   }
   const bad = validateExecutorModel(executor, model)
   if (bad) return res.status(400).json({ ok: false, error: bad })
-  res.json({ ok: true, data: store.createTask({ title, description, tags, cwd, agentId, executor, model }) })
+  if (pipelineOverride !== undefined) {
+    const reason = pipeline.validate(pipelineOverride, store.listAgents().map((a) => a.role))
+    if (reason) return res.status(400).json({ ok: false, error: reason })
+  }
+  res.json({
+    ok: true,
+    data: store.createTask({
+      title,
+      description,
+      tags,
+      cwd,
+      agentId,
+      executor,
+      model,
+      pipeline: pipelineOverride,
+    }),
+  })
 })
 
 app.get('/api/tasks/:id', requireAuth, (req, res) => {
@@ -288,6 +417,10 @@ app.patch('/api/tasks/:id', requireAuth, (req, res) => {
   if (!current) return res.status(404).json({ ok: false, error: '任务不存在' })
   const bad = validateExecutorModel(patch.executor, patch.model, current.executor)
   if (bad) return res.status(400).json({ ok: false, error: bad })
+  if (patch.pipeline !== undefined) {
+    const reason = pipeline.validate(patch.pipeline, store.listAgents().map((a) => a.role))
+    if (reason) return res.status(400).json({ ok: false, error: reason })
+  }
   res.json({ ok: true, data: store.updateTask(req.params.id, patch) })
 })
 
@@ -321,6 +454,17 @@ const actions = {
   done: (id) => queue.markDone(id),
   input: (id, body) => queue.sendInput(id, body?.text),
   move: (id, body) => queue.moveTask(id, body?.status),
+  // 换岗：运行中会掐掉当前回合并交接（不是取消），未运行则直接改派
+  handoff: (id, body) =>
+    queue.requestHandoff(id, {
+      agentId: body?.agentId || '',
+      role: body?.role || '',
+      stage: body?.stage || '',
+      reason: body?.reason || '老板手动换岗',
+      source: 'user',
+    }),
+  // 停止 / 恢复自动换岗重试
+  retry: (id, body) => queue.setAutoRetry(id, body?.enabled !== false),
   assign: (id, body) => {
     const agentId = body?.agentId || null
     if (agentId && !store.getAgent(agentId)) return { ok: false, error: '员工不存在' }
@@ -641,11 +785,25 @@ async function start() {
 
   APP_VERSION = require('../package.json').version
   actualPort = await listen(CONFIG.PORT)
+  // runner / mcp-scope 要拼「换岗」MCP 工具的地址，端口是运行时定的（可能被占用后 +1）
+  runtime.setPort(actualPort)
 
   // 后台预热 deveco 模型列表：这个命令要起一个 node 进程，放在请求路径上会拖慢首屏
   executors.warmup()
 
   queue.recoverOnStartup()
+
+  // 启动后的 MCP 维护（都不阻塞、都不装包）：
+  //  1. 清理上次崩溃留下的运行期配置
+  //  2. 把本地服务器（deveco-studio / handoff）刷到稳定目录，并修好指向安装目录的坏注册
+  //  3. 把「装好了但没启用」的内置服务器默认打开（用户手动关掉的不复活）
+  mcpScope.cleanupRunFiles()
+  try {
+    mcp.syncLocalServers()
+  } catch (err) {
+    console.error('[mcp] 刷新本地服务器注册失败:', err.message)
+  }
+  mcp.bootstrapDefaults().catch((err) => console.error('[mcp] 默认启用失败:', err.message))
 
   console.log('──────────────────────────────────────────────')
   console.log('  AI Agent开发控制台 · ChaosConsole')

@@ -365,6 +365,128 @@ export function NewTaskModal({ onClose }) {
  * MCP 管理
  * ------------------------------------------------------------------ */
 
+/**
+ * 换岗弹窗。
+ *
+ * 两条界面规则必须守住（e2e-check 有断言、也是产品既定规矩）：
+ *  1. **只显示职能（functionLabel），永远不显示姓名**；
+ *  2. 运行中点「换岗」走的是交接，不是取消 —— 文案要说清，否则用户会以为任务被中断了。
+ */
+export function HandoffModal() {
+  const { handoffFor, tasks, agents, handoffTask, closeHandoff } = useStore()
+  const [agentId, setAgentId] = useState('')
+  const [stage, setStage] = useState('')
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const task = tasks.find((t) => t.id === handoffFor) || null
+  const current = task ? agents.find((a) => a.id === task.agentId) || null : null
+  const stages = Array.isArray(task?.pipeline) ? task.pipeline : []
+  const running = task ? task.runState === 'running' || task.runState === 'queued' : false
+
+  useEffect(() => {
+    setAgentId('')
+    setStage('')
+    setReason('')
+    setBusy(false)
+  }, [handoffFor])
+
+  if (!task) return null
+
+  // 阶段选择与指定岗位是两种目标：选了阶段就按流水线里那个阶段的岗位交接
+  const stageRole = (stages.find((s) => s.stage === stage) || {}).role || ''
+  const candidates = agents.filter((a) => a.id !== task.agentId && a.status === 'idle')
+  const busyOnes = agents.filter((a) => a.id !== task.agentId && a.status !== 'idle')
+
+  const submit = async () => {
+    setBusy(true)
+    await handoffTask(task.id, {
+      agentId: agentId || undefined,
+      role: stageRole || undefined,
+      stage: stage || undefined,
+      reason: reason.trim() || undefined,
+    })
+    setBusy(false)
+  }
+
+  return (
+    <Shell
+      title="换岗"
+      subtitle={
+        running
+          ? '任务正在执行：会停下当前回合并把任务、进展和排队指令一起交接过去（不是取消）。'
+          : '把一个任务交给另一个岗位接手。'
+      }
+      onClose={closeHandoff}
+    >
+      <div className="rounded-lg border border-ink-500 bg-ink-900 p-3 text-[11.5px] text-slate-400">
+        <div className="truncate text-slate-200">{task.title}</div>
+        <div className="mt-1">
+          当前：{current ? current.functionLabel : '未指派'}
+          {task.stage ? ` · 阶段 ${task.stage}` : ''}
+          {task.attempts ? ` · 已重试 ${task.attempts} 次` : ''}
+        </div>
+      </div>
+
+      {stages.length > 0 && (
+        <div className="mt-3">
+          <label className="mb-1 block text-[11px] text-slate-400">推进到阶段（可选）</label>
+          <select className="field" value={stage} onChange={(e) => setStage(e.target.value)}>
+            <option value="">不改变阶段</option>
+            {stages.map((s) => (
+              <option key={s.stage} value={s.stage}>
+                {s.stage}
+                {s.role ? ` · ${s.role}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="mt-3">
+        <label className="mb-1 block text-[11px] text-slate-400">指定接手岗位（可选）</label>
+        <select
+          className="field"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          disabled={Boolean(stageRole)}
+        >
+          <option value="">自动挑一个空闲岗位{stageRole ? `（${stageRole}）` : ''}</option>
+          {candidates.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.functionLabel} · {a.executor}
+            </option>
+          ))}
+        </select>
+        {busyOnes.length > 0 && (
+          <p className="mt-1 text-[10.5px] text-slate-500">
+            忙碌中（不可选）：{busyOnes.map((a) => a.functionLabel).join('、')}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-[11px] text-slate-400">交接原因（可选，会写进交接说明）</label>
+        <input
+          className="field"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="例：这一步要让鸿蒙构建岗位来签包"
+        />
+      </div>
+
+      <div className="mt-5 flex justify-end gap-2">
+        <button className="btn-ghost" onClick={closeHandoff}>
+          取消
+        </button>
+        <button className="btn-primary" disabled={busy} onClick={submit}>
+          {busy ? '换岗中…' : '换岗'}
+        </button>
+      </div>
+    </Shell>
+  )
+}
+
 function McpRow({ server, onToggle, busy }) {
   const [expanded, setExpanded] = useState(false)
   const [envValues, setEnvValues] = useState({})
@@ -461,7 +583,9 @@ export function McpModal({ onClose }) {
 
   const installable = mcpServers.filter((s) => s.category === 'installable')
   const needsKey = mcpServers.filter((s) => s.category === 'needs-key')
-  const shown = tab === 'installable' ? installable : needsKey
+  // 按岗位：只列会被按岗位挂载的（internal 的是运行期按需注入的，不参与）
+  const byRole = mcpServers.filter((s) => !s.internal)
+  const shown = tab === 'installable' ? installable : tab === 'needsKey' ? needsKey : []
 
   const onToggle = async (server, enable, opts) => {
     if (enable) await enableMcp(server.id, opts)
@@ -501,6 +625,7 @@ export function McpModal({ onClose }) {
         {[
           { key: 'installable', label: '即装即用', count: installable.length },
           { key: 'needsKey', label: '需要密钥', count: needsKey.length },
+          { key: 'byRole', label: '按岗位', count: byRole.length },
         ].map((t) => (
           <button
             key={t.key}
@@ -520,6 +645,26 @@ export function McpModal({ onClose }) {
         {shown.map((s) => (
           <McpRow key={s.id} server={s} onToggle={onToggle} busy={mcpLoading} />
         ))}
+
+        {/* 按岗位视图：一眼看出「谁默认挂什么」。改挂载在岗位详情里（点侧栏岗位 → 保存） */}
+        {tab === 'byRole' &&
+          byRole.map((s) => (
+            <div
+              key={s.id}
+              className="rounded-lg border border-ink-500 bg-ink-900 p-2.5 text-[11.5px]"
+            >
+              <div className="flex items-center gap-2">
+                <span className={s.enabled ? 'text-emerald-400' : 'text-slate-600'}>
+                  {s.enabled ? '●' : '○'}
+                </span>
+                <span className="text-slate-200">{s.label}</span>
+                {!s.enabled && <span className="text-[10.5px] text-slate-500">（尚未全局启用，挂载也不会生效）</span>}
+              </div>
+              <div className="mt-1 pl-4 text-[10.5px] text-slate-500">
+                {s.roles && s.roles.length ? `默认岗位：${s.roles.join('、')}` : '默认不挂给任何岗位'}
+              </div>
+            </div>
+          ))}
       </div>
 
       <div className="mt-5 flex items-center justify-between">
@@ -585,6 +730,9 @@ export function SettingsModal({ onClose }) {
   const setPermissionMode = useStore((s) => s.setPermissionMode)
   const setDevecoAutoApprove = useStore((s) => s.setDevecoAutoApprove)
   const setAutoUpdateWhenIdle = useStore((s) => s.setAutoUpdateWhenIdle)
+  const setMaxAttempts = useStore((s) => s.setMaxAttempts)
+  const setPipelineEnabled = useStore((s) => s.setPipelineEnabled)
+  const setMcpOption = useStore((s) => s.setMcpOption)
   const loadReleases = useStore((s) => s.loadReleases)
   const rollbackTo = useStore((s) => s.rollbackTo)
   const update = useStore((s) => s.update)
@@ -696,6 +844,99 @@ export function SettingsModal({ onClose }) {
               </span>
             </span>
           </label>
+        </div>
+
+        {/* 换岗与阶段流水线 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-boss"
+              checked={Boolean(system?.pipelineEnabled)}
+              onChange={(e) => setPipelineEnabled(e.target.checked)}
+            />
+            <span>
+              <span className="block text-[12px] font-medium text-slate-200">阶段流水线（方案 → 编码 → 构建 → 测试）</span>
+              <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                开启后，每个任务有一条阶段链，Agent 干完一个阶段可以推进到下一阶段、由对应的岗位接手。
+                岗位自带默认链，也能按任务单独指定。
+                <b className="text-slate-400"> 默认开启</b>；关掉则退回「一个人干到底」。
+              </span>
+            </span>
+          </label>
+
+          <div className="mt-3 border-t border-ink-500/70 pt-3">
+            <label className="mb-1 block text-[11px] text-slate-400">自动换岗重试上限</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                className="field w-28"
+                defaultValue={system?.maxAttempts ?? 0}
+                onBlur={(e) => {
+                  const n = Number(e.target.value)
+                  if (Number.isInteger(n) && n >= 0 && n !== (system?.maxAttempts ?? 0)) setMaxAttempts(n)
+                }}
+              />
+              <span className="text-[10.5px] text-slate-500">0 = 不限次数</span>
+            </div>
+            <p className="mt-1 text-[10.5px] leading-relaxed text-slate-500">
+              任务失败或超时后会自动交给另一个空闲岗位重试（换了人接着做，不是从头来）。
+              护栏：同一阶段不会重复用同一个岗位、本阶段岗位都试过就转人工、
+              每次重试指数退避（2 秒起、最多 1 分钟）。卡片上有「重试 ×N」和「停止重试」。
+            </p>
+          </div>
+
+          <div className="mt-3 border-t border-ink-500/70 pt-3 space-y-2">
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-boss"
+                checked={system?.mcpScopeEnabled !== false}
+                onChange={(e) => setMcpOption('mcpScopeEnabled', e.target.checked)}
+              />
+              <span>
+                <span className="block text-[12px] font-medium text-slate-200">按岗位挂载 MCP</span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                  每个任务只把该岗位用得上的 MCP 交给 Agent（在侧栏岗位详情里勾选），
+                  不再把所有已启用的服务器一股脑塞进每次会话。
+                  <b className="text-slate-400"> 默认开启</b>；关掉则退回「全部已启用的都挂上」。
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-boss"
+                checked={system?.mcpStrict !== false}
+                onChange={(e) => setMcpOption('mcpStrict', e.target.checked)}
+              />
+              <span>
+                <span className="block text-[12px] font-medium text-slate-200">严格模式（只认按岗位挂的那些）</span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                  关掉的话，Agent 还能看到你在应用外（项目里的 .mcp.json、用户级配置）自己加的 MCP。
+                  只在 claude 侧生效。
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-boss"
+                checked={system?.mcpHandoffTool !== false}
+                onChange={(e) => setMcpOption('mcpHandoffTool', e.target.checked)}
+              />
+              <span>
+                <span className="block text-[12px] font-medium text-slate-200">给 Agent「换岗」工具</span>
+                <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
+                  让 Agent 能自己判断「这活该换人」并发起交接。
+                  关掉后它仍可用文本指令（CHAOS_HANDOFF）交接。
+                </span>
+              </span>
+            </label>
+          </div>
         </div>
 
         {/* 版本回退 */}

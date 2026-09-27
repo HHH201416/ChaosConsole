@@ -202,11 +202,22 @@
     ; /D=<dir> is deliberately NOT forwarded: NSIS requires it unquoted and last, and
     ; a target path containing spaces (D:\软件与文档\...) does not survive the trip
     ; through cmd/start intact. Worst case the user gets the default directory back.
+    ;
+    ; The three flags match electron/main.js's 版本回退 path exactly (see the long
+    ; comment there). Without them the downloaded installer opens its own wizard and
+    ; the user walks through four pages just to install the version they already
+    ; picked on this page:
+    ;   --updated    按原地升级处理：taskkill 掉还在跑的旧进程，不弹「应用正在运行」
+    ;   /S           静默安装。NSIS 在 /S 下会跳过全部页面（自定义页也跳过），
+    ;                装完不留任何窗口
+    ;   --force-run  装完自动把应用拉起来 —— assisted 安装器里自动启动的条件是
+    ;                ${isForceRun} ${andIf} ${Silent}，所以这两个必须成对出现
     StrCpy $0 "/currentuser"
     ${If} $installMode == "all"
       StrCpy $0 "/allusers"
     ${EndIf}
-    Exec '"$SYSDIR\cmd.exe" /c ping -n 3 127.0.0.1 >nul & start "" "$ChaosFile" $0'
+    StrCpy $1 "--updated /S --force-run"
+    Exec '"$SYSDIR\cmd.exe" /c ping -n 3 127.0.0.1 >nul & start "" "$ChaosFile" $0 $1'
     Quit
   FunctionEnd
 

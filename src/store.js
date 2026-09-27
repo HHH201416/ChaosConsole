@@ -62,6 +62,10 @@ export const useStore = create((set, get) => ({
   mcpSummary: null,
   mcpLoading: false,
 
+  /* 正在为哪个任务挑接手岗位（换岗弹窗）。放在 store 里是为了让看板卡片
+     和聊天页都能直接开它，不必把回调从 App 一层层传下去。 */
+  handoffFor: null,
+
   /* 更新状态。权威来源是 Electron 主进程，这里只是经 update:status 推送来的投影 */
   update: { status: 'idle', message: '', percent: 0 },
 
@@ -296,6 +300,48 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /** 保存岗位的 MCP 挂载 / 流水线（PATCH /api/agents/:id） */
+  async saveAgentConfig(id, patch) {
+    try {
+      await api.updateAgent(id, patch)
+      get().toast('已保存岗位配置', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 换岗 ---- */
+
+  openHandoff(taskId) {
+    set({ handoffFor: taskId })
+  },
+
+  closeHandoff() {
+    set({ handoffFor: null })
+  },
+
+  /** 换岗：运行中会交接（不是取消），未运行则直接改派 */
+  async handoffTask(taskId, body) {
+    try {
+      const res = await api.handoff(taskId, body)
+      set({ handoffFor: null })
+      get().toast(res && res.pending ? '正在换岗，当前回合结束后交接' : '已换岗', 'info')
+      await get().selectTask(taskId)
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 停止自动换岗重试（退避中直接停，任务落到「需要输入」） */
+  async stopRetry(id) {
+    try {
+      await api.setRetry(id, false)
+      get().toast('已停止自动重试')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
   async sendInput(taskId, text) {
     const trimmed = String(text || '').trim()
     if (!trimmed) return
@@ -519,6 +565,39 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /** 自动换岗重试上限。0 = 不限次数（默认） */
+  async setMaxAttempts(n) {
+    try {
+      await api.setSettings({ maxAttempts: Number(n) })
+      await get().refreshSystem()
+      get().toast(Number(n) > 0 ? `已限制：最多自动换岗重试 ${n} 次` : '已设为不限次数', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 按岗位挂载 MCP 的三个开关（总闸 / 严格模式 / 给 agent 的换岗工具） */
+  async setMcpOption(key, value) {
+    try {
+      await api.setSettings({ [key]: value })
+      await get().refreshSystem()
+      get().toast('已更新 MCP 设置', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 阶段流水线总闸。关掉后所有任务都退回「一个人干到底」的老行为 */
+  async setPipelineEnabled(enabled) {
+    try {
+      await api.setSettings({ pipelineEnabled: enabled })
+      await get().refreshSystem()
+      get().toast(enabled ? '已开启阶段流水线' : '已关闭阶段流水线（任务不再按阶段推进）', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
   async setAutoUpdateWhenIdle(enabled) {
     try {
       await api.setSettings({ autoUpdateWhenIdle: enabled })
@@ -633,12 +712,21 @@ function handleServerMessage(msg) {
       })
       break
 
-    case 'task:updated':
+    case 'task:updated': {
+      const prevTask = state.tasks.find((t) => t.id === payload.id)
       useStore.setState({
         tasks: state.tasks.some((t) => t.id === payload.id)
           ? state.tasks.map((t) => (t.id === payload.id ? payload : t))
           : [payload, ...state.tasks],
       })
+      // 换岗提示：靠 handoffAt 的跃迁判断（**不新增 WS 事件类型** —— 前端
+      // handleServerMessage 的 switch 没有 default 报错，漏一个 case 就是静默
+      // 失效，所以新状态一律挂在既有 task 字段上）
+      if (prevTask && payload.handoffAt && payload.handoffAt !== prevTask.handoffAt) {
+        const st = useStore.getState()
+        const to = (st.agents.find((a) => a.id === payload.agentId) || {}).functionLabel || '新岗位'
+        st.toast(`已换岗：交给「${to}」`, 'info')
+      }
       if (state.detail && state.detail.task.id === payload.id) {
         useStore.setState({ detail: { ...state.detail, task: payload } })
       }
@@ -663,6 +751,7 @@ function handleServerMessage(msg) {
         })
       }
       break
+    }
 
     case 'task:deleted':
       // 删掉的正好是选中的那个 → 本地偏好里的 id 也必须一起清，

@@ -26,9 +26,26 @@ const path = require('path')
 const { spawn } = require('child_process')
 
 const executors = require('./executors')
+const { DEFAULT_AGENTS } = require('./seed')
 
 const MCP_DIR = path.join(process.env.APPDATA || os.homedir(), 'chaos-console', 'mcp')
 const DEVECO_CONFIG = path.join(os.homedir(), '.config', 'deveco', 'deveco.jsonc')
+
+/**
+ * 反查索引：catalog id -> 默认挂它的岗位（列表用 functionLabel，界面从不显示姓名）。
+ * 由 seed.js 的岗位默认值算出来，是「按岗位挂载」的默认答案；
+ * 用户改过的以岗位记录里的 mcp 字段为准（见 mcp-scope.resolveRoleMcp）。
+ */
+const DEFAULT_AGENT_MCP_ROLES = (() => {
+  const map = {}
+  for (const a of DEFAULT_AGENTS) {
+    for (const id of a.mcp || []) {
+      if (!map[id]) map[id] = []
+      map[id].push(a.functionLabel || a.role)
+    }
+  }
+  return map
+})()
 
 /* ------------------------------------------------------------------ *
  * 目录
@@ -101,7 +118,29 @@ const CATALOG = [
     label: 'DevEco Studio 控制',
     desc: '操作鸿蒙 IDE：启动/打开工程、截图看界面、跑 hvigorw 构建、用 hdc 装到设备或模拟器',
     localEntry: path.join(__dirname, 'mcp-servers', 'deveco-studio', 'index.js'),
+    // 这个服务器要调仓库里的 Python 脚本。复制到稳定目录时必须一起带过去，
+    // 否则注册过去的是一个引用不到脚本的入口（表现为工具一调就报错）。
+    localExtra: [['scripts/deveco-studio.py', path.join('tools', 'deveco-studio.py')]],
+    // 脚本路径通过环境变量告诉服务器，不再依赖 __dirname 的相对位置。
+    // **只有复制成功才指过去**：万一 .py 没进包（files 清单漏了），指向一个不存在的
+    // 文件会让工具调用直接失败，还不如让服务器退回 __dirname 的相对路径（开发时就是那样）。
+    localEnv: () => {
+      const stable = path.join(MCP_DIR, 'servers', 'deveco-studio', 'tools', 'deveco-studio.py')
+      return fs.existsSync(stable) ? { CHAOS_DEVECO_SCRIPT: stable } : {}
+    },
     category: 'installable',
+    argsFor: () => [],
+  },
+  {
+    // 应用内部的「换岗」工具：Agent 判断这活该换人时，直接请求交接。
+    // 它需要每次运行的一次性令牌，所以**不做全局注册**，由 mcp-scope 按需注入
+    // （internal: true 表示不在面板的全局开关里出现）。
+    id: 'handoff',
+    label: '岗位交接',
+    desc: '让 Agent 主动把任务交给更合适的岗位，并带上交接说明',
+    localEntry: path.join(__dirname, 'mcp-servers', 'handoff', 'index.js'),
+    category: 'installable',
+    internal: true,
     argsFor: () => [],
   },
   {
@@ -206,13 +245,48 @@ const CATALOG = [
 
 const CATALOG_BY_ID = Object.fromEntries(CATALOG.map((c) => [c.id, c]))
 
-/** filesystem 允许访问的目录，可在设置里覆盖（分号分隔） */
+/**
+ * filesystem 允许访问的目录，可在设置里覆盖。
+ *
+ * 落库（settings 表）而不是只存内存：这个值决定 filesystem 服务器能碰哪些路径，
+ * 以前只存内存 + 重启即丢，用户改完重启就「莫名其妙变回去了」，
+ * 而且没有任何界面入口能改回来。取值优先级：库里的值 > 平台默认。
+ */
 let allowedDirsOverride = null
+
 function setAllowedDirs(dirs) {
-  allowedDirsOverride = Array.isArray(dirs) && dirs.length ? dirs : null
+  const list = Array.isArray(dirs) && dirs.length ? dirs.filter((d) => typeof d === 'string' && d.trim()) : null
+  allowedDirsOverride = list
+  try {
+    require('./store').setSetting('mcpAllowedDirs', JSON.stringify(list || []))
+  } catch (err) {
+    console.error('[mcp] 保存 allowedDirs 失败:', err.message)
+  }
+  // filesystem 的参数是在注册时烘进配置的，改了要重新注册才生效
+  const fsServer = CATALOG_BY_ID.filesystem
+  if (fsServer && claudeRegisteredIds().has('filesystem')) {
+    claudeRemove('filesystem')
+      .then(() => claudeAdd(fsServer))
+      .catch((err) => console.error('[mcp] 重注册 filesystem 失败:', err.message))
+  }
+  if (fsServer && devecoRegisteredIds().includes('filesystem')) {
+    devecoRegister(fsServer)
+  }
 }
+
 function allowedDirs() {
   if (allowedDirsOverride) return allowedDirsOverride
+  // 从库里读一次（进程内缓存），读不到再退回平台默认
+  try {
+    const raw = require('./store').getSetting('mcpAllowedDirs', '')
+    const parsed = raw ? JSON.parse(raw) : null
+    if (Array.isArray(parsed) && parsed.length) {
+      allowedDirsOverride = parsed
+      return allowedDirsOverride
+    }
+  } catch (_) {
+    /* 读不出来就用默认 */
+  }
   const dirs = []
   if (process.platform === 'win32') dirs.push('D:\\')
   dirs.push(os.homedir())
@@ -284,10 +358,66 @@ function nodeLaunchEnv() {
   return resolveNodeBin() === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}
 }
 
+/**
+ * 本地服务器复制到稳定目录后的入口。
+ * 注册进 CLI 配置的必须是**不随应用移动**的路径（见 materializeLocalServer）。
+ */
+function stableLocalEntry(id) {
+  return path.join(MCP_DIR, 'servers', id, 'index.js')
+}
+
+/**
+ * 把随应用发布的本地服务器（deveco-studio / handoff）复制到 %APPDATA% 下的稳定目录。
+ *
+ * 为什么必须复制：注册进 CLI 配置的是**绝对路径**。以前写的是
+ * `<安装目录>\resources\app\server\mcp-servers\...` —— 应用一升级、一换安装范围
+ * （per-user ↔ per-machine），或者回退到旧版本，这个路径就废了，而 CLI 配置里
+ * 还留着旧路径，表现为「MCP 明明装了却连不上」。本机就踩过：deveco 侧那条
+ * 指向 `D:\软件与文档\ChaosConsole\resources\app\...`。
+ *
+ * 内容一致时不重写（避免每次启动都动文件）。
+ * 返回是否发生了写入。
+ */
+function materializeLocalServer(server) {
+  if (!server.localEntry) return false
+  const srcDir = path.dirname(server.localEntry)
+  const dstDir = path.join(MCP_DIR, 'servers', server.id)
+  let changed = false
+  try {
+    fs.mkdirSync(dstDir, { recursive: true })
+    const copyIfChanged = (src, dst) => {
+      if (!fs.existsSync(src)) return
+      fs.mkdirSync(path.dirname(dst), { recursive: true })
+      const same = fs.existsSync(dst) && fs.readFileSync(src).equals(fs.readFileSync(dst))
+      if (!same) {
+        fs.copyFileSync(src, dst)
+        changed = true
+      }
+    }
+    for (const name of fs.readdirSync(srcDir)) {
+      const src = path.join(srcDir, name)
+      if (!fs.statSync(src).isFile()) continue
+      copyIfChanged(src, path.join(dstDir, name))
+    }
+    // 附加文件（带运行时依赖的本地服务器，例如要调 Python 脚本的那个）
+    for (const [rel, target] of server.localExtra || []) {
+      copyIfChanged(path.join(__dirname, '..', rel), path.join(dstDir, target))
+    }
+    if (!fs.existsSync(stableLocalEntry(server.id))) changed = true
+  } catch (err) {
+    console.error(`[mcp] 复制本地服务器 ${server.id} 失败:`, err.message)
+  }
+  return changed
+}
+
 function entryPath(server) {
   // localEntry：随应用一起发布、存在于仓库里的服务器，不需要 npm install。
   // 例如 DevEco Studio 控制，它是为本项目写的一次性集成，不可能发到 npm 上。
-  if (server.localEntry) return server.localEntry
+  // 一律走稳定目录的副本 —— 注册出去的是这个路径，不能是仓库/打包目录里的原件。
+  if (server.localEntry) {
+    materializeLocalServer(server)
+    return stableLocalEntry(server.id)
+  }
   return path.join(MCP_DIR, 'node_modules', ...server.pkg.split('/'), ...server.entry.split('/'))
 }
 
@@ -297,53 +427,8 @@ function isPackageInstalled(server) {
   return fs.existsSync(entryPath(server))
 }
 
-/**
- * 给参数补引号。
- *
- * Windows：runAsync 走 shell:true，参数最终由 cmd.exe 再解析一遍。
- *  - 只在含空格时才补引号是错的：`&`、`|`、`>` 会被 cmd 当成控制符。
- *    postgres 连接串 `...?a=1&b=2` 会被从 `&` 处截断后注册（半截字符串），
- *    `b=2` 还会被当成第二条命令执行 —— 既是静默的参数损坏，也是命令注入。
- *  - 补了引号还要遵守 CreateProcess/MSVCRT 的解析规则：只有紧跟在引号前的
- *    `\` 才有转义含义，所以尾随反斜杠必须翻倍，否则 `D:\`（filesystem 的
- *    allowedDirs 就会传这个）会被解析成 `D:"`。
- *  - `%VAR%` 在引号内**仍然**会被 cmd 展开，而引号内的 `^` 是普通字符、
- *    转义无效，所以只能在 `%` 处把引号断开，用引号外的 `^%` 写出字面 `%`。
- *  - `&|<>()`、`!`、`^` 在引号内本来就是普通字符（`!` 只在 cmd /V:on 下才有
- *    意义，而 node 起的是 /d /s /c），再补一层 `^` 反而会凭空多出一个 `^`
- *    字符，所以只靠引号屏蔽，不做 caret 转义。以上几条都是实测过的：
- *    spawn(shell:true) 起一个只回显 argv 的进程，逐个用例比对原串。
- *
- * 非 Windows：runAsync 是 shell:false，参数直接进 argv，一个字都不能动 ——
- * 补引号会把引号变成路径的一部分（`/home/me/My Projects` 会带上字面引号）。
- */
-function quoteArg(arg) {
-  const s = String(arg)
-  if (process.platform !== 'win32') return s
-  // 先按 `%` 切开，每段各自加引号，段间用引号外的 ^% 连接
-  return s.split('%').map(quoteWinSegment).join('^%')
-}
-
-/** 单个片段：双引号包裹，并按 MSVCRT 规则处理内部引号与前置反斜杠 */
-function quoteWinSegment(part) {
-  let out = '"'
-  let backslashes = 0
-  for (const ch of part) {
-    if (ch === '\\') {
-      backslashes++
-      continue
-    }
-    // 引号前的反斜杠要翻倍（2n+1 个才能既保留 n 个 \ 又得到一个字面 "）
-    if (ch === '"') {
-      out += '\\'.repeat(backslashes * 2 + 1) + '"'
-      backslashes = 0
-      continue
-    }
-    out += '\\'.repeat(backslashes) + ch
-    backslashes = 0
-  }
-  return out + '\\'.repeat(backslashes * 2) + '"'
-}
+/* 参数引号规则抽到了 win-quote.js（runner 也要用同一套，见那里的长注释） */
+const { quoteArg } = require('./win-quote')
 
 /**
  * 结束整棵进程树。
@@ -462,7 +547,11 @@ async function claudeAdd(server, opts = {}) {
   if (!bin) return { ok: false, error: '未检测到 claude CLI' }
 
   const args = ['mcp', 'add', claudeName(server.id), '-s', 'user']
-  const env = { ...nodeLaunchEnv(), ...(server.env ? server.env() : {}) }
+  const env = {
+    ...nodeLaunchEnv(),
+    ...(server.localEnv ? server.localEnv() : {}),
+    ...(server.env ? server.env() : {}),
+  }
   for (const k of server.envKeys || []) {
     if (opts.env && opts.env[k]) env[k] = opts.env[k]
   }
@@ -550,7 +639,11 @@ function devecoRegister(server, opts = {}) {
   // 等于把用户手写的 models / providers / 其它 MCP server 全部抹掉。
   if (error) return { ok: false, error }
   cfg.mcp = cfg.mcp || {}
-  const env = { ...nodeLaunchEnv(), ...(server.env ? server.env() : {}) }
+  const env = {
+    ...nodeLaunchEnv(),
+    ...(server.localEnv ? server.localEnv() : {}),
+    ...(server.env ? server.env() : {}),
+  }
   for (const k of server.envKeys || []) {
     if (opts.env && opts.env[k]) env[k] = opts.env[k]
   }
@@ -626,6 +719,8 @@ async function enable(id, opts = {}) {
       .join('；')
     return { ok: false, error: `注册失败（${detail}）`, results }
   }
+  // 用户显式启用过 → 从「不要自动打开」的名单里移除
+  if (!server.internal) rememberDisabledByUser(id, false)
   return { ok: true, results }
 }
 
@@ -653,6 +748,9 @@ async function disable(id) {
       .join('；')
     return { ok: false, error: `停用失败（${detail}）`, results }
   }
+  // 记一笔「用户主动关掉」：开机自动启用（bootstrapDefaults）不会再把它打开，
+  // 否则用户关一次、重启就复活，跟花名册里那个「删了默认岗位又复活」是同一类坑。
+  rememberDisabledByUser(id, true)
   return { ok: true, results }
 }
 
@@ -681,6 +779,120 @@ function claudeRegisteredIds() {
   }
 }
 
+/**
+ * ~/.claude.json 里已注册的服务器**完整定义**（{type,command,args,env}）。
+ * 按岗位挂载时直接用这里的现成定义 —— 用户在面板里填的密钥、允许目录
+ * 都会原样带上，不需要从 CATALOG 重新拼一遍（少一处会漂移的逻辑）。
+ */
+function claudeMcpServers() {
+  try {
+    const cfgFile = path.join(os.homedir(), '.claude.json')
+    if (!fs.existsSync(cfgFile)) return {}
+    const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'))
+    return cfg.mcpServers || {}
+  } catch (err) {
+    console.error('[mcp] 读取 ~/.claude.json 的 mcpServers 失败:', err.message)
+    return {}
+  }
+}
+
+/** deveco.jsonc 里的 mcp 段（opencode 格式） */
+function devecoMcpMap() {
+  const { cfg, error } = readDevecoConfig()
+  if (error) return {}
+  return (cfg && cfg.mcp) || {}
+}
+
+/**
+ * 把本地服务器（deveco-studio / handoff）刷新到稳定目录，并**修好已经写坏的注册**。
+ *
+ * 要修的具体毛病：注册命令行里的路径指向了安装目录（`resources\app\...`），
+ * 应用升级 / 换安装范围 / 回退旧版之后那个路径就不存在了，而配置里还留着，
+ * 表现为「面板显示已启用、实际连不上」。
+ * 做法：命令行里的可执行入口如果不在稳定目录下（或文件已不存在），就重注册一次。
+ * 只动我们自己的 chaos-* 条目，不碰用户手写的其它配置。
+ */
+function syncLocalServers() {
+  const fixed = []
+  for (const server of CATALOG) {
+    if (!server.localEntry) continue
+    const want = entryPath(server) // 内部会 materialize
+    const names = [`chaos-${server.id}`]
+    const claudeDefs = claudeMcpServers()
+    const claudeEntry = claudeDefs[names[0]]
+    const claudeOk =
+      !claudeEntry ||
+      (Array.isArray(claudeEntry.args) && claudeEntry.args.some((a) => String(a) === want))
+    if (!claudeOk) {
+      claudeRemove(server.id)
+        .then(() => claudeAdd(server))
+        .then((r) => {
+          if (r.ok) console.log(`[mcp] 已修正 ${server.id} 的注册路径（原路径已失效）`)
+          else console.error(`[mcp] 修正 ${server.id} 失败:`, r.error)
+        })
+        .catch((err) => console.error('[mcp] 修正注册失败:', err.message))
+      fixed.push(server.id)
+    }
+    const devecoMap = devecoMcpMap()
+    const devecoDef = devecoMap[names[0]]
+    if (devecoDef) {
+      const cmd = Array.isArray(devecoDef.command) ? devecoDef.command : []
+      if (!cmd.some((c) => String(c) === want)) {
+        devecoRegister(server)
+        fixed.push(`deveco:${server.id}`)
+      }
+    }
+  }
+  if (fixed.length) console.log(`[mcp] 本地服务器注册已刷新：${fixed.join(', ')}`)
+  return fixed
+}
+
+/**
+ * 应用内置的 MCP 默认全部启用（用户手动关掉的不复活）。
+ *
+ * 两条硬约束：
+ *  1. **绝不 npm install** —— 否则启动就变成一个网络任务（冷机器上可能几分钟），
+ *     e2e 自检会因为启动超时而红。缺包就留给用户显式去装。
+ *  2. 跑在 listen() 之后、不阻塞启动。
+ */
+async function bootstrapDefaults() {
+  const done = require('./store').getSetting('mcpBootstrapDone', '0') === '1'
+  if (done) return { skipped: true }
+  const disabledByUser = new Set(
+    JSON.parse(require('./store').getSetting('mcpDisabledByUser', '[]') || '[]'),
+  )
+  const results = []
+  for (const server of CATALOG) {
+    if (server.category !== 'installable') continue
+    if (server.internal) continue // 内部服务器由运行期按需注入，不做全局注册
+    if (disabledByUser.has(server.id)) continue
+    if (!isPackageInstalled(server)) continue // 不替用户装包
+    const claudeOn = claudeRegisteredIds().has(server.id)
+    const devecoOn = devecoRegisteredIds().includes(server.id)
+    if (claudeOn && devecoOn) continue
+    const r = await enable(server.id, {})
+    results.push({ id: server.id, ok: r.ok !== false })
+  }
+  require('./store').setSetting('mcpBootstrapDone', '1')
+  if (results.length) console.log(`[mcp] 默认启用：${results.map((r) => r.id).join(', ') || '(无)'}`)
+  return { enabled: results }
+}
+
+/** 用户主动关掉某个 server 时记一笔，bootstrapDefaults 之后就不会再自动打开它 */
+function rememberDisabledByUser(id, disabled) {
+  const store = require('./store')
+  let list = []
+  try {
+    list = JSON.parse(store.getSetting('mcpDisabledByUser', '[]') || '[]')
+  } catch (_) {
+    list = []
+  }
+  const set = new Set(list)
+  if (disabled) set.add(id)
+  else set.delete(id)
+  store.setSetting('mcpDisabledByUser', JSON.stringify([...set]))
+}
+
 function list() {
   const devecoEnabled = new Set(devecoRegisteredIds())
   const claudeEnabled = claudeRegisteredIds()
@@ -691,6 +903,8 @@ function list() {
     desc: s.desc,
     pkg: s.pkg,
     category: s.category,
+    // internal：由运行期按需注入，不在面板的全局开关里出现
+    internal: Boolean(s.internal),
     envKeys: s.envKeys || [],
     keyHint: s.keyHint || '',
     requiresArg: s.requiresArg || '',
@@ -699,6 +913,8 @@ function list() {
     enabledDeveco: devecoEnabled.has(s.id),
     enabled: claudeEnabled.has(s.id) || devecoEnabled.has(s.id),
     entry: isPackageInstalled(s) ? entryPath(s) : null,
+    // 哪些岗位默认挂它（给「按岗位」矩阵用；用户改过的以岗位记录为准）
+    roles: DEFAULT_AGENT_MCP_ROLES[s.id] || [],
   }))
 }
 
@@ -726,4 +942,14 @@ module.exports = {
   allowedDirs,
   setAllowedDirs,
   resolveNodeBin,
+  // V3.6.0：按岗位挂载需要的原料与两个新动作
+  nodeLaunchEnv,
+  entryPath,
+  stableLocalEntry,
+  materializeLocalServer,
+  claudeMcpServers,
+  devecoMcpMap,
+  syncLocalServers,
+  bootstrapDefaults,
+  rememberDisabledByUser,
 }

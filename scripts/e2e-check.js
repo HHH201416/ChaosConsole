@@ -385,6 +385,7 @@ async function main() {
         hasFilesystem: txt.includes('文件系统'),
         hasMemory: txt.includes('长期记忆'),
         hasEnabledCount: /已启用/.test(txt),
+        hasByRoleTab: txt.includes('按岗位'),
       }
     `)
     check('MCP 管理面板可打开', mcp.ok && mcp.hasTitle)
@@ -393,8 +394,9 @@ async function main() {
     check('MCP 目录含文件系统服务器', mcp.hasFilesystem)
     check('MCP 目录含长期记忆服务器', mcp.hasMemory)
     check('MCP 面板显示已启用计数', mcp.hasEnabledCount)
+    check('MCP 面板有「按岗位」视图', mcp.hasByRoleTab)
 
-    /* ---------- 7d. 对话页真实发消息 → 自动派单 ---------- */
+    /* ---------- 7d. 换岗入口 / 阶段徽章 / 自动重试设置 ---------- */
     // 先关掉 MCP 面板
     await evaluate(`
       const btns = [...document.querySelectorAll('button')]
@@ -403,6 +405,111 @@ async function main() {
       await new Promise(r => setTimeout(r, 500))
       return true
     `)
+
+    // 建一个带流水线的任务并跑起来（模拟模式，约 8 秒一回合）
+    const hoRes = await (
+      await fetch(`${APP_URL}/api/tasks`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({
+          title: 'E2E 换岗入口',
+          description: '验证换岗入口与阶段徽章',
+          pipeline: [
+            { stage: 'plan', role: 'Architect' },
+            { stage: 'code', role: 'Coder' },
+          ],
+        }),
+      })
+    ).json()
+    await fetch(`${APP_URL}/api/tasks/${hoRes.data.id}/start`, { method: 'POST', headers: H })
+    await sleep(1500)
+
+    const handoffUi = await evaluate(`
+      await new Promise(r => setTimeout(r, 800))
+      const txt = document.body.innerText
+      const btns = [...document.querySelectorAll('button')].filter(b => b.innerText.trim() === '换岗')
+      return { hasButton: btns.length > 0, hasStageChip: txt.includes('方案'), hasRetryChipHost: txt.includes('E2E 换岗入口') }
+    `)
+    check('看板卡片上有「换岗」入口', handoffUi.hasButton)
+    check('任务卡片显示阶段徽章', handoffUi.hasStageChip)
+
+    const handoffModal = await evaluate(`
+      const b = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === '换岗')
+      if (!b) return { ok: false }
+      b.click()
+      await new Promise(r => setTimeout(r, 700))
+      const txt = document.body.innerText
+      const names = ['张全栈','李架构','王设计','赵测试','钱研究','孙运维','周数据','吴文档','郑安全','冯项目','白小助','何鸿蒙','刘界面','陈卡片','孙架构','周测试','吴构建','郑分布','冯数据','钱性能','赵安全']
+      return {
+        ok: true,
+        hasPicker: txt.includes('指定接手岗位'),
+        hasReason: txt.includes('交接原因'),
+        namesVisible: names.filter(n => txt.includes(n)).length,
+      }
+    `)
+    check('换岗弹窗能打开，有目标选择器与交接原因', handoffModal.ok && handoffModal.hasPicker && handoffModal.hasReason)
+    check('换岗弹窗里只有职能、没有姓名', handoffModal.ok && handoffModal.namesVisible === 0, `出现 ${handoffModal.namesVisible ?? '-'} 处`)
+
+    await evaluate(`
+      const b = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === '取消')
+      if (b) b.click()
+      await new Promise(r => setTimeout(r, 400))
+      return true
+    `)
+
+    const settingsCheck = await evaluate(`
+      const b = [...document.querySelectorAll('button')].find(x => x.title === '运行设置')
+      if (!b) return { ok: false }
+      b.click()
+      await new Promise(r => setTimeout(r, 900))
+      const txt = document.body.innerText
+      return {
+        ok: true,
+        hasRetryLimit: txt.includes('自动换岗重试上限'),
+        hasPipeline: txt.includes('阶段流水线'),
+        hasMcpScope: txt.includes('按岗位挂载 MCP'),
+      }
+    `)
+    check('设置里有「自动换岗重试上限」', settingsCheck.ok && settingsCheck.hasRetryLimit)
+    check('设置里有「阶段流水线」开关', settingsCheck.ok && settingsCheck.hasPipeline)
+    check('设置里有「按岗位挂载 MCP」开关', settingsCheck.ok && settingsCheck.hasMcpScope)
+
+    // 岗位详情：MCP 挂载清单 + 默认流水线编辑
+    const agentDetail = await evaluate(`
+      const aside = document.querySelector('aside')
+      const row = aside && [...aside.querySelectorAll('button')].find(b => (b.title || '').includes('点击查看系统提示词'))
+      if (!row) return { ok: false }
+      row.click()
+      await new Promise(r => setTimeout(r, 900))
+      const txt = document.body.innerText
+      const names = ['张全栈','李架构','王设计','赵测试','钱研究','孙运维','周数据','吴文档','郑安全','冯项目','白小助','何鸿蒙','刘界面','陈卡片','孙架构','周测试','吴构建','郑分布','冯数据','钱性能','赵安全']
+      return {
+        ok: true,
+        hasMcp: txt.includes('这个岗位能用的 MCP'),
+        hasPipeline: txt.includes('默认阶段流水线'),
+        hasSave: [...document.querySelectorAll('button')].some(b => b.innerText.trim() === '保存'),
+        namesVisible: names.filter(n => txt.includes(n)).length,
+      }
+    `)
+    check(
+      '岗位详情能编辑 MCP 挂载与默认流水线',
+      agentDetail.ok && agentDetail.hasMcp && agentDetail.hasPipeline && agentDetail.hasSave,
+    )
+    check(
+      '岗位详情里也只有职能、没有姓名',
+      agentDetail.ok && agentDetail.namesVisible === 0,
+      `出现 ${agentDetail.namesVisible ?? '-'} 处`,
+    )
+
+    await evaluate(`
+      const b = [...document.querySelectorAll('button')].find(x => x.innerText.trim() === '关闭')
+      if (b) b.click()
+      await new Promise(r => setTimeout(r, 400))
+      return true
+    `)
+    await fetch(`${APP_URL}/api/tasks/${hoRes.data.id}`, { method: 'DELETE', headers: H })
+
+    /* ---------- 7e. 对话页真实发消息 → 自动派单 ---------- */
 
     const CHAT_TEXT = '写一下鸿蒙 ArkTS 的列表页面示例'
     await evaluate(`

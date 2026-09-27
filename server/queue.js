@@ -15,6 +15,8 @@
 const store = require('./store')
 const runner = require('./runner')
 const CONFIG = require('./config')
+const pipeline = require('./pipeline')
+const { DEFAULT_AGENTS } = require('./seed')
 
 /** taskId -> string[] 待发送的补充指令 */
 const pendingInputs = new Map()
@@ -143,7 +145,7 @@ function lastAssistantText(taskId) {
 /**
  * 跑一个回合。task 必须已经处于 in_progress 且绑定了 agent。
  */
-async function runTurn(taskId, { extraInstruction = '' } = {}) {
+async function runTurn(taskId, { extraInstruction = '', handoffBrief = '' } = {}) {
   const task = store.getTask(taskId)
   if (!task) return
   if (runner.isRunning(taskId)) return
@@ -170,10 +172,12 @@ async function runTurn(taskId, { extraInstruction = '' } = {}) {
     const who = agent.functionLabel || agent.role
     store.addEvent(taskId, {
       type: 'status',
-      name: extraInstruction ? '续跑' : '开始执行',
-      content: extraInstruction
-        ? `向「${who}」发送补充指令`
-        : `「${who}」接手任务（${agent.executor}），工作目录 ${task.cwd}`,
+      name: handoffBrief ? '接手' : extraInstruction ? '续跑' : '开始执行',
+      content: handoffBrief
+        ? `「${who}」接手交接（${agent.executor}），工作目录 ${task.cwd}`
+        : extraInstruction
+          ? `向「${who}」发送补充指令`
+          : `「${who}」接手任务（${agent.executor}），工作目录 ${task.cwd}`,
     })
 
     let result
@@ -182,7 +186,11 @@ async function runTurn(taskId, { extraInstruction = '' } = {}) {
         task: store.getTask(taskId),
         agent,
         extraInstruction,
-        resumeSessionId: extraInstruction ? store.getTask(taskId).sessionId : null,
+        handoffBrief,
+        // 交接自带背景说明，不需要也不应该续旧会话（旧会话是上一位的上下文，
+        // 而且新岗位的人设只在首轮注入）
+        resumeSessionId:
+          extraInstruction && !handoffBrief ? store.getTask(taskId).sessionId : null,
       })
     } catch (err) {
       result = { ok: false, error: err.message || String(err) }
@@ -207,11 +215,29 @@ function settle(taskId, result) {
   // 就说明这一回合仍然是最新的那个。
   if (task.status !== 'in_progress' || task.runState !== 'running') {
     pendingInputs.delete(taskId)
+    pendingHandoff.delete(taskId)
     store.releaseAgentIfIdle(task.agentId)
     return
   }
 
   if (result.sessionId) store.updateTask(taskId, { sessionId: result.sessionId })
+
+  // ---- 换岗：优先于所有落位 ------------------------------------------
+  //
+  // 三种来源在这里汇合：用户手动换岗（pendingHandoff，且 runner 带着 handoff
+  // 意图结束）、agent 主动请求（result.directive）、阶段推进（同一个 directive）。
+  const handoffReq = pendingHandoff.get(taskId) || null
+  pendingHandoff.delete(taskId)
+  // 用户主动取消优先于 agent 的换岗请求：人都喊停了就别再自动往下交接
+  const userCancelled = Boolean(result.cancelled) && !result.handoff
+  const req = handoffReq || (userCancelled ? null : directiveToRequest(taskId, result.directive))
+  if (req || result.handoff) {
+    const applied = applyHandoff(taskId, req || { source: 'user', reason: '换岗' })
+    if (applied.ok) return
+    // 换岗没成功（目标在忙、岗位不存在、阶段不合法）：记一条事件就好，
+    // 继续按下面的正常规则落位，绝不让任务悬在半空
+    store.addEvent(taskId, { type: 'error', name: '换岗未执行', content: applied.error })
+  }
 
   // ---- 被取消 -------------------------------------------------------
   if (result.cancelled) {
@@ -222,8 +248,10 @@ function settle(taskId, result) {
     return
   }
 
-  // ---- 出错 ---------------------------------------------------------
+  // ---- 出错 / 超时 ---------------------------------------------------
   if (!result.ok) {
+    // 先让自动换岗决定要不要接手（不限次数 + 四道护栏，见 maybeAutoRetry）
+    if (maybeAutoRetry(taskId, result)) return
     const msg = result.error || '执行失败'
     store.updateTask(taskId, { status: 'needs_input', runState: 'error', error: msg })
     store.releaseAgentIfIdle(task.agentId)
@@ -270,6 +298,418 @@ function drainPending(taskId) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 换岗（交接）
+ *
+ * 四种触发共用这一套：
+ *   - 用户手动换岗        source='user'
+ *   - agent 自己请求      source='agent'（输出里的 CHAOS_HANDOFF / MCP 工具）
+ *   - 阶段推进            source='stage'（输出里的 CHAOS_STAGE）
+ *   - 失败/超时自动换岗    source='failure'
+ *
+ * 一个关键区别：**运行中换岗会把当前进程掐掉**（runner.cancel 带 handoff 意图），
+ * 但 settle 会先看到意图，因此它不会被当成「用户取消」落进 backlog，
+ * 排队的补充指令也不会被丢掉 —— 而是折进交接说明交给下一位。
+ * ------------------------------------------------------------------ */
+
+/** taskId -> 待执行的换岗请求（进程还没退干净，等 settle 消费） */
+const pendingHandoff = new Map()
+/** taskId -> 退避定时器（失败自动换岗用） */
+const retryTimers = new Map()
+/** taskId -> [{stage, role, agentId, at}]：本任务在某阶段试过谁（护栏 1 的判据） */
+const runHistory = new Map()
+
+const RETRY_BASE_MS = 2000
+const RETRY_MAX_MS = 60000
+const BRIEF_MAX_CHARS = 4000
+const HISTORY_MAX = 30
+
+function pipelineEnabled() {
+  return store.getSetting('pipelineEnabled', '1') === '1'
+}
+
+function seedFor(agent) {
+  return DEFAULT_AGENTS.find((a) => a.role === (agent && agent.role)) || null
+}
+
+function stagesFor(task, agent) {
+  return pipeline.resolve(task, agent, pipelineEnabled(), seedFor(agent))
+}
+
+function currentStageOf(task, stages) {
+  return task.stage || (stages[0] && stages[0].stage) || ''
+}
+
+function historyOf(taskId) {
+  return runHistory.get(taskId) || []
+}
+
+function rememberTry(taskId, entry) {
+  const list = historyOf(taskId)
+  list.push(entry)
+  while (list.length > HISTORY_MAX) list.shift()
+  runHistory.set(taskId, list)
+}
+
+function stopRetry(taskId) {
+  const timer = retryTimers.get(taskId)
+  if (timer) {
+    clearTimeout(timer)
+    retryTimers.delete(taskId)
+  }
+}
+
+/** 任务离开「进行中」时把这一轮换岗/重试的临时状态清干净 */
+function clearHandoffState(taskId) {
+  pendingHandoff.delete(taskId)
+  stopRetry(taskId)
+  runHistory.delete(taskId)
+}
+
+/**
+ * 挑接手的人。
+ * exclude 里的岗位不会被选中 —— 自动换岗靠它保证「同一个岗位不在同一阶段连续撞两次」，
+ * 这也是「不限次数重试」能终止的原因。
+ */
+function pickAgentForStage(task, role, { exclude = new Set() } = {}) {
+  const idle = store.listAgents().filter((a) => a.status === 'idle' && !exclude.has(a.id))
+  if (!idle.length) return null
+  if (role) {
+    const exact = idle.find((a) => a.role === role)
+    if (exact) return exact
+  }
+  // 同执行器优先：跨执行器交接等于换工具链、换会话，代价更大
+  const prev = task.agentId ? store.getAgent(task.agentId) : null
+  if (prev) {
+    const sameExec = idle.find((a) => a.executor === prev.executor)
+    if (sameExec) return sameExec
+  }
+  // 退回到既有的「按内容打分」挑选（在 exclude 之后挑，规则与 pickIdleAgent 一致）
+  let best = null
+  let bestScore = -1
+  for (const a of idle) {
+    const s = scoreAgent(a, task)
+    if (s > bestScore) {
+      bestScore = s
+      best = a
+    }
+  }
+  if (bestScore <= 0) {
+    const chat = idle.find((a) => a.role === FALLBACK_ROLE)
+    if (chat) return chat
+  }
+  return best
+}
+
+const clipText = (s, n) => {
+  const t = String(s || '').trim()
+  return t.length > n ? `${t.slice(0, n)}…` : t
+}
+
+/**
+ * 交接说明。**不依赖 CLI 会话** —— 会话在换人（尤其跨执行器）之后本来就不可移植，
+ * 所以这里只从库里取事实：任务原文 + 最近几条消息 + 上一位的遗留说明 + 排队指令。
+ */
+function composeBrief(task, { from, to, reason, queued = [], stages = [], stage = '', note = '' }) {
+  const fromLabel = from ? from.functionLabel || from.role : '（无人）'
+  const toLabel = to ? to.functionLabel || to.role : '（新岗位）'
+  const parts = [
+    '# 交接说明',
+    `你接手了任务「${task.title}」。上一位负责人「${fromLabel}」因为「${reason || '需要换人'}」把任务交给你（现在是「${toLabel}」）。`,
+    '',
+    '## 任务原始需求',
+    clipText(task.description || '(原始需求为空，按标题理解)', 1200),
+  ]
+
+  const stagesText = pipeline.describe(stages)
+  if (stagesText) {
+    parts.push('', '## 当前阶段', `${pipeline.labelOf(stage)}（流程：${stagesText}）`)
+  }
+
+  const msgs = store.listMessages(task.id).slice(-6)
+  if (msgs.length) {
+    parts.push('', '## 最近进展')
+    for (const m of msgs) {
+      const who = m.role === 'user' ? '老板' : m.role === 'assistant' ? '上一位' : '系统'
+      parts.push(`- ${who}：${clipText(m.content, 300)}`)
+    }
+  }
+
+  // 交接说明优先用上一位**自己写的**（文本指令里的 summary / MCP 工具的 summary），
+  // 它比「错误信息」准确得多：错误可能只是环境问题，而 summary 说的是做到哪了。
+  const leftover = note || task.error || task.handoffNote || ''
+  if (leftover) parts.push('', '## 遗留问题 / 上一位的说明', clipText(leftover, 600))
+
+  if (queued.length) {
+    parts.push('', '## 老板的补充指令（尚未处理）', clipText(queued.join('\n'), 600))
+  }
+
+  parts.push('', '## 工作目录', task.cwd || CONFIG.DEFAULT_CWD)
+  parts.push('', '请接着往下做，不要重复已完成的部分。')
+  return clipText(parts.join('\n'), BRIEF_MAX_CHARS)
+}
+
+/** 指令 -> 换岗请求。非法指令只记事件，绝不打断任务 */
+function directiveToRequest(taskId, directive) {
+  if (!directive) return null
+  if (directive.parseError) {
+    store.addEvent(taskId, { type: 'error', name: '指令无法解析', content: clipText(directive.raw, 600) })
+    return null
+  }
+  const p = directive.payload || {}
+  if (directive.kind === 'handoff') {
+    if (!p.role) {
+      store.addEvent(taskId, { type: 'error', name: '换岗未执行', content: '换岗指令缺少 role。' })
+      return null
+    }
+    return {
+      role: String(p.role),
+      reason: p.reason || 'Agent 请求交接',
+      summary: p.summary || '',
+      source: 'agent',
+    }
+  }
+  if (directive.kind === 'stage') {
+    if (!p.next) return null // 没有 next = 走完了，正常收官
+    return {
+      stage: String(p.next),
+      reason: p.summary || '阶段推进',
+      summary: p.summary || '',
+      source: 'stage',
+    }
+  }
+  return null
+}
+
+/**
+ * 执行一次换岗。所有触发最终都到这里。
+ * 失败（目标岗位在忙/不存在/阶段不合法）返回 {ok:false}，由调用方记事件并放行正常落位。
+ */
+function applyHandoff(taskId, req = {}) {
+  const task = store.getTask(taskId)
+  if (!task) return { ok: false, error: '任务不存在' }
+  stopRetry(taskId)
+
+  const prevAgent = task.agentId ? store.getAgent(task.agentId) : null
+  const stages = stagesFor(task, prevAgent)
+  const fromStage = currentStageOf(task, stages)
+  let targetStage = req.stage || fromStage
+
+  // 阶段指令要校验：必须在这条流水线里，而且不许往回退
+  if (req.source === 'stage') {
+    const idx = pipeline.stageIndex(stages, targetStage)
+    const curIdx = pipeline.stageIndex(stages, fromStage)
+    if (idx < 0) {
+      return { ok: false, error: `阶段「${targetStage}」不在本任务的流水线里（${pipeline.describe(stages)}）` }
+    }
+    if (curIdx >= 0 && idx <= curIdx) {
+      return { ok: false, error: `不能从「${pipeline.labelOf(fromStage)}」退回「${pipeline.labelOf(targetStage)}」` }
+    }
+  }
+
+  const allRoles = new Set(store.listAgents().map((a) => a.role))
+  if (req.role && !allRoles.has(req.role)) {
+    return { ok: false, error: `没有「${req.role}」这个岗位` }
+  }
+
+  let target = null
+  if (req.agentId) {
+    const explicit = store.getAgent(req.agentId)
+    if (!explicit) return { ok: false, error: '指定的岗位不存在' }
+    if (agentIsBusy(explicit.id, taskId)) {
+      return { ok: false, error: `「${explicit.functionLabel || explicit.role}」正在忙别的任务` }
+    }
+    target = explicit
+  } else {
+    const wantRole = req.role || pipeline.stageRole(stages, targetStage) || (prevAgent && prevAgent.role) || ''
+    target = pickAgentForStage(task, wantRole, { exclude: new Set() })
+    if (!target) return { ok: false, error: '没有空闲岗位可以接手' }
+  }
+
+  const newSession =
+    target.id !== task.agentId ||
+    Boolean(prevAgent && prevAgent.executor !== target.executor)
+
+  const queued = pendingInputs.get(taskId) || []
+  pendingInputs.delete(taskId)
+
+  const reason = req.reason || '换岗'
+  const brief = composeBrief(task, {
+    from: prevAgent,
+    to: target,
+    reason,
+    queued,
+    stages,
+    stage: targetStage,
+    note: req.summary || '',
+  })
+
+  rememberTry(taskId, { stage: targetStage, role: target.role, agentId: task.agentId, at: Date.now() })
+
+  store.updateTask(taskId, {
+    agentId: target.id,
+    stage: targetStage,
+    handoffNote: clipText(brief, 600),
+    handoffAt: Date.now(),
+    error: '',
+    status: 'in_progress',
+    runState: 'queued',
+    // 换了人或换了执行器就必须开新会话：岗位的 system_prompt 只在会话首轮注入，
+    // 沿用旧会话等于新岗位的人设根本没生效
+    ...(newSession ? { sessionId: '' } : {}),
+  })
+  if (prevAgent && prevAgent.id !== target.id) store.releaseAgentIfIdle(prevAgent.id)
+  store.updateAgent(target.id, { status: 'working' })
+
+  const fromLabel = prevAgent ? prevAgent.functionLabel || prevAgent.role : '（无人）'
+  const toLabel = target.functionLabel || target.role
+  store.addEvent(taskId, {
+    type: 'status',
+    name: '换岗',
+    content: `${fromLabel} → ${toLabel} · ${reason}${queued.length ? ` · 带上 ${queued.length} 条排队指令` : ''}`,
+  })
+
+  const stageInstruction = newSession
+    ? ''
+    : `进入「${pipeline.labelOf(targetStage)}」阶段（${reason}）。请接着往下做。`
+
+  setImmediate(() => {
+    runTurn(taskId, newSession ? { handoffBrief: brief } : { extraInstruction: stageInstruction }).catch(
+      (err) => console.error('[queue] 交接后起跑失败:', err.message),
+    )
+  })
+  return { ok: true, agentId: target.id }
+}
+
+/**
+ * 对外入口。运行中 → 记下意图并掐掉当前回合（settle 会接手）；
+ * 没在跑 → 直接换。
+ */
+function requestHandoff(taskId, req = {}) {
+  const task = store.getTask(taskId)
+  if (!task) return { ok: false, error: '任务不存在' }
+  if (runner.isRunning(taskId) || activeTurns.has(taskId)) {
+    pendingHandoff.set(taskId, req)
+    stopRetry(taskId)
+    runner.cancel(taskId, 'handoff')
+    store.addEvent(taskId, { type: 'status', name: '正在换岗', content: '当前回合结束后交接。' })
+    return { ok: true, pending: true }
+  }
+  return applyHandoff(taskId, req)
+}
+
+/**
+ * 失败/超时后的自动换岗。返回 true 表示「接管了这次落位」，
+ * 调用方就不要再落 needs_input/error 了。
+ *
+ * 四道护栏（缺一不可，见计划文件）：
+ *   1. 同一阶段不重复用同一个岗位（tried 集合）—— 这是「不限次数」能终止的证明
+ *   2. 候选耗尽 → 转人工（落 needs_input 并写明试过谁）
+ *   3. 指数退避 2s → 60s 上限（限速率，不限次数）
+ *   4. 次数可见 + 可停（attempts 落库、POST /retry {enabled:false}）
+ */
+function maybeAutoRetry(taskId, result) {
+  const task = store.getTask(taskId)
+  if (!task || !task.autoRetry) return false
+  // 找不到 CLI / 起不了进程属于环境故障，换人也没用，别把整个花名册烧一遍
+  if (result && result.spawnFailed) return false
+
+  const agent = task.agentId ? store.getAgent(task.agentId) : null
+  const stages = stagesFor(task, agent)
+  const stage = currentStageOf(task, stages)
+  const role = pipeline.stageRole(stages, stage) || (agent && agent.role) || ''
+
+  const attempts = (task.attempts || 0) + 1
+  const maxAttempts = Number(store.getSetting('maxAttempts', '0')) || 0
+
+  const tried = new Set(historyOf(taskId).filter((h) => h.stage === stage).map((h) => h.agentId))
+  tried.add(task.agentId) // 刚失败的这个也别再上（护栏 1）
+
+  const overBudget = maxAttempts > 0 && attempts > maxAttempts
+  const target = overBudget ? null : pickAgentForStage(task, role, { exclude: tried })
+
+  if (!target) {
+    const names = [...tried].map((id) => {
+      const a = store.getAgent(id)
+      return a ? a.functionLabel || a.role : id
+    })
+    store.updateTask(taskId, {
+      attempts,
+      status: 'needs_input',
+      runState: 'error',
+      error: result && result.error ? result.error : '执行失败',
+      nextRetryAt: 0,
+    })
+    store.releaseAgentIfIdle(task.agentId)
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '转人工',
+      content: overBudget
+        ? `已重试 ${attempts - 1} 次（达到上限 ${maxAttempts}），需要老板介入。`
+        : `本阶段可用岗位都已试过${names.length ? `（${names.join('、')}）` : ''}，需要老板介入。`,
+    })
+    return true
+  }
+
+  const delay = Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS)
+  store.updateTask(taskId, {
+    agentId: target.id,
+    attempts,
+    status: 'in_progress',
+    // 退避期间保持 queued：dispatch 只跳过 running/queued 的任务，
+    // 这样它不会把退避中的任务抢跑（也就不会变成自激循环）
+    runState: 'queued',
+    nextRetryAt: Date.now() + delay,
+    error: result && result.error ? result.error : '执行失败',
+  })
+  store.releaseAgentIfIdle(task.agentId)
+  store.updateAgent(target.id, { status: 'working' })
+  rememberTry(taskId, { stage, role: target.role, agentId: task.agentId, at: Date.now() })
+
+  store.addEvent(taskId, {
+    type: 'status',
+    name: '自动换岗',
+    content: `${result && result.timedOut ? '执行超时' : '执行失败'} → 交给「${
+      target.functionLabel || target.role
+    }」，${Math.round(delay / 1000)} 秒后重试（第 ${attempts} 次）`,
+  })
+
+  stopRetry(taskId)
+  retryTimers.set(
+    taskId,
+    setTimeout(() => {
+      retryTimers.delete(taskId)
+      const fresh = store.getTask(taskId)
+      if (!fresh || fresh.status !== 'in_progress') return // 期间被取消/拖走/完成了
+      store.updateTask(taskId, { nextRetryAt: 0 })
+      const started = startTask(taskId, { quiet: true })
+      if (started && started.ok === false) {
+        // 没空闲岗位：退回 idle，让既有的 dispatch 在有人空出来时接手（与例 7 同一条路）
+        store.updateTask(taskId, { runState: 'idle' })
+      }
+    }, delay),
+  )
+  return true
+}
+
+/** 停止/恢复自动重试（界面上的「停止重试」） */
+function setAutoRetry(taskId, enabled) {
+  const task = store.getTask(taskId)
+  if (!task) return { ok: false, error: '任务不存在' }
+  if (enabled) {
+    store.updateTask(taskId, { autoRetry: true })
+    return { ok: true }
+  }
+  const wasBackoff = retryTimers.has(taskId)
+  stopRetry(taskId)
+  store.updateTask(taskId, { autoRetry: false, nextRetryAt: 0 })
+  if (wasBackoff && !runner.isRunning(taskId)) {
+    store.updateTask(taskId, { status: 'needs_input', runState: 'waiting' })
+    store.addEvent(taskId, { type: 'status', name: '已停止自动重试', content: '任务停在「需要输入」，等老板处理。' })
+  }
+  return { ok: true }
+}
+
+/* ------------------------------------------------------------------ *
  * 对外操作
  * ------------------------------------------------------------------ */
 
@@ -278,6 +718,9 @@ function startTask(taskId, { quiet = false } = {}) {
   const task = store.getTask(taskId)
   if (!task) return { ok: false, error: '任务不存在' }
   if (runner.isRunning(taskId)) return { ok: false, error: '任务已在执行中' }
+  // 手动起跑优先于还在退避里的自动重试。注意只停定时器、
+  // **不清 runHistory** —— 那张表是「本阶段试过谁」的记忆，清了护栏 1 就失效了。
+  stopRetry(taskId)
 
   let agentId = task.agentId
   const boundAgent = agentId ? store.getAgent(agentId) : null
@@ -298,7 +741,19 @@ function startTask(taskId, { quiet = false } = {}) {
     store.updateTask(taskId, { agentId })
   }
 
-  store.updateTask(taskId, { status: 'in_progress', runState: 'queued' })
+  // 起跑时把「实际要走的流水线」快照到任务上，并把阶段定位到第一站。
+  //
+  // 为什么要快照：默认链是按岗位/执行器现算的，不落库的话前端根本看不到 ——
+  // 卡片上的阶段徽章、换岗弹窗里的阶段选择都需要这条链。
+  // 只写这**一个**任务的字段，不动岗位与 seed 的默认值（那条规则见 pipeline.js）。
+  // 「谁先上」不受影响：第一个人仍然按任务内容打分决定。
+  const fresh = store.getTask(taskId)
+  const resolved = stagesFor(fresh, store.getAgent(agentId))
+  const snapshot = {}
+  if (resolved.length && !(fresh.pipeline && fresh.pipeline.length)) snapshot.pipeline = resolved
+  if (resolved.length && !fresh.stage) snapshot.stage = resolved[0].stage
+
+  store.updateTask(taskId, { status: 'in_progress', runState: 'queued', ...snapshot })
   store.updateAgent(agentId, { status: 'working' })
 
   setImmediate(() => {
@@ -322,7 +777,10 @@ function sendInput(taskId, text) {
 
   store.addMessage(taskId, 'user', content)
 
-  if (runner.isRunning(taskId)) {
+  // 退避等待中 / 换岗交接中也算「忙」：这时候直接起跑会撞上 activeTurns 的空窗，
+  // 指令会永远留在消息里没被送达。排进队列，由下一回合（或交接说明）带上。
+  const busy = runner.isRunning(taskId) || retryTimers.has(taskId) || pendingHandoff.has(taskId)
+  if (busy) {
     const queue = pendingInputs.get(taskId) || []
     queue.push(content)
     pendingInputs.set(taskId, queue)
@@ -359,10 +817,11 @@ function cancelTask(taskId) {
 
   const had = runner.cancel(taskId)
   pendingInputs.delete(taskId)
+  clearHandoffState(taskId)
 
   if (!had) {
-    // 没有在跑的进程，直接落位
-    store.updateTask(taskId, { status: 'backlog', runState: 'cancelled' })
+    // 没有在跑的进程（也可能正卡在退避里），直接落位
+    store.updateTask(taskId, { status: 'backlog', runState: 'cancelled', nextRetryAt: 0 })
     store.addEvent(taskId, { type: 'status', name: '已取消', content: '任务已退回「待处理」。' })
     store.releaseAgentIfIdle(task.agentId)
   }
@@ -377,6 +836,9 @@ function forgetTask(taskId) {
   runner.cancel(taskId)
   pendingInputs.delete(taskId)
   activeTurns.delete(taskId)
+  clearHandoffState(taskId)
+  // 模拟执行器按 taskId 记「第几次」，任务删了就把这条一起清掉
+  runner.forgetAttempts(taskId)
 }
 
 /** 手动标记完成 */
@@ -385,7 +847,8 @@ function markDone(taskId) {
   if (!task) return { ok: false, error: '任务不存在' }
   runner.cancel(taskId)
   pendingInputs.delete(taskId)
-  store.updateTask(taskId, { status: 'complete', runState: 'done', error: '' })
+  clearHandoffState(taskId)
+  store.updateTask(taskId, { status: 'complete', runState: 'done', error: '', nextRetryAt: 0 })
   store.addEvent(taskId, { type: 'status', name: '手动完成', content: '老板手动把任务标记为已完成。' })
   store.releaseAgentIfIdle(task.agentId)
   return { ok: true }
@@ -402,6 +865,7 @@ function moveTask(taskId, status) {
     const wasRunning = runner.isRunning(taskId)
     if (wasRunning) runner.cancel(taskId)
     pendingInputs.delete(taskId)
+    clearHandoffState(taskId)
     if (status === 'backlog') store.releaseAgentIfIdle(task.agentId)
   }
 
@@ -442,7 +906,13 @@ function recoverOnStartup() {
   let recovered = 0
   for (const t of tasks) {
     if (t.runState === 'running' || t.runState === 'queued') {
-      store.updateTask(t.id, { runState: 'idle', status: t.status === 'in_progress' ? 'needs_input' : t.status })
+      store.updateTask(t.id, {
+        runState: 'idle',
+        status: t.status === 'in_progress' ? 'needs_input' : t.status,
+        // 退避定时器活在内存里，重启就没了 —— 顺手把退避标记清掉，
+        // 否则任务会永远停在「退避中」却没有任何人在等它
+        nextRetryAt: 0,
+      })
       store.addEvent(t.id, {
         type: 'system',
         name: '已恢复',
@@ -451,6 +921,11 @@ function recoverOnStartup() {
       recovered++
     }
   }
+  // 内存里的调度状态一律清空（进程已随上次退出消失）
+  for (const timer of retryTimers.values()) clearTimeout(timer)
+  retryTimers.clear()
+  pendingHandoff.clear()
+  runHistory.clear()
   // 所有 Agent 一律置空闲（进程已随上次退出而消失）
   for (const a of store.listAgents()) {
     if (a.status !== 'idle') store.updateAgent(a.id, { status: 'idle' })
@@ -487,4 +962,11 @@ module.exports = {
   scoreAgent,
   FUNCTION_KEYWORDS,
   pendingInputs,
+  // V3.6.0：换岗
+  requestHandoff,
+  applyHandoff,
+  setAutoRetry,
+  pickAgentForStage,
+  pendingHandoff,
+  retryTimers,
 }

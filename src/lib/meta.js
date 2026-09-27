@@ -60,6 +60,17 @@ export const AGENT_STATUS_META = {
   working: { label: '工作中', dot: 'bg-sky-400', text: 'text-sky-400' },
 }
 
+/**
+ * 阶段名 -> 中文。服务端 pipeline.STAGE_LABELS 是权威版本，
+ * 这里只是一份展示用的兜底（阶段名允许自定义，取不到就原样显示）。
+ */
+export const STAGE_LABELS = { plan: '方案', code: '编码', build: '构建', test: '测试' }
+
+export const stageLabel = (s) => STAGE_LABELS[s] || s || ''
+
+/** 编辑器里按这个顺序列出阶段（服务端 pipeline.STAGES 的同名同序副本） */
+export const STAGE_KEYS = ['plan', 'code', 'build', 'test']
+
 /** 事件类型 -> 左侧色条与图标 */
 export const EVENT_META = {
   system: { icon: '◆', cls: 'text-slate-400', bar: 'bg-slate-600' },

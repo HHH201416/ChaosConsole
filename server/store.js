@@ -33,6 +33,10 @@ function mapAgent(row) {
     model: row.model || '',
     // 「是干什么的」。界面上只显示这个，不显示姓名
     functionLabel: row.function_label || row.role,
+    // 该岗位可挂的 MCP（catalog id 数组）。空 = 用 seed 里该 role 的默认集
+    mcp: safeParseArray(row.mcp),
+    // 该岗位的默认流水线。空 = 用 executor 的默认流水线
+    pipeline: safeParseArray(row.pipeline),
     createdAt: row.created_at,
   }
 }
@@ -44,6 +48,20 @@ function safeParseArray(text) {
   } catch (_) {
     return []
   }
+}
+
+/** 字符串数组 -> 存库字符串（MCP id 这类）。只留字符串元素，防止前端塞进对象把库里写脏 */
+function toJsonArray(v) {
+  return JSON.stringify(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [])
+}
+
+/**
+ * 通用数组 -> 存库字符串（**保留对象元素**）。
+ * 流水线是 [{stage, role}]，用上面那个只留字符串的会把整条链过滤成 []
+ * —— 而且是在 updateTask 里静默发生的，表现为「流水线建完就没了」，极难查。
+ */
+function toJsonList(v) {
+  return JSON.stringify(Array.isArray(v) ? v : [])
 }
 
 function mapTask(row) {
@@ -63,6 +81,16 @@ function mapTask(row) {
     // 执行器/模型的覆盖值：为空表示跟随所属 Agent
     executor: row.executor || '',
     model: row.model || '',
+    // 阶段流水线：本任务覆盖 > 岗位 > executor 默认（解析在 pipeline.js）
+    stage: row.stage || '',
+    pipeline: safeParseArray(row.pipeline),
+    // 自动换岗：已尝试次数 / 是否允许 / 退避到什么时候
+    attempts: row.attempts || 0,
+    autoRetry: row.auto_retry !== 0,
+    nextRetryAt: row.next_retry_at || 0,
+    // 最近一次交接
+    handoffNote: row.handoff_note || '',
+    handoffAt: row.handoff_at || 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -88,14 +116,15 @@ function getAgent(id) {
   return mapAgent(db.get('SELECT * FROM agents WHERE id = ?', [id]))
 }
 
-function createAgent({ name, role, avatar, systemPrompt, system_prompt, executor, model, functionLabel, function_label }) {
+function createAgent({ name, role, avatar, systemPrompt, system_prompt, executor, model, functionLabel, function_label, mcp, pipeline }) {
   // 同时接受 camelCase 与 snake_case：seed.js 用 snake_case，HTTP API 用 camelCase
   const prompt = systemPrompt !== undefined ? systemPrompt : system_prompt
   const fnLabel = functionLabel !== undefined ? functionLabel : function_label
   const id = uid('agt')
   db.run(
-    `INSERT INTO agents (id, name, role, avatar, status, system_prompt, executor, model, function_label, created_at)
-     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, name, role, avatar, status, system_prompt, executor, model, function_label,
+                         mcp, pipeline, created_at)
+     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       String(name || '新员工').trim(),
@@ -105,6 +134,8 @@ function createAgent({ name, role, avatar, systemPrompt, system_prompt, executor
       executor || 'claude',
       model || '',
       fnLabel || role || 'Coder',
+      toJsonArray(mcp),
+      toJsonList(pipeline),
       now(),
     ],
   )
@@ -126,10 +157,12 @@ function updateAgent(id, patch) {
     executor: pick('executor', current.executor),
     model: pick('model', current.model),
     function_label: pick('functionLabel', current.functionLabel),
+    mcp: pick('mcp', current.mcp),
+    pipeline: pick('pipeline', current.pipeline),
   }
   db.run(
     `UPDATE agents SET name = ?, role = ?, avatar = ?, status = ?, system_prompt = ?,
-            executor = ?, model = ?, function_label = ? WHERE id = ?`,
+            executor = ?, model = ?, function_label = ?, mcp = ?, pipeline = ? WHERE id = ?`,
     [
       next.name,
       next.role,
@@ -139,6 +172,8 @@ function updateAgent(id, patch) {
       next.executor,
       next.model,
       next.function_label,
+      toJsonArray(next.mcp),
+      toJsonList(next.pipeline),
       id,
     ],
   )
@@ -160,11 +195,18 @@ function deleteAgent(id) {
   return true
 }
 
-/** 释放某个 Agent：仅当它名下没有仍在进行中的任务时才置为空闲 */
+/**
+ * 释放某个 Agent：仅当它名下没有**正在跑**的任务时才置为空闲。
+ *
+ * 判据是 run_state 而不是 status —— 这一点很关键：以前用
+ * status IN ('in_progress','needs_input')，于是一个失败落到 needs_input 的任务
+ * 会把岗位永久钉在 working（明明没人干活，却再也接不了新单），岗位池会被慢慢抽干。
+ * 现在与 queue.js 的 agentIsBusy 口径一致：只有 running/queued 才算占用。
+ */
 function releaseAgentIfIdle(agentId) {
   if (!agentId) return
   const busy = db.get(
-    "SELECT COUNT(*) AS n FROM tasks WHERE agent_id = ? AND status IN ('in_progress', 'needs_input')",
+    "SELECT COUNT(*) AS n FROM tasks WHERE agent_id = ? AND run_state IN ('running', 'queued')",
     [agentId],
   )
   if (!busy || busy.n === 0) {
@@ -192,13 +234,13 @@ function getTask(id) {
   return mapTask(db.get('SELECT * FROM tasks WHERE id = ?', [id]))
 }
 
-function createTask({ title, description, tags, cwd, agentId, status, executor, model }) {
+function createTask({ title, description, tags, cwd, agentId, status, executor, model, pipeline }) {
   const id = uid('task')
   const ts = now()
   db.run(
     `INSERT INTO tasks (id, title, description, status, run_state, agent_id, tags, cwd, result, error,
-                        executor, model, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, '', '', ?, ?, ?, ?)`,
+                        executor, model, pipeline, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, '', '', ?, ?, ?, ?, ?)`,
     [
       id,
       String(title || '未命名任务').trim(),
@@ -209,6 +251,8 @@ function createTask({ title, description, tags, cwd, agentId, status, executor, 
       cwd || CONFIG.DEFAULT_CWD,
       executor || '',
       model || '',
+      // 任务级流水线覆盖。空 = 跟随岗位/执行器默认（见 pipeline.resolve）
+      JSON.stringify(Array.isArray(pipeline) ? pipeline : []),
       ts,
       ts,
     ],
@@ -235,6 +279,15 @@ function updateTask(id, patch) {
     error: patch.error !== undefined ? patch.error : current.error,
     executor: patch.executor !== undefined ? patch.executor : current.executor,
     model: patch.model !== undefined ? patch.model : current.model,
+    stage: patch.stage !== undefined ? patch.stage : current.stage,
+    pipeline: patch.pipeline !== undefined ? patch.pipeline : current.pipeline,
+    attempts: patch.attempts !== undefined ? Number(patch.attempts) || 0 : current.attempts,
+    autoRetry:
+      patch.autoRetry !== undefined ? (patch.autoRetry ? 1 : 0) : current.autoRetry ? 1 : 0,
+    nextRetryAt:
+      patch.nextRetryAt !== undefined ? Number(patch.nextRetryAt) || 0 : current.nextRetryAt,
+    handoffNote: patch.handoffNote !== undefined ? patch.handoffNote : current.handoffNote,
+    handoffAt: patch.handoffAt !== undefined ? Number(patch.handoffAt) || 0 : current.handoffAt,
   }
 
   if (!TASK_STATUSES.includes(next.status)) next.status = current.status
@@ -242,7 +295,8 @@ function updateTask(id, patch) {
   db.run(
     `UPDATE tasks SET title = ?, description = ?, status = ?, run_state = ?, agent_id = ?,
             tags = ?, cwd = ?, session_id = ?, result = ?, error = ?,
-            executor = ?, model = ?, updated_at = ?
+            executor = ?, model = ?, stage = ?, pipeline = ?, attempts = ?, auto_retry = ?,
+            next_retry_at = ?, handoff_note = ?, handoff_at = ?, updated_at = ?
      WHERE id = ?`,
     [
       next.title,
@@ -257,6 +311,13 @@ function updateTask(id, patch) {
       next.error || '',
       next.executor || '',
       next.model || '',
+      next.stage || '',
+      toJsonList(next.pipeline),
+      next.attempts,
+      next.autoRetry,
+      next.nextRetryAt,
+      next.handoffNote || '',
+      next.handoffAt,
       now(),
       id,
     ],

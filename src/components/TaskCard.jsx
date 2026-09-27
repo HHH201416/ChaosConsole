@@ -1,13 +1,22 @@
 import { useStore } from '../store'
-import { COLUMN_MAP, RUN_STATE_META, formatClock } from '../lib/meta'
+import { COLUMN_MAP, RUN_STATE_META, formatClock, stageLabel } from '../lib/meta'
 
 export default function TaskCard({ task, agent, selected, onSelect }) {
-  const { startTask, cancelTask, doneTask } = useStore()
+  const { startTask, cancelTask, doneTask, openHandoff, stopRetry } = useStore()
   const col = COLUMN_MAP[task.status] || COLUMN_MAP.backlog
   const run = RUN_STATE_META[task.runState] || RUN_STATE_META.idle
 
   const isRunning = task.runState === 'running' || task.runState === 'queued'
   const isDone = task.status === 'complete'
+
+  // 阶段徽章：只有配了流水线（任务上或岗位默认）才显示
+  const stages = Array.isArray(task.pipeline) ? task.pipeline : []
+  const stageIdx = stages.findIndex((s) => s.stage === task.stage)
+  const stageText =
+    stages.length && task.stage
+      ? `${stageLabel(task.stage)} ${stageIdx >= 0 ? stageIdx + 1 : '?'}/${stages.length}`
+      : ''
+  const attempts = task.attempts || 0
 
   const onDragStart = (e) => {
     e.dataTransfer.setData('text/chaos-task', task.id)
@@ -51,13 +60,23 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
       {/* 标签 / 状态标记：needs_input 也要放进来，否则「等待回复」这枚角标
           只会出现在带标签的任务上，而对话页建的任务 tags 恒为空 —— 也就是
           说最需要你回话的那张卡片反而没有任何提示。 */}
-      {(task.tags.length > 0 || isRunning || task.status === 'needs_input') && (
+      {(task.tags.length > 0 ||
+        isRunning ||
+        task.status === 'needs_input' ||
+        stageText ||
+        attempts > 0) && (
         <div className="mt-2 flex flex-wrap items-center gap-1 pl-3.5">
           {task.tags.map((t) => (
             <span key={t} className="chip">
               {t}
             </span>
           ))}
+          {stageText && <span className="chip bg-violet-500/15 text-violet-300">{stageText}</span>}
+          {attempts > 0 && (
+            <span className="chip bg-amber-500/15 text-amber-300" title="失败后已自动换岗重试的次数">
+              重试 ×{attempts}
+            </span>
+          )}
           {isRunning && (
             <span className="chip bg-sky-500/20 text-sky-300">
               <span className="mr-1 inline-block h-1 w-1 animate-pulseDot rounded-full bg-sky-400" />
@@ -97,6 +116,24 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
         >
           Done
         </button>
+        {/* 换岗：运行中也能点，走的是「交接」不是「取消」 */}
+        <button
+          className="btn-ghost px-2 py-1 text-[11px]"
+          disabled={isDone}
+          onClick={(e) => stop(e, () => openHandoff(task.id))}
+          title="交给另一个岗位接手（运行中会交接，不是取消）"
+        >
+          换岗
+        </button>
+        {attempts > 0 && task.autoRetry && (
+          <button
+            className="btn-ghost px-2 py-1 text-[11px] text-amber-300"
+            onClick={(e) => stop(e, () => stopRetry(task.id))}
+            title="停止失败后自动换岗重试"
+          >
+            停止重试
+          </button>
+        )}
       </div>
     </div>
   )

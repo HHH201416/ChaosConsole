@@ -11,6 +11,8 @@
  *   functionLabel —— 「是干什么的」。界面上只显示这个，不显示姓名
  *   executor      —— 用哪个 CLI 干活：claude | deveco
  *   model         —— 模型 id；留空则用该执行器的默认模型
+ *   mcp           —— 该岗位默认挂载的 MCP server id（见文件末尾的 ROLE_MCP）。
+ *                    岗位记录里一旦有值就以记录为准，这里只是默认值
  */
 
 const DEFAULT_AGENTS = [
@@ -345,5 +347,42 @@ const DEFAULT_AGENTS = [
 4. 不夸大风险，只写有依据的问题。`,
   },
 ]
+
+/* ------------------------------------------------------------------ *
+ * 岗位默认挂载的 MCP（V3.6.0）
+ *
+ * 为什么用一张表、而不是写进上面 21 个对象里：这里是「哪个岗位默认拿哪些工具」
+ * 的唯一分发点，一眼能看完；各写一份的话，想回答「playwright 到底默认挂在谁身上」
+ * 得翻二十多个对象。
+ *
+ * 取值原则：
+ *  - 默认只挂「代价低」的：filesystem / sequential-thinking / context7 / memory
+ *  - playwright 与 chrome-devtools **会起真浏览器**（每个会话多几百 MB 内存和几秒
+ *    启动时间），只默认挂给确实要用的岗位；其它岗位仍可在界面上手工勾
+ *  - 岗位记录里改过 mcp 的，以记录为准（见 mcp-scope.resolveRoleMcp 的取值顺序）
+ * ------------------------------------------------------------------ */
+const ROLE_MCP = {
+  Coder: ['filesystem', 'sequential-thinking', 'context7', 'playwright', 'chrome-devtools'],
+  DevOps: ['filesystem', 'sequential-thinking', 'context7', 'playwright', 'chrome-devtools'],
+  Architect: ['filesystem', 'sequential-thinking', 'context7', 'memory'],
+  PM: ['filesystem', 'sequential-thinking', 'context7', 'memory'],
+  Designer: ['filesystem', 'context7', 'playwright', 'chrome-devtools'],
+  Tester: ['filesystem', 'sequential-thinking', 'playwright', 'chrome-devtools'],
+  Researcher: ['context7', 'memory', 'playwright'],
+  Analyst: ['filesystem', 'memory'],
+  Writer: ['filesystem', 'context7'],
+  Security: ['filesystem', 'sequential-thinking', 'context7'],
+  Chat: ['memory', 'context7'],
+}
+
+/** 鸿蒙那 10 个岗位：多一个 deveco-studio（它们本来就要操作 IDE、跑构建） */
+const HARMONY_MCP = ['filesystem', 'sequential-thinking', 'deveco-studio', 'context7', 'memory']
+
+for (const agent of DEFAULT_AGENTS) {
+  if (agent.mcp) continue
+  agent.mcp = agent.role.startsWith('Harmony')
+    ? HARMONY_MCP
+    : ROLE_MCP[agent.role] || ['filesystem']
+}
 
 module.exports = { DEFAULT_AGENTS }

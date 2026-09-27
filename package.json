@@ -1,6 +1,6 @@
 {
   "name": "chaos-console",
-  "version": "3.1.1",
+  "version": "3.6.0",
   "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
   "main": "electron/main.js",
   "author": {
@@ -57,6 +57,7 @@
       "server/**/*",
       "dist/**/*",
       "package.json",
+      "scripts/deveco-studio.py",
       "!**/*.map"
     ],
     "asar": false,

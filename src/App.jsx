@@ -6,7 +6,14 @@ import TopBar from './components/TopBar'
 import AgentSidebar from './components/AgentSidebar'
 import Board from './components/Board'
 import ChatPanel from './components/ChatPanel'
-import { NewAgentModal, NewTaskModal, SettingsModal, McpModal, InstallUpdateModal } from './components/Modals'
+import {
+  NewAgentModal,
+  NewTaskModal,
+  SettingsModal,
+  McpModal,
+  InstallUpdateModal,
+  HandoffModal,
+} from './components/Modals'
 import { BootScreen, ShutdownOverlay } from './components/LifecycleFx'
 
 function Toasts() {
@@ -99,6 +106,9 @@ export default function App() {
       {modal === 'settings' && <SettingsModal onClose={() => setModal(null)} />}
       {modal === 'mcp' && <McpModal onClose={() => setModal(null)} />}
       {modal === 'update' && <InstallUpdateModal onClose={() => setModal(null)} />}
+      {/* 换岗弹窗不走 modal 字符串：看板卡片和聊天页都要能直接打开它，
+          状态放在 store 里（handoffFor），省掉一路传回调 */}
+      <HandoffModal />
 
       <Toasts />
       <ShutdownOverlay />

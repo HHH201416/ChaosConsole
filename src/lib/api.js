@@ -88,6 +88,10 @@ export const api = {
   move: (id, status) => post(`/api/tasks/${id}/move`, { status }),
   assign: (id, agentId) => post(`/api/tasks/${id}/assign`, { agentId }),
   clearHistory: (id) => post(`/api/tasks/${id}/history/clear`),
+  // 换岗（运行中会交接，不是取消）；停止/恢复自动换岗重试
+  handoff: (id, body) => post(`/api/tasks/${id}/handoff`, body),
+  setRetry: (id, enabled) => post(`/api/tasks/${id}/retry`, { enabled }),
+  pipeline: () => get('/api/pipeline'),
 
   setPermissionMode: (permissionMode) => post('/api/settings', { permissionMode }),
   setSettings: (patch) => post('/api/settings', patch),

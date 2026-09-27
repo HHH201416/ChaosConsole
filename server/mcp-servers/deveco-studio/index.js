@@ -18,7 +18,17 @@
 const path = require('path')
 const { spawn } = require('child_process')
 
-const SCRIPT = path.resolve(__dirname, '..', '..', '..', 'scripts', 'deveco-studio.py')
+/**
+ * Python 脚本的位置。
+ *
+ * 优先用 CHAOS_DEVECO_SCRIPT —— 这个服务器会被复制到 %APPDATA% 下的稳定目录再注册
+ * （见 server/mcp.js 的 materializeLocalServer），复制过去的副本旁边没有 scripts/，
+ * 相对路径就找不到脚本了。注册时由 mcp.js 把这个环境变量一起写进配置。
+ * 开发时直接跑仓库里的文件，走下面的相对路径兜底。
+ */
+const SCRIPT =
+  process.env.CHAOS_DEVECO_SCRIPT ||
+  path.resolve(__dirname, '..', '..', '..', 'scripts', 'deveco-studio.py')
 
 /** 找一个可用的 python：优先环境变量，其次 py / python3 / python */
 function resolvePython() {

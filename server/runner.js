@@ -40,12 +40,28 @@ const os = require('os')
 const CONFIG = require('./config')
 const store = require('./store')
 const executors = require('./executors')
+const pipeline = require('./pipeline')
+const mcpScope = require('./mcp-scope')
+const runtime = require('./runtime')
+const { quoteArg } = require('./win-quote')
+const { DEFAULT_AGENTS } = require('./seed')
 
 const MAX_EVENT_CHARS = 6000
 const MAX_STDERR_CHARS = 4000
 
 /** taskId -> child process | mock controller */
 const running = new Map()
+
+/**
+ * taskId -> 本次结束的**原因**：'cancel' | 'handoff' | 'timeout'
+ *
+ * 为什么需要这张表：Windows 下我们用 `taskkill /T /F` 结束进程，close 回来的是
+ * code=1 / signal=null，于是 `signal === 'SIGTERM'` 永远不成立 —— 「用户点了取消」
+ * 实际被判成「进程以退出码 1 失败」，落库落成 needs_input/error 而不是
+ * backlog/cancelled。把意图记在**起杀它的地方**，close 只读这张表，就不再依赖
+ * 各平台的信号语义。读一次即删，避免污染下一次运行。
+ */
+const stopIntent = new Map()
 
 /* ------------------------------------------------------------------ *
  * 可执行文件探测
@@ -193,29 +209,111 @@ function displayToolName(raw) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 控制指令（阶段推进 / 换岗）
+ *
+ * agent 用「单独一行」的指令告诉我们该换人或者该推进阶段。两条通道
+ * （这里的文本指令、以及 handoff MCP 工具）最终都汇入 queue 的同一个
+ * 换岗原语，解析器只负责**识别**，不认识岗位、不做判断。
+ * ------------------------------------------------------------------ */
+
+const DIRECTIVE_RE = /^\s*CHAOS_(STAGE|HANDOFF):\s*(\{.*\})\s*$/
+
+/**
+ * 扫描一段文本里的控制指令。逐行匹配，只认**单行 JSON** ——
+ * 跨行的 JSON 不认（提示词里明确要求单独起一行）。
+ * 解析失败也会返回结果（带 parseError），让调用方能记一条事件而不是静默吞掉。
+ */
+function scanDirective(text) {
+  const src = String(text || '')
+  if (!src) return null
+  for (const line of src.split(/\r?\n/)) {
+    const m = DIRECTIVE_RE.exec(line)
+    if (!m) continue
+    try {
+      return { kind: m[1].toLowerCase(), payload: JSON.parse(m[2]), raw: line.trim() }
+    } catch (_) {
+      return { kind: m[1].toLowerCase(), parseError: true, raw: line.trim() }
+    }
+  }
+  return null
+}
+
+/**
+ * 阶段 + 指令语法。**每个非续轮都要注入** —— 不告诉 agent 这套语法，
+ * 它就永远不会发出指令，功能看起来就是「没生效」。
+ */
+function stageSection(stage) {
+  if (!stage || !Array.isArray(stage.pipeline) || !stage.pipeline.length) return ''
+  const chain = stage.pipeline.map((s) => pipeline.labelOf(s.stage)).join(' → ')
+  const here = pipeline.labelOf(stage.current || stage.pipeline[0].stage)
+  const idx = Math.max(1, (stage.index || 0) + 1)
+  return [
+    '\n## 当前阶段',
+    `${here}（${idx}/${stage.pipeline.length}）：${chain}`,
+    '',
+    '需要推进阶段或把任务交给别的岗位时，在回复里**单独起一行**写下面对应的指令（不写就不会触发）：',
+    `- 本阶段做完、交给下一阶段：\`CHAOS_STAGE: {"done":"${stage.current || stage.pipeline[0].stage}","next":"下一阶段的阶段名","summary":"这一步做了什么"}\``,
+    '- 需要别的岗位接手：`CHAOS_HANDOFF: {"role":"岗位代码","reason":"为什么交给它","summary":"交接说明"}`',
+  ].join('\n')
+}
+
+/** 可交办的岗位清单（只给 role 与职能，姓名从不出现在提示词里） */
+function rosterSection(roster) {
+  if (!Array.isArray(roster) || !roster.length) return ''
+  const items = roster
+    .slice(0, 40)
+    .map((a) => `${a.role}(${a.functionLabel || a.role})`)
+  return `\n## 可交办的岗位\n${items.join('、')}`
+}
+
+/* ------------------------------------------------------------------ *
  * 提示词组装
  * ------------------------------------------------------------------ */
 
-function composePrompt({ systemPrompt, task, extraInstruction, isResume, envNote }) {
+function composePrompt({
+  systemPrompt,
+  task,
+  extraInstruction,
+  isResume,
+  envNote,
+  stage,
+  roster,
+  handoffBrief,
+}) {
   const parts = []
-  if (systemPrompt && !isResume) {
-    parts.push(systemPrompt.trim())
+  const push = (text) => {
+    if (text) parts.push(text)
+  }
+
+  // 交接必须重新注入人设：新岗位的 system_prompt 只在会话首轮生效，
+  // 而交接开的是新会话（见 queue.applyHandoff 的新会话判定）。
+  const injectPersona = systemPrompt && (!isResume || Boolean(handoffBrief))
+  if (injectPersona) {
+    push(systemPrompt.trim())
     // 执行器的本地环境（如 DevEco 工具链绝对路径）。只在首次回合拼，
     // 续跑时上下文里已经有了。
-    if (envNote) parts.push(`\n${envNote.trim()}`)
-    parts.push('\n---\n')
+    if (envNote) push(`\n${envNote.trim()}`)
+    push('\n---\n')
   }
-  if (extraInstruction) {
+
+  if (handoffBrief) {
+    // 接手回合：任务背景由交接说明自带，不再重复贴一遍任务原文
+    push(handoffBrief.trim())
+  } else if (extraInstruction) {
     // 续跑回合：只发补充指令，上下文由会话自己维持
-    parts.push(extraInstruction.trim())
+    push(extraInstruction.trim())
     return parts.join('\n')
+  } else {
+    push(`# 任务\n${task.title}`)
+    if (task.description && task.description.trim()) {
+      push(`\n## 详细说明\n${task.description.trim()}`)
+    }
+    push(`\n## 工作目录\n${task.cwd || CONFIG.DEFAULT_CWD}`)
   }
-  parts.push(`# 任务\n${task.title}`)
-  if (task.description && task.description.trim()) {
-    parts.push(`\n## 详细说明\n${task.description.trim()}`)
-  }
-  parts.push(`\n## 工作目录\n${task.cwd || CONFIG.DEFAULT_CWD}`)
-  parts.push('\n请开始执行。完成后用一段话总结你做了什么、结果如何、是否还有未解决的问题。')
+
+  push(stageSection(stage))
+  push(rosterSection(roster))
+  push('\n请开始执行。完成后用一段话总结你做了什么、结果如何、是否还有未解决的问题。')
   return parts.join('\n')
 }
 
@@ -224,7 +322,7 @@ function composePrompt({ systemPrompt, task, extraInstruction, isResume, envNote
  * ------------------------------------------------------------------ */
 
 function createClaudeParser(taskId) {
-  const state = { sessionId: null, resultText: '', isError: false, toolNames: new Set() }
+  const state = { sessionId: null, resultText: '', isError: false, toolNames: new Set(), directive: null }
 
   function handleAssistant(payload) {
     const content = payload?.message?.content
@@ -233,6 +331,17 @@ function createClaudeParser(taskId) {
       if (!block || typeof block !== 'object') continue
       if (block.type === 'text' && block.text && block.text.trim()) {
         store.addMessage(taskId, 'assistant', block.text)
+        // 正文照常入库（不吞内容），指令另外记一条事件 —— 让「为什么换了人」
+        // 在时间线上看得见
+        const d = scanDirective(block.text)
+        if (d) {
+          state.directive = d
+          store.addEvent(taskId, {
+            type: 'status',
+            name: d.kind === 'stage' ? '阶段指令' : '换岗指令',
+            content: clip(d.raw, 600),
+          })
+        }
       } else if (block.type === 'tool_use') {
         state.toolNames.add(block.name)
         store.addEvent(taskId, {
@@ -343,6 +452,7 @@ function createDevecoParser(taskId) {
     toolNames: new Set(),
     textParts: [],
     permissionBlocked: false,
+    directive: null,
   }
 
   /** deveco 在未开启自动放行时，会把工具调用驳回并把这个事实塞在输出里 */
@@ -417,6 +527,16 @@ function createDevecoParser(taskId) {
         if (part.text && part.text.trim()) {
           state.textParts.push(part.text)
           store.addMessage(taskId, 'assistant', part.text)
+          // 与 claude 侧同一套指令：阶段推进 / 换岗
+          const d = scanDirective(part.text)
+          if (d) {
+            state.directive = d
+            store.addEvent(taskId, {
+              type: 'status',
+              name: d.kind === 'stage' ? '阶段指令' : '换岗指令',
+              content: clip(d.raw, 600),
+            })
+          }
         }
         break
 
@@ -464,7 +584,7 @@ function createDevecoParser(taskId) {
  * 命令行参数
  * ------------------------------------------------------------------ */
 
-function buildClaudeArgs({ resumeSessionId, model }) {
+function buildClaudeArgs({ resumeSessionId, model, mcpConfigPath = '', strictMcp = false }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose']
 
   const mode = store.getSetting('permissionMode', CONFIG.PERMISSION_MODE)
@@ -474,6 +594,13 @@ function buildClaudeArgs({ resumeSessionId, model }) {
   // 只放行白名单内的 id：这个值能被 API 改写，而它会进 argv。
   if (model && executors.isValidModel('claude', model)) args.push('--model', model)
   if (resumeSessionId) args.push('--resume', resumeSessionId)
+  // 按岗位挂 MCP。路径在 %APPDATA% 下，用户名带空格就会被 cmd 拆成两个参数
+  // （spawn 走 shell:true），所以必须按 win-quote 的规则补引号。
+  if (mcpConfigPath) {
+    args.push('--mcp-config', quoteArg(mcpConfigPath))
+    // 严格模式：只认 --mcp-config 里给的服务器（同时会排除项目/用户级的其它 MCP）
+    if (strictMcp) args.push('--strict-mcp-config')
+  }
   return args
 }
 
@@ -506,6 +633,25 @@ function buildDevecoArgs({ resumeSessionId, model, cwd }) {
  * 模拟执行（CLI 不可用时的降级路径）
  * ------------------------------------------------------------------ */
 
+/**
+ * 模拟执行的「标题标记」：让回归用例在没有真 CLI 的情况下也能覆盖
+ * 失败自动换岗、阶段推进、主动换岗这三条规则。
+ * 标记都是惰性的 —— 正常标题里不会出现，日常使用完全不受影响。
+ */
+const mockAttempts = new Map()
+
+function mockMarkers(title) {
+  const t = String(title || '')
+  const stage = /\[STAGE:([^\]]+)\]/.exec(t)
+  const handoff = /\[HANDOFF:([^\]]+)\]/.exec(t)
+  return {
+    failAlways: /\[FAIL_ALWAYS\]/.test(t),
+    failOnce: /\[FAIL_ONCE\]/.test(t),
+    stage: stage ? stage[1].trim() : '',
+    handoff: handoff ? handoff[1].trim() : '',
+  }
+}
+
 function runMock({ taskId, task, agent, extraInstruction }) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   let cancelled = false
@@ -513,6 +659,13 @@ function runMock({ taskId, task, agent, extraInstruction }) {
   running.set(taskId, controller)
 
   const who = agent.functionLabel || agent.role
+  const marks = mockMarkers(task.title)
+
+  // 第几次跑这个任务（[FAIL_ONCE] 靠它「先失败一次、换人后成功」）
+  const attempt = mockAttempts.get(taskId) || 0
+  mockAttempts.set(taskId, attempt + 1)
+  const failNow = marks.failAlways || (marks.failOnce && attempt === 0)
+  const failMsg = marks.failAlways ? '模拟失败（持续失败）' : '模拟失败（首次）'
 
   const script = [
     { delay: 300, kind: 'event', type: 'system', name: '模拟模式', content: '未检测到可用的 CLI，本次以模拟方式演示执行流程。' },
@@ -530,24 +683,67 @@ function runMock({ taskId, task, agent, extraInstruction }) {
     { delay: 300, kind: 'event', type: 'success', name: '运行结束', content: '耗时 9.1s（模拟）' },
   ]
 
+  // 中途中报告指令：插在「正在分析」之后，模拟真实执行里 agent 主动发指令的时机
+  let directive = null
+  if (marks.stage) {
+    const pair = marks.stage.split(/→|->/).map((s) => s.trim()).filter(Boolean)
+    const payload = {
+      done: pair.length > 1 ? pair[0] : task.stage || '',
+      next: pair.length > 1 ? pair[1] : pair[0],
+      summary: '模拟阶段推进',
+    }
+    directive = { kind: 'stage', payload, raw: `CHAOS_STAGE: ${JSON.stringify(payload)}` }
+  } else if (marks.handoff) {
+    const payload = { role: marks.handoff, reason: '模拟换岗', summary: '模拟交接说明' }
+    directive = { kind: 'handoff', payload, raw: `CHAOS_HANDOFF: ${JSON.stringify(payload)}` }
+  }
+  if (directive) {
+    script.splice(6, 0, {
+      delay: 400,
+      kind: 'directive',
+      name: directive.kind === 'stage' ? '阶段指令' : '换岗指令',
+      text: directive.raw,
+    })
+  }
+
+  // 要失败的一轮就别演到「测试全部通过」—— 否则时间线自相矛盾
+  const steps = failNow ? script.slice(0, 8) : script
+
+  /** 被中断时的返回值：读一次意图就删，让「换岗」与「取消」在模拟路径上也可区分 */
+  const stopPayload = () => {
+    const intent = stopIntent.get(taskId)
+    stopIntent.delete(taskId)
+    if (intent === 'timeout') return { ok: false, timedOut: true, error: '执行超时（模拟）' }
+    return { ok: false, cancelled: true, handoff: intent === 'handoff' }
+  }
+
   const promise = (async () => {
-    for (const step of script) {
-      if (cancelled) return { ok: false, cancelled: true }
+    for (const step of steps) {
+      if (cancelled) return stopPayload()
       await sleep(step.delay)
-      if (cancelled) return { ok: false, cancelled: true }
+      if (cancelled) return stopPayload()
       if (step.kind === 'message') store.addMessage(taskId, 'assistant', step.text)
-      else store.addEvent(taskId, { type: step.type, name: step.name, content: step.content })
+      else if (step.kind === 'directive') {
+        store.addMessage(taskId, 'assistant', step.text)
+        store.addEvent(taskId, { type: 'status', name: step.name, content: clip(step.text, 600) })
+      } else store.addEvent(taskId, { type: step.type, name: step.name, content: step.content })
+    }
+    if (failNow) {
+      store.addEvent(taskId, { type: 'error', name: '模拟失败', content: failMsg })
+      return { ok: false, error: failMsg, sessionId: `mock-${taskId}` }
     }
     return {
       ok: true,
       sessionId: `mock-${taskId}`,
       resultText: `任务「${task.title}」已执行完毕（模拟）。`,
       toolNames: ['Bash', 'Read', 'Edit'],
+      directive,
     }
   })()
 
   promise.finally(() => {
     if (running.get(taskId) === controller) running.delete(taskId)
+    stopIntent.delete(taskId)
   })
 
   return promise
@@ -557,10 +753,11 @@ function runMock({ taskId, task, agent, extraInstruction }) {
  * 真实执行（claude / deveco 共用进程管理）
  * ------------------------------------------------------------------ */
 
-function runReal({ taskId, bin, args, prompt, parser, cwd, label }) {
+function runReal({ taskId, bin, args, prompt, parser, cwd, label, extraEnv = {} }) {
   const child = spawn(bin, args, {
     cwd,
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    // extraEnv 目前只用来传 deveco 的按岗位 MCP 覆盖（DEVECO_CONFIG_CONTENT）
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', ...extraEnv },
     windowsHide: true,
     // Windows 上 .cmd 必须经 shell 转发；argv 全为静态安全参数，无注入面
     shell: process.platform === 'win32',
@@ -573,6 +770,7 @@ function runReal({ taskId, bin, args, prompt, parser, cwd, label }) {
 
   const promise = new Promise((resolve) => {
     const timer = setTimeout(() => {
+      stopIntent.set(taskId, 'timeout')
       store.addEvent(taskId, {
         type: 'error',
         name: '超时',
@@ -608,6 +806,33 @@ function runReal({ taskId, bin, args, prompt, parser, cwd, label }) {
     })
 
     child.on('close', (code, signal) => {
+      // 先看「是谁、为什么结束了它」—— 这比信号可靠（见 stopIntent 的注释）
+      const intent = stopIntent.get(taskId)
+      stopIntent.delete(taskId)
+      if (intent === 'cancel' || intent === 'handoff') {
+        store.addEvent(taskId, { type: 'error', name: '已中断', content: '进程被主动结束。' })
+        finish({
+          ok: false,
+          cancelled: true,
+          // 换岗不是取消：调用方据此走交接而不是落 cancelled
+          handoff: intent === 'handoff',
+          sessionId: parser.state.sessionId,
+        })
+        return
+      }
+      if (intent === 'timeout') {
+        // 超时给明确的 timedOut 标记，让调用方按失败处理（自动换岗/转人工），
+        // 而不是像以前那样被当成用户取消丢进 backlog
+        finish({
+          ok: false,
+          timedOut: true,
+          error: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束`,
+          sessionId: parser.state.sessionId,
+          toolNames: [...parser.state.toolNames],
+        })
+        return
+      }
+
       const killed = signal === 'SIGTERM' || signal === 'SIGKILL'
       if (killed) {
         store.addEvent(taskId, { type: 'error', name: '已中断', content: '进程被主动结束。' })
@@ -646,9 +871,22 @@ function runReal({ taskId, bin, args, prompt, parser, cwd, label }) {
 
   promise.finally(() => {
     if (running.get(taskId) === child) running.delete(taskId)
+    // 兜底：进程自己退出（没走 close 的意图分支）时别把意图留到下一次运行
+    stopIntent.delete(taskId)
+    cleanupRunScope(taskId)
   })
 
   return promise
+}
+
+/**
+ * 一次运行结束后清掉按岗位挂载的临时状态：
+ *  - 运行期 MCP 配置（里面带着任务 id 与令牌，留着没意义）
+ *  - 交接令牌（跑完的 / 被劫持的 MCP 子进程不能再拿它切任务）
+ */
+function cleanupRunScope(taskId) {
+  mcpScope.removeRunFile(taskId)
+  runtime.revokeHandoffToken(taskId)
 }
 
 /* ------------------------------------------------------------------ *
@@ -671,7 +909,7 @@ function executorBinary(executorId) {
  * 执行一个任务的一个回合。
  * 返回 { ok, cancelled, error, sessionId, resultText, toolNames, executor }
  */
-async function execute({ task, agent, extraInstruction = '', resumeSessionId = null }) {
+async function execute({ task, agent, extraInstruction = '', resumeSessionId = null, handoffBrief = '' }) {
   const taskId = task.id
   const isResume = Boolean(resumeSessionId)
   const { executor } = resolveRuntime(task, agent)
@@ -701,12 +939,32 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     model = fallback || ''
   }
 
+  // 阶段上下文：本任务实际走哪条流水线（任务 > 岗位 > seed 默认 > executor 默认），
+  // 以及现在在哪一步。只用来拼提示词与校验指令，不改数据库。
+  const stages = pipeline.resolve(
+    task,
+    agent,
+    store.getSetting('pipelineEnabled', '1') === '1',
+    DEFAULT_AGENTS.find((a) => a.role === agent.role) || null,
+  )
+  const currentStage = task.stage || (stages[0] && stages[0].stage) || ''
+  const stageInfo = stages.length
+    ? {
+        pipeline: stages,
+        current: currentStage,
+        index: Math.max(0, pipeline.stageIndex(stages, currentStage)),
+      }
+    : null
+
   const prompt = composePrompt({
     systemPrompt: agent.system_prompt || agent.systemPrompt || '',
     task,
     extraInstruction,
     isResume,
     envNote: executor === 'deveco' ? executors.devecoEnvNote() : '',
+    stage: stageInfo,
+    roster: store.listAgents(),
+    handoffBrief,
   })
 
   const bin = executorBinary(executor)
@@ -719,7 +977,11 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
   })
 
   if (!canRunReal) {
-    return { ...(await runMock({ taskId, task, agent, extraInstruction })), executor }
+    const mock = await runMock({ taskId, task, agent, extraInstruction })
+    // 模拟路径也要清掉按岗位挂载留下的临时文件与令牌
+    cleanupRunScope(taskId)
+    // 模拟路径的指令由标题标记驱动（见 runMock），照样交给调用方
+    return { ...mock, executor, directive: mock.directive || null }
   }
 
   const isClaude = executor === 'claude'
@@ -738,14 +1000,25 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     cwd = CONFIG.ROOT
   }
 
+  // 按岗位挂 MCP：
+  //   claude  → 写一份本次运行的临时配置，用 --mcp-config + --strict-mcp-config 启动
+  //   deveco  → 走 DEVECO_CONFIG_CONTENT 内联覆盖（实测按 key 合并，能逐项关掉）
+  // 令牌给 agent 的「换岗」MCP 工具用，运行结束即吊销。
+  // 任何一步失败都只是「这次不按岗位挂」，不影响运行本身。
+  const handoffToken = mcpScope.scopeEnabled() ? runtime.mintHandoffToken(taskId) : ''
+  const mcpConfigPath = isClaude
+    ? mcpScope.buildClaudeConfig(task, agent, { token: handoffToken, claudeBin: bin })
+    : ''
+  const extraEnv = isClaude ? {} : mcpScope.buildDevecoEnv(task, agent, { token: handoffToken })
+
   const args = isClaude
-    ? buildClaudeArgs({ resumeSessionId, model })
+    ? buildClaudeArgs({ resumeSessionId, model, mcpConfigPath, strictMcp: mcpScope.strictMode() })
     : buildDevecoArgs({ resumeSessionId, model, cwd })
   const parser = isClaude ? createClaudeParser(taskId) : createDevecoParser(taskId)
   const label = isClaude ? 'claude' : 'deveco'
 
   const messagesBefore = store.listMessages(taskId).length
-  const result = await runReal({ taskId, bin, args, prompt, parser, cwd, label })
+  const result = await runReal({ taskId, bin, args, prompt, parser, cwd, label, extraEnv })
 
   // CLI 真的不存在/不可执行 → 退回模拟，保证界面仍然可用
   if (result.spawnFailed) {
@@ -754,7 +1027,11 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
       name: '降级为模拟执行',
       content: `无法启动 ${label}（${result.error}），本次改用模拟模式。`,
     })
-    return { ...(await runMock({ taskId, task, agent, extraInstruction })), executor }
+    const mock = await runMock({ taskId, task, agent, extraInstruction })
+    // 模拟路径也要清掉按岗位挂载留下的临时文件与令牌
+    cleanupRunScope(taskId)
+    // 模拟路径的指令由标题标记驱动（见 runMock），照样交给调用方
+    return { ...mock, executor, directive: mock.directive || null }
   }
 
   // 跑完了却一句话都没说：在对话里补一条说明，否则用户只看到「已完成」会很困惑
@@ -769,7 +1046,8 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     }
   }
 
-  return { ...result, executor }
+  // directive 交给调用方（queue）判断怎么用：解析器只负责识别，不认识岗位
+  return { ...result, executor, directive: result.directive || parser.state.directive || null }
 }
 
 function killTree(child) {
@@ -785,9 +1063,18 @@ function killTree(child) {
   }
 }
 
-function cancel(taskId) {
+/**
+ * 结束某个任务的进程。
+ *
+ * intent 决定这次结束**怎么被解释**（见 stopIntent 的注释）：
+ *   'cancel'  用户主动取消 → 调用方落 backlog/cancelled
+ *   'handoff' 换岗 → 调用方走交接，不落 cancelled
+ * 默认 'cancel'，保持所有既有调用点的语义不变。
+ */
+function cancel(taskId, intent = 'cancel') {
   const child = running.get(taskId)
   if (!child) return false
+  stopIntent.set(taskId, intent === 'handoff' ? 'handoff' : 'cancel')
   if (child.mock) child.kill()
   else killTree(child)
   running.delete(taskId)
@@ -802,6 +1089,11 @@ function runningTaskIds() {
   return [...running.keys()]
 }
 
+/** 任务被删除时清掉它的模拟计数（否则这张表只增不减） */
+function forgetAttempts(taskId) {
+  mockAttempts.delete(taskId)
+}
+
 module.exports = {
   execute,
   cancel,
@@ -813,4 +1105,5 @@ module.exports = {
   killTree,
   resolveRuntime,
   executorBinary,
+  forgetAttempts,
 }

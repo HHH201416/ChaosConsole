@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
-import { COLUMN_MAP, RUN_STATE_META, EVENT_META, formatTime, relativeTime, roleColor } from '../lib/meta'
+import { COLUMN_MAP, RUN_STATE_META, EVENT_META, formatTime, relativeTime, roleColor, stageLabel } from '../lib/meta'
 
 /* ------------------------------------------------------------------ *
  * 单条消息
@@ -179,7 +179,7 @@ export default function ChatPanel() {
   const selectedTaskId = useStore((s) => s.selectedTaskId)
   const system = useStore((s) => s.system)
   const chatOpen = useStore((s) => s.chatOpen)
-  const { sendChat, selectTask, newConversation, setConversationModel, startTask, cancelTask } =
+  const { sendChat, selectTask, newConversation, setConversationModel, startTask, cancelTask, openHandoff } =
     useStore()
 
   const [draft, setDraft] = useState('')
@@ -202,6 +202,13 @@ export default function ChatPanel() {
   }, [task, agent])
 
   const isRunning = task?.runState === 'running' || task?.runState === 'queued'
+
+  // 阶段徽章与重试次数（与看板卡片同一套口径）
+  const stages = Array.isArray(task?.pipeline) ? task.pipeline : []
+  const stageIdx = stages.findIndex((s) => s.stage === task?.stage)
+  const stageText =
+    stages.length && task?.stage ? `${stageLabel(task.stage)} ${stageIdx >= 0 ? stageIdx + 1 : '?'}/${stages.length}` : ''
+  const attempts = task?.attempts || 0
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -302,6 +309,10 @@ export default function ChatPanel() {
             </span>
           )}
           <span className="chip">{executorLabel}</span>
+          {stageText && <span className="chip bg-violet-500/15 text-violet-300">{stageText}</span>}
+          {attempts > 0 && (
+            <span className="chip bg-amber-500/15 text-amber-300">重试 ×{attempts}</span>
+          )}
 
           <div className="ml-auto flex gap-1">
             <button
@@ -310,6 +321,13 @@ export default function ChatPanel() {
               title="查看事件列表（工具调用明细）"
             >
               {showEvents ? '看对话' : `事件 ${events.length}`}
+            </button>
+            <button
+              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-white"
+              onClick={() => openHandoff(task.id)}
+              title="交给另一个岗位接手（运行中会交接，不是中断）"
+            >
+              换岗
             </button>
             <button
               className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-white"

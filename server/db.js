@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS agents (
   executor       TEXT NOT NULL DEFAULT 'claude',
   model          TEXT NOT NULL DEFAULT '',
   function_label TEXT NOT NULL DEFAULT '',
+  -- 该岗位可用的 MCP server（catalog id 数组，JSON）。空数组 = 用 seed 里的默认集
+  mcp            TEXT NOT NULL DEFAULT '[]',
+  -- 该岗位的默认流水线 [{stage, role}]，空 = 用 executor 的默认流水线
+  pipeline       TEXT NOT NULL DEFAULT '[]',
   created_at     INTEGER NOT NULL
 );
 
@@ -50,6 +54,19 @@ CREATE TABLE IF NOT EXISTS tasks (
   error       TEXT NOT NULL DEFAULT '',
   executor    TEXT NOT NULL DEFAULT '',
   model       TEXT NOT NULL DEFAULT '',
+  -- 当前阶段（pipeline 里的 stage 值），空 = 还没开始
+  stage       TEXT NOT NULL DEFAULT '',
+  -- 本任务的流水线覆盖 [{stage, role}]，空 = 跟随岗位
+  pipeline    TEXT NOT NULL DEFAULT '[]',
+  -- 自动换岗已尝试次数（落库而不是存内存：UI 要读，重启后 recoverOnStartup 也要看）
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  -- 是否允许失败后自动换岗重试（1 允许）
+  auto_retry  INTEGER NOT NULL DEFAULT 1,
+  -- 退避到什么时候可以重派（毫秒时间戳，0 = 没有在退避）
+  next_retry_at INTEGER NOT NULL DEFAULT 0,
+  -- 最近一次交接说明（给 UI 显示，也作为下一位的兜底上下文）
+  handoff_note  TEXT NOT NULL DEFAULT '',
+  handoff_at    INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -166,6 +183,16 @@ function migrate() {
     ['agents', 'function_label', "TEXT NOT NULL DEFAULT ''"],
     ['tasks', 'model', "TEXT NOT NULL DEFAULT ''"],
     ['tasks', 'executor', "TEXT NOT NULL DEFAULT ''"],
+    // V3.6.0：运行中换岗 + 阶段流水线
+    ['agents', 'mcp', "TEXT NOT NULL DEFAULT '[]'"],
+    ['agents', 'pipeline', "TEXT NOT NULL DEFAULT '[]'"],
+    ['tasks', 'stage', "TEXT NOT NULL DEFAULT ''"],
+    ['tasks', 'pipeline', "TEXT NOT NULL DEFAULT '[]'"],
+    ['tasks', 'attempts', 'INTEGER NOT NULL DEFAULT 0'],
+    ['tasks', 'auto_retry', 'INTEGER NOT NULL DEFAULT 1'],
+    ['tasks', 'next_retry_at', 'INTEGER NOT NULL DEFAULT 0'],
+    ['tasks', 'handoff_note', "TEXT NOT NULL DEFAULT ''"],
+    ['tasks', 'handoff_at', 'INTEGER NOT NULL DEFAULT 0'],
   ]
 
   for (const [table, column, decl] of wanted) {

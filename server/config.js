@@ -37,6 +37,29 @@ const PERMISSION_MODE = process.env.CHAOS_PERMISSION_MODE || 'acceptEdits'
 
 const VALID_PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
 
+/**
+ * 下载加速镜像。**默认启用**：本机 hosts 被加速器改过，GitHub 的发布包域名被指到
+ * 127.0.0.1，不走镜像时实测只有 ~0.1MB/s（87MB 要十几分钟）。默认这个值是实测最快
+ * 的一个公共镜像。
+ *
+ * 由服务端决定，界面只显示当前是否启用（不强求用户理解镜像是什么）。要改的话：
+ *   CHAOS_DOWNLOAD_MIRROR=https://ghfast.top     换成别的镜像
+ *   CHAOS_DOWNLOAD_MIRROR=off                    关掉，直连 GitHub
+ *
+ * 默认值只影响「设置里没写过」的情况；写过就以库里的值为准（便于以后加开关）。
+ */
+const DOWNLOAD_MIRROR_DEFAULT = 'https://gh-proxy.com'
+const DOWNLOAD_MIRROR_OFF = ['off', 'none', '0', 'false', '']
+
+function resolveDownloadMirror(raw) {
+  if (raw === undefined || raw === null) return DOWNLOAD_MIRROR_DEFAULT
+  const s = String(raw).trim()
+  if (DOWNLOAD_MIRROR_OFF.includes(s.toLowerCase())) return ''
+  return s
+}
+
+const DOWNLOAD_MIRROR = resolveDownloadMirror(process.env.CHAOS_DOWNLOAD_MIRROR)
+
 function isValidPermissionMode(mode) {
   return VALID_PERMISSION_MODES.includes(mode)
 }
@@ -58,6 +81,9 @@ const CONFIG = {
   PERMISSION_MODE,
   VALID_PERMISSION_MODES,
   isValidPermissionMode,
+
+  DOWNLOAD_MIRROR,
+  DOWNLOAD_MIRROR_DEFAULT,
 
   /** 单次运行的超时（毫秒），默认 20 分钟 */
   RUN_TIMEOUT: Number(process.env.CHAOS_RUN_TIMEOUT || 20 * 60 * 1000),

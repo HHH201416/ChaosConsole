@@ -340,16 +340,27 @@ async function main() {
         dmod.verifyFile(probe, '').skipped === true,
     )
 
-    // 非法镜像必须在写库前被挡住：不能静默存成空值让用户以为设上了
-    const bad = await api('POST', '/api/settings', { downloadMirror: 'gh-proxy.com' })
-    const goodSet = await api('POST', '/api/settings', { downloadMirror: 'https://gh-proxy.com/' })
-    const sys = (await api('GET', '/api/system')).body.data
+    // 语义：没写过 = 用后端默认值（默认启用）；写过空串 = 显式关掉，不再退回默认
+    const initial = (await api('GET', '/api/system')).body.data
     check(
-      '非法镜像被拒（400），合法镜像存的是规范化后的值',
-      bad.status === 400 && goodSet.status === 200 && sys.downloadMirror === 'https://gh-proxy.com',
-      `非法 HTTP ${bad.status}，存下来的是「${sys.downloadMirror}」`,
+      '镜像默认启用（没写过设置时取后端默认值）',
+      initial.downloadMirror === 'https://gh-proxy.com',
+      `当前「${initial.downloadMirror}」`,
     )
+
+    // 非法值必须在写库前被挡住：不能静默存成空值让用户以为设上了
+    const bad = await api('POST', '/api/settings', { downloadMirror: 'gh-proxy.com' })
+    const goodSet = await api('POST', '/api/settings', { downloadMirror: 'https://ghfast.top/' })
+    const afterSet = (await api('GET', '/api/system')).body.data
+    check(
+      '非法镜像被拒（400），合法值规范化后入库',
+      bad.status === 400 && goodSet.status === 200 && afterSet.downloadMirror === 'https://ghfast.top',
+      `非法 HTTP ${bad.status}，存下来的是「${afterSet.downloadMirror}」`,
+    )
+
     await api('POST', '/api/settings', { downloadMirror: '' })
+    const off = (await api('GET', '/api/system')).body.data
+    check('显式写空 = 关掉（不会又退回默认值）', off.downloadMirror === '', `当前「${off.downloadMirror}」`)
   }
 
   await server.stop()

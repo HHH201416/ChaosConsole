@@ -108,7 +108,9 @@ app.get('/api/system', requireAuth, (_req, res) => {
       validPermissionModes: CONFIG.VALID_PERMISSION_MODES,
       devecoAutoApprove: store.getSetting('devecoAutoApprove', '0') === '1',
       autoUpdateWhenIdle: store.getSetting('autoUpdateWhenIdle', '0') === '1',
-      downloadMirror: store.getSetting('downloadMirror', ''),
+      // 下载加速镜像：服务端定（默认启用），界面只显示开没开
+      downloadMirror: store.getSetting('downloadMirror', CONFIG.DOWNLOAD_MIRROR),
+      downloadMirrorDefault: CONFIG.DOWNLOAD_MIRROR_DEFAULT,
       defaultCwd: CONFIG.DEFAULT_CWD,
       platform: process.platform,
       runningTaskIds: runner.runningTaskIds(),
@@ -653,6 +655,17 @@ async function start() {
   console.log(`  员工数量    ${store.listAgents().length}`)
   console.log(`  claude CLI  ${runner.resolveClaudeBin() || '未检测到（将使用模拟执行）'}`)
   console.log(`  权限模式    ${store.getSetting('permissionMode', CONFIG.PERMISSION_MODE)}`)
+  {
+    // 镜像默认启用，但环境变量写错时会被规范化成空串（=静默关掉）。启动时就点出来，
+    // 否则「以为配了个镜像、实际在直连」会表现为下载十几分钟，很难往这儿想。
+    const raw = store.getSetting('downloadMirror', CONFIG.DOWNLOAD_MIRROR)
+    const norm = dm.normalizeMirror(raw)
+    if (raw && !norm) {
+      console.log(`  下载镜像    ${raw}  ← 地址非法（要带 http:// 或 https://），已按直连处理`)
+    } else {
+      console.log(`  下载镜像    ${norm || '未启用（直连 GitHub）'}`)
+    }
+  }
   console.log('──────────────────────────────────────────────')
 
   return { port: actualPort }

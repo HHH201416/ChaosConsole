@@ -44,7 +44,7 @@
 | **模型可换** | 每个岗位可单独指定执行器与模型；对话页底部也能随时切换当前对话用的模型 |
 | **MCP 管理** | 应用内一键启用/停用 MCP 服务器，同时写入 claude 与 deveco 两边的配置 |
 | **真实更新** | 对接 GitHub Releases，`latest.yml` 自动生成并上传 |
-| **下载加速镜像** | 可选：升级与版本回退的安装包走第三方镜像前缀（实测 0.1MB/s → 5MB/s），下载后强制 sha512 校验，不符就丢弃不装 |
+| **下载加速镜像** | **默认启用**：升级与版本回退的安装包走第三方镜像前缀（实测 0.1MB/s → 5MB/s），下载后强制 sha512 校验，不符就丢弃不装；设置里只显示状态，改/关用环境变量 |
 | **首次启动 0 任务** | 不预置任何示例任务，看板干净地从零开始 |
 
 ---
@@ -522,13 +522,26 @@ npm run dist      # 只打包，产物在 release/
 | `ghfast.top` | 0.13 MB/s | 约 11 分钟 |
 | **`gh-proxy.com`** | **5.06 MB/s** | **约 17 秒** |
 
-所以设置里有一个**下载加速镜像**（默认关）。填了之后：
+所以**下载加速镜像默认就是启用的**（`server/config.js` 的 `DOWNLOAD_MIRROR_DEFAULT`，
+实测最快的一个公共镜像）。开不开由后端定，**设置面板只显示当前状态**——这个技术细节
+没道理让用户先理解再自己填。要改的话用环境变量：
+
+```bash
+CHAOS_DOWNLOAD_MIRROR=https://ghfast.top   # 换成别的镜像
+CHAOS_DOWNLOAD_MIRROR=off                  # 关掉，直连 GitHub
+```
+
+启用后两条路都走镜像：
 
 - **升级**：`applyUpdateFeed()` 把 electron-updater 换成 `generic` feed，URL 指向
   `<镜像>/https://github.com/<owner>/<repo>/releases/latest/download`。选这个路径是因为
   GitHub 的 `releases/latest/download/<文件名>` 是稳定的，镜像只要会转发 github.com 就行。
-  清空镜像会切回 `app-update.yml` 里的 GitHub provider，行为与以前完全一致。
+  镜像被关掉时会切回 `app-update.yml` 里的 GitHub provider，行为与以前完全一致。
 - **版本回退**：下载地址套同一个前缀。
+
+取值优先级是「库里的设置 > 后端默认值」：`POST /api/settings` 写 `downloadMirror`
+可以覆盖（写空串 = 显式关掉，不会再退回默认值），非法值（不是 http(s)、没有主机名）
+会被 400 拒绝；启动时也会在日志里打印当前用的是哪个镜像，地址写错时直接点出来。
 
 **安全**：镜像返回的就是接下来会被执行的安装包，等于把下载交给了第三方。所以
 

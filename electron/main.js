@@ -18,6 +18,7 @@ const net = require('net')
 const fs = require('fs')
 const os = require('os')
 const dm = require('../server/download-mirror.js')
+const CONFIG = require('../server/config.js')
 const { spawn } = require('child_process')
 const { app, BrowserWindow, Menu, shell, dialog, session, screen, net: electronNet } = require('electron')
 
@@ -391,12 +392,15 @@ function ghFetch(url, init) {
 }
 
 /**
- * 当前的下载加速镜像；'' 表示直连。设置改了立刻生效，不需要重启。
- * 读的是数据库里的设置（主进程能直接访问 store），不是启动时的快照。
+ * 当前的下载加速镜像；'' 表示直连。
+ *
+ * 取值优先级：库里的设置 > 后端的默认值（CONFIG.DOWNLOAD_MIRROR，默认启用，
+ * 实测那条路比直连快 50 倍）。**默认启用是服务端定的**，界面只显示开没开。
+ * 每次检查/下载时现读，所以改了设置立刻生效、不用重启。
  */
 function getDownloadMirror() {
   try {
-    return dm.normalizeMirror(storeModule.getSetting('downloadMirror', ''))
+    return dm.normalizeMirror(storeModule.getSetting('downloadMirror', CONFIG.DOWNLOAD_MIRROR))
   } catch (_) {
     return ''
   }

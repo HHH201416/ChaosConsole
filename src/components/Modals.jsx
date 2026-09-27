@@ -540,80 +540,41 @@ export function McpModal({ onClose }) {
  * ------------------------------------------------------------------ */
 
 /**
- * 下载加速镜像。留空 = 直连 GitHub。
+ * 下载加速镜像的状态显示（**只读**）。
  *
- * 为什么值得单独一个设置项：本机的 hosts 被加速器改过，GitHub 的发布包域名被指到
- * 127.0.0.1，于是所有下载都过本机代理 —— 实测只有 ~0.1MB/s，87MB 要十几分钟；
- * 给地址套一个公共镜像前缀能到 5MB/s 左右。
- *
- * 代价必须写清楚：镜像返回的就是接下来会被执行的安装包，等于把下载交给了第三方。
- * 应用会在下载完拿该版本自己的 latest.yml 校验 sha512（基准走 GitHub API，不经镜像），
- * 不符直接丢弃 —— 但这仍然是个需要用户知情的取舍。
+ * 开不开由服务端定（默认启用，见 server/config.js 的 DOWNLOAD_MIRROR），界面上
+ * 只告诉用户「现在走不走镜像、走的是哪个」。理由：本机 hosts 被加速器改过，GitHub
+ * 的发布包域名被指到 127.0.0.1，直连实测只有 ~0.1MB/s（87MB 要十几分钟），走镜像
+ * 能到 5MB/s —— 这么个技术细节没道理让用户先理解再自己填。
+ * 要改（换镜像 / 关掉）用环境变量 CHAOS_DOWNLOAD_MIRROR，见 README。
  */
-const MIRROR_PRESETS = ['https://gh-proxy.com', 'https://ghfast.top']
-
 function DownloadMirrorField() {
   const system = useStore((s) => s.system)
-  const setDownloadMirror = useStore((s) => s.setDownloadMirror)
-  const saved = system?.downloadMirror || ''
-  const [value, setValue] = useState(saved)
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    setValue(saved)
-  }, [saved])
-
-  const dirty = value.trim().replace(/\/+$/, '') !== saved
-
-  const save = async (next) => {
-    const v = next === undefined ? value.trim() : next
-    setBusy(true)
-    await setDownloadMirror(v)
-    setBusy(false)
-  }
+  const mirror = system?.downloadMirror || ''
 
   return (
     <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="flex items-center justify-between">
         <span className="text-[12px] font-medium text-slate-200">下载加速镜像</span>
-        <span className={`font-mono text-[10px] ${saved ? 'text-emerald-400' : 'text-slate-600'}`}>
-          {saved ? '已开启' : '直连'}
+        <span className={`flex items-center gap-1.5 font-mono text-[10px] ${mirror ? 'text-emerald-400' : 'text-slate-500'}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${mirror ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+          {mirror ? '已启用' : '未启用'}
         </span>
       </div>
-      <div className="flex gap-2">
-        <input
-          className="field flex-1"
-          placeholder="留空 = 直连；例：https://gh-proxy.com"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && dirty && !busy && save()}
-          spellCheck={false}
-        />
-        <button className="btn-ghost shrink-0" disabled={busy || !dirty} onClick={() => save()}>
-          {busy ? '保存中…' : '保存'}
-        </button>
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        {MIRROR_PRESETS.map((m) => (
-          <button key={m} className="btn-ghost" disabled={busy || m === saved} onClick={() => save(m)}>
-            {m.replace(/^https:\/\//, '')}
-          </button>
-        ))}
-        {saved && (
-          <button className="btn-ghost" disabled={busy} onClick={() => save('')}>
-            关闭（直连）
-          </button>
-        )}
-      </div>
+      <p className="mt-1 break-all font-mono text-[10px] text-slate-500">
+        {mirror || '直连 GitHub'}
+      </p>
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-        升级和版本回退的安装包都走这里下。GitHub 的发布包域名被本机加速器劫持到
-        <b className="text-slate-400"> 127.0.0.1</b>，实测只有 ~0.1MB/s（87MB 要十几分钟），
-        套一个公共镜像前缀能到 <b className="text-emerald-400">5MB/s</b> 左右。
+        升级和版本回退的安装包都从这里下。GitHub 的发布包域名被本机加速器劫持到
+        <b className="text-slate-400"> 127.0.0.1</b>，直连实测只有 ~0.1MB/s（87MB 要十几分钟），
+        走镜像能到 <b className="text-emerald-400">5MB/s</b> 左右，所以<b className="text-slate-400">默认开启</b>。
         <br />
-        <b className="text-boss">代价</b>：镜像返回的就是接下来会被执行的安装包，
-        等于把下载交给第三方。所以下载完会拿该版本自己的
+        镜像返回的就是接下来会被执行的安装包，等于把下载交给第三方 —— 因此下载完会拿该版本自己的
         <b className="text-slate-400"> latest.yml </b>校验 sha512（基准走 GitHub API、不经镜像），
-        不符就丢弃、不装。介意的话留空。
+        不符就丢弃、不装。
+        <br />
+        要换镜像或关掉：设环境变量 <b className="text-slate-400">CHAOS_DOWNLOAD_MIRROR</b>
+        （换成别的镜像地址；填 <b className="text-slate-400">off</b> 则直连）。
       </p>
     </div>
   )

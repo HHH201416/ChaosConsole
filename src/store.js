@@ -449,20 +449,6 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  /** 下载加速镜像。空串 = 直连；改完立刻生效，不用重启（主进程每次检查/下载时读） */
-  async setDownloadMirror(mirror) {
-    try {
-      await api.setSettings({ downloadMirror: mirror })
-      await get().refreshSystem()
-      get().toast(
-        mirror ? `下载已走加速镜像：${mirror}（下载完会校验 sha512）` : '下载已改回直连 GitHub',
-        'success',
-      )
-    } catch (err) {
-      get().toast(err.message, 'error')
-    }
-  },
-
   /* ---------------- 更新 ---------------- */
 
   async checkUpdate() {

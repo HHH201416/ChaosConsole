@@ -1,0 +1,10 @@
+# 开发时的发布源。打包后由 electron-builder 按 package.json 的 build.publish
+# 生成 resources/app-update.yml，运行时优先读那一份。
+#
+# 这份存在的意义：electron/main.js 的 readFeedConfig() 在开发模式下会退到这里，
+# 没有它，「检查更新」和「版本回退」在 `npm run dev` 里都只会说「读不到发布源配置」，
+# 等于这两个功能在开发环境完全没法验证。
+provider: github
+owner: HHH201416
+repo: ChaosConsole
+releaseType: release

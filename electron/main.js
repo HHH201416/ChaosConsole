@@ -18,7 +18,7 @@ const net = require('net')
 const fs = require('fs')
 const os = require('os')
 const { spawn } = require('child_process')
-const { app, BrowserWindow, Menu, shell, dialog, session, screen } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session, screen, net: electronNet } = require('electron')
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
@@ -333,6 +333,25 @@ function ghHeaders() {
   }
 }
 
+/**
+ * 访问 GitHub 一律走 Electron 的 net.fetch（Chromium 网络栈），**不要**用 Node 的
+ * 全局 fetch。
+ *
+ * 为什么：两者认的证书不是一套。Node 只认内置根证书 + `NODE_EXTRA_CA_CERTS` 指定的
+ * 文件；Chromium 认 Windows 证书库，并且沿用系统代理设置。本机装了加速器（Steam++）
+ * 做 MITM，它的根证书只装进了 Windows 证书库 —— 于是同一个应用里出现割裂：
+ * 检查更新（electron-updater，走 Chromium）一切正常，而这里用 Node fetch 就是
+ * `fetch failed / unable to verify the first certificate`，用户看到的是
+ * 「列出历史版本失败」。回退包的**下载**也是同一个坑。
+ *
+ * 换成 net.fetch 之后两条路走同一套网络栈：证书、代理、超时行为都一致。
+ */
+function ghFetch(url, init) {
+  if (electronNet && typeof electronNet.fetch === 'function') return electronNet.fetch(url, init)
+  // 极端情况（app 还没 ready）退回 Node 实现，至少不会比原来更差
+  return fetch(url, init)
+}
+
 /** 列出仓库的 Release，供设置里的「版本回退」选择。 */
 async function listReleases() {
   const { owner, repo } = readFeedConfig()
@@ -340,7 +359,7 @@ async function listReleases() {
     return { supported: false, error: '读不到发布源配置（app-update.yml），无法列出历史版本。', releases: [] }
   }
   try {
-    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=50`, {
+    const res = await ghFetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=50`, {
       headers: ghHeaders(),
       signal: AbortSignal.timeout(20000),
     })
@@ -367,7 +386,10 @@ async function listReleases() {
       .filter((r) => r.downloadUrl)
     return { supported: true, current, releases }
   } catch (err) {
-    return { supported: true, error: `列出历史版本失败：${err.message}`, releases: [] }
+    // 真因都在 err.cause 里（TLS 证书、DNS、代理都是 "fetch failed" + cause）。
+    // 只报 message 会退化成「失败了但不知道为什么」，下次还得从头排查一遍。
+    const cause = err && err.cause && err.cause.message ? `（${err.cause.message}）` : ''
+    return { supported: true, error: `列出历史版本失败：${err.message}${cause}`, releases: [] }
   }
 }
 
@@ -401,7 +423,7 @@ async function downloadReleaseByTag(tag) {
 
   const outPath = path.join(os.tmpdir(), `chaos-rollback-${tag.replace(/[^\w.-]/g, '_')}.exe`)
   try {
-    const res = await fetch(target.downloadUrl, {
+    const res = await ghFetch(target.downloadUrl, {
       headers: { 'User-Agent': 'ChaosConsole-Updater' },
       signal: AbortSignal.timeout(30 * 60 * 1000),
       redirect: 'follow',

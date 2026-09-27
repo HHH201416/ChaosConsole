@@ -266,8 +266,8 @@ npm run dist
 
 ```
 release/
-├── ChaosConsole-Setup-3.1.0.exe          ← 安装程序，双击即可安装
-├── ChaosConsole-Setup-3.1.0.exe.blockmap ← 增量更新用的差分信息
+├── ChaosConsole-Setup-3.1.1.exe          ← 安装程序，双击即可安装
+├── ChaosConsole-Setup-3.1.1.exe.blockmap ← 增量更新用的差分信息
 ├── latest.yml                        ← 自动更新的版本清单（关键文件）
 └── win-unpacked/                     ← 免安装的绿色版目录
 ```

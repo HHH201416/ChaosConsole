@@ -151,6 +151,9 @@ function deleteAgent(id) {
   const agent = getAgent(id)
   if (!agent) return false
   db.run('DELETE FROM agents WHERE id = ?', [id])
+  // 删的是默认岗位就留个记号 —— 否则下次启动 syncRoster 会把它当「缺席」补回来，
+  // 变成「这岗位删不掉，重启就复活」。
+  if (DEFAULT_AGENTS.some((a) => a.role === agent.role)) rememberRemovedRole(agent.role)
   db.run("UPDATE tasks SET agent_id = NULL WHERE agent_id = ? AND status != 'complete'", [id])
   bus.emit('agent:deleted', { id })
   for (const t of listTasks({ agentId: id })) bus.emit('task:updated', t)
@@ -340,11 +343,52 @@ function setSetting(key, value) {
  * 初始化：首次运行灌入默认员工与示例任务
  * ------------------------------------------------------------------ */
 
+/** 被用户删掉的默认岗位 role，存 settings 里，避免重启复活 */
+const REMOVED_ROLES_KEY = 'removedDefaultRoles'
+
+function removedRoles() {
+  try {
+    const arr = JSON.parse(getSetting(REMOVED_ROLES_KEY, '[]'))
+    return Array.isArray(arr) ? arr : []
+  } catch (_) {
+    return []
+  }
+}
+
+function rememberRemovedRole(role) {
+  const roles = new Set(removedRoles())
+  if (roles.has(role)) return
+  roles.add(role)
+  setSetting(REMOVED_ROLES_KEY, JSON.stringify([...roles]))
+}
+
+/**
+ * 把默认花名册里「缺席」的岗位补进库里，返回补了哪些。
+ *
+ * 判据用 role：它是自动派单关键词的索引键（见 queue.js 的 FUNCTION_KEYWORDS），
+ * 默认花名册里不重复。
+ *
+ * 只补不删、只补不改：role 已存在就跳过，用户改过的提示词/执行器/模型不会被覆盖；
+ * 用户手动删掉的默认岗位记在 settings 里，不在这里复活。
+ */
+function syncRoster() {
+  const removed = new Set(removedRoles())
+  const existing = new Set(listAgents().map((a) => a.role))
+  const missing = DEFAULT_AGENTS.filter((a) => !existing.has(a.role) && !removed.has(a.role))
+  for (const a of missing) createAgent(a)
+  return missing
+}
+
 function bootstrap() {
-  const agentCount = db.get('SELECT COUNT(*) AS n FROM agents')
-  if (!agentCount || agentCount.n === 0) {
-    for (const a of DEFAULT_AGENTS) createAgent(a)
-    console.log(`[store] 已初始化 ${DEFAULT_AGENTS.length} 名默认员工`)
+  // 首次启动时库是空的，此刻「缺席」的就是全部默认岗位，等于全量灌入；
+  // 老库则只补后来新增的那几个。
+  //
+  // 这里必须是增量补齐、不能只在空库灌一次：seed.js 里扩编过的岗位
+  // （鸿蒙从 1 个岗位拆成 10 个）在有存量数据的库里永远进不来 —— 表非空，
+  // 一次性灌入直接跳过，用户看到的就是「说好拆 10 个，界面上只有一个」。
+  const added = syncRoster()
+  if (added.length) {
+    console.log(`[store] 花名册补齐 ${added.length} 个岗位：${added.map((a) => a.functionLabel).join('、')}`)
   }
 
   // 刻意不预置任何任务：首次启动与重启后看板都是 0 任务，

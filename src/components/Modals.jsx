@@ -27,6 +27,34 @@ function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
 
 const AVATARS = ['🤖', '👨💻', '👩💻', '🧑🔬', '🎨', '🧪', '🔍', '⚙️', '📊', '✍️', '🛡️', '📋', '🧠', '🚀', '🦾', '👾', '📱']
 
+/**
+ * Claude 权限模式的中文说明。取值与 server/config.js 的
+ * VALID_PERMISSION_MODES 一一对应；这里只管措辞，不认识的值照旧显示原文，
+ * 免得后端加了新模式而前端把它显示成空白。
+ */
+const PERMISSION_MODE_HINTS = {
+  default: {
+    option: 'default —— 每一步都要你点头（最安全，也最啰嗦）',
+    desc: '读文件、写文件、执行命令之前都先问你。最安全，代价是任务常常停在「等你点同意」。',
+    tone: 'text-slate-300',
+  },
+  acceptEdits: {
+    option: 'acceptEdits —— 自动改文件，危险操作仍会问（推荐）',
+    desc: '读写文件不用问，直接干；执行命令这类危险动作仍会被 CLI 拦下来等审批。默认档。',
+    tone: 'text-emerald-400',
+  },
+  plan: {
+    option: 'plan —— 只出方案，不动文件',
+    desc: '只读不改：它调研、分析、给方案，但不会碰你的文件。适合「先说说打算怎么做」。',
+    tone: 'text-sky-400',
+  },
+  bypassPermissions: {
+    option: 'bypassPermissions —— 全部放行（高风险）',
+    desc: '关掉全部审批闸门，它想干什么就干什么，包括删文件和跑任意命令。除非你完全清楚后果，否则别选。',
+    tone: 'text-rose-400',
+  },
+}
+
 /* ------------------------------------------------------------------ *
  * 版本行
  * ------------------------------------------------------------------ */
@@ -560,15 +588,28 @@ export function SettingsModal({ onClose }) {
           >
             {(system.validPermissionModes || []).map((m) => (
               <option key={m} value={m}>
-                {m}
+                {(PERMISSION_MODE_HINTS[m] || {}).option || m}
               </option>
             ))}
           </select>
           <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-            <b className="text-slate-400">acceptEdits</b>：允许读写文件，危险操作仍受 CLI 审批约束（默认）。
-            <br />
-            <b className="text-rose-400">bypassPermissions</b>：<b>关闭全部审批闸门</b>。除非完全清楚后果，否则别选。
+            决定 Claude 岗位动手前要不要先问你。四个档位从紧到松：
           </p>
+          <ul className="mt-1.5 space-y-1 text-[10.5px] leading-relaxed text-slate-500">
+            {(system.validPermissionModes || []).map((m) => {
+              const hint = PERMISSION_MODE_HINTS[m]
+              const active = m === system.permissionMode
+              return (
+                <li key={m} className={active ? 'text-slate-300' : ''}>
+                  <b className={hint?.tone || 'text-slate-400'}>
+                    {m}
+                    {active ? '（当前）' : ''}
+                  </b>
+                  ：{hint ? hint.desc : '未知模式，已按 CLI 默认行为处理。'}
+                </li>
+              )
+            })}
+          </ul>
         </div>
 
         {/* DevEco 自动放行 */}

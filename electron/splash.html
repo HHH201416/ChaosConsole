@@ -12,6 +12,15 @@
          内联脚本会被拦掉；而 CSS 动画不受影响，即使注入失败闪屏也依然是「活的」。
       2. 启动日志由主进程用 executeJavaScript 追加（不受 CSP 限制），
          这样显示的是真实进度：端口、员工数量、界面加载，而不是假装在跑。
+
+      主进程依赖的挂点（改这个文件时不要动名字）：
+        #log        追加 .line / .line.now，只保留最近 4 行
+        #bar        写入 style.width 推进进度
+        #foot-right 填真实版本号
+        body.closing 加这个类时整块淡出
+
+      视觉：地平线网格 + 雷达扫描 + 边缘刻度尺 + HUD 四角 + 六边形核心。
+      全部是装饰，不承载任何数据 —— 唯一的进度来源是上面那两个挂点。
     -->
     <style>
       :root {
@@ -21,6 +30,7 @@
         --ink-400: #3a4560;
         --boss: #f5a524;
         --boss-dim: #8a5b12;
+        --cyan: #35d0e0;
       }
 
       * {
@@ -58,7 +68,28 @@
         transform: scale(0.965);
       }
 
-      /* ---------- 背景：透视网格 + 扫描线 + CRT 细纹 ---------- */
+      /* ---------- 背景：远景正交网格 + 近景透视地平线 ---------- */
+
+      /* 远景网格铺满整块，不参与透视，只是「还有更深一层」的暗示 */
+      .grid-far {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(245, 165, 36, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(245, 165, 36, 0.035) 1px, transparent 1px);
+        background-size: 68px 68px;
+        animation: drift 9s linear infinite;
+        mask-image: linear-gradient(180deg, #000, transparent 62%);
+      }
+
+      @keyframes drift {
+        from {
+          background-position: 0 0;
+        }
+        to {
+          background-position: 0 68px;
+        }
+      }
 
       .grid {
         position: absolute;
@@ -82,6 +113,37 @@
         }
         to {
           background-position: 0 34px;
+        }
+      }
+
+      /* 地平线：网格与远景的交界，让它像一条真的「线」而不是渐隐。
+         压在核心后面（top 40%），不要落到底部日志上，否则会切断文字。 */
+      .horizon {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 40%;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(245, 165, 36, 0.3) 20%,
+          rgba(255, 240, 210, 0.5) 50%,
+          rgba(245, 165, 36, 0.3) 80%,
+          transparent
+        );
+        box-shadow: 0 0 14px rgba(245, 165, 36, 0.22);
+        animation: horizonIn 0.9s ease-out both;
+      }
+
+      @keyframes horizonIn {
+        from {
+          opacity: 0;
+          transform: scaleX(0.3);
+        }
+        to {
+          opacity: 1;
+          transform: scaleX(1);
         }
       }
 
@@ -146,11 +208,71 @@
         );
       }
 
+      /* 每几秒闪一下的横向撕裂，模拟信号不稳 */
+      .glitchbar {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 12px;
+        top: 0;
+        opacity: 0;
+        pointer-events: none;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(53, 208, 224, 0.16),
+          rgba(245, 165, 36, 0.2),
+          transparent
+        );
+        animation: tear 5.2s steps(1) infinite;
+      }
+
+      @keyframes tear {
+        0%,
+        89%,
+        100% {
+          opacity: 0;
+          top: 18%;
+        }
+        90% {
+          opacity: 1;
+          top: 18%;
+        }
+        92% {
+          opacity: 1;
+          top: 63%;
+        }
+        94% {
+          opacity: 0;
+          top: 63%;
+        }
+      }
+
       .vignette {
         position: absolute;
         inset: 0;
         pointer-events: none;
         background: radial-gradient(115% 85% at 50% 45%, transparent 42%, rgba(0, 0, 0, 0.72) 100%);
+      }
+
+      /* ---------- 边缘刻度尺 ---------- */
+
+      .ruler {
+        position: absolute;
+        top: 34px;
+        bottom: 46px;
+        width: 9px;
+        opacity: 0.55;
+        /* 长刻度每 45px 一根，短刻度每 9px 一根 */
+        background-image:
+          repeating-linear-gradient(180deg, rgba(245, 165, 36, 0.62) 0 1px, transparent 1px 45px),
+          repeating-linear-gradient(180deg, rgba(245, 165, 36, 0.26) 0 1px, transparent 1px 9px);
+      }
+      .ruler.l {
+        left: 8px;
+      }
+      .ruler.r {
+        right: 8px;
       }
 
       /* ---------- HUD 四角 ---------- */
@@ -162,11 +284,24 @@
         border: 1px solid rgba(245, 165, 36, 0.55);
         animation: cornerIn 0.7s ease-out both;
       }
+      /* 角上的小方块，让四个角更像瞄准框 */
+      .corner::after {
+        content: '';
+        position: absolute;
+        width: 3px;
+        height: 3px;
+        background: var(--boss);
+        box-shadow: 0 0 6px rgba(245, 165, 36, 0.9);
+      }
       .corner.tl {
         top: 10px;
         left: 10px;
         border-right: 0;
         border-bottom: 0;
+      }
+      .corner.tl::after {
+        top: 3px;
+        left: 3px;
       }
       .corner.tr {
         top: 10px;
@@ -175,6 +310,10 @@
         border-bottom: 0;
         animation-delay: 0.06s;
       }
+      .corner.tr::after {
+        top: 3px;
+        right: 3px;
+      }
       .corner.bl {
         bottom: 10px;
         left: 10px;
@@ -182,12 +321,20 @@
         border-top: 0;
         animation-delay: 0.12s;
       }
+      .corner.bl::after {
+        bottom: 3px;
+        left: 3px;
+      }
       .corner.br {
         bottom: 10px;
         right: 10px;
         border-left: 0;
         border-top: 0;
         animation-delay: 0.18s;
+      }
+      .corner.br::after {
+        bottom: 3px;
+        right: 3px;
       }
 
       @keyframes cornerIn {
@@ -232,6 +379,16 @@
         animation: spin 5.5s linear infinite reverse;
         transform-origin: 50% 50%;
       }
+      .ring .ticks {
+        animation: spin 22s linear infinite reverse;
+        transform-origin: 50% 50%;
+      }
+      /* 雷达弧：一小段亮弧绕核心转。比整块锥形扇收敛得多 —— 锥形扇在
+         小窗口里会糊成一大块楔形光斑，看着像渲染瑕疵而不是仪表。 */
+      .ring .arc {
+        animation: spin 2.6s linear infinite;
+        transform-origin: 50% 50%;
+      }
       .ring .dash {
         stroke-dasharray: 40 200;
         animation: dash 3s ease-in-out infinite;
@@ -271,6 +428,34 @@
         animation: pulse 1.5s ease-in-out infinite;
       }
 
+      /* 核心向外扩散的冲击环，给「正在跑」一点动能 */
+      .ping {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 16px;
+        height: 16px;
+        margin: -8px 0 0 -8px;
+        border-radius: 50%;
+        border: 1px solid rgba(245, 165, 36, 0.55);
+        animation: ping 2.4s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+      }
+
+      @keyframes ping {
+        0% {
+          opacity: 0.85;
+          transform: scale(0.6);
+        }
+        70% {
+          opacity: 0;
+          transform: scale(3.4);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(3.4);
+        }
+      }
+
       @keyframes pulse {
         0%,
         100% {
@@ -293,7 +478,10 @@
         -webkit-background-clip: text;
         background-clip: text;
         -webkit-text-fill-color: transparent;
-        animation: shine 2.6s ease-in-out infinite, rise 0.6s ease-out both;
+        animation:
+          shine 2.6s ease-in-out infinite,
+          rise 0.6s ease-out both,
+          chroma 6.5s steps(1) infinite;
       }
 
       @keyframes shine {
@@ -302,6 +490,24 @@
         }
         100% {
           background-position: -60% 0;
+        }
+      }
+
+      /* 文字通道错位：靠 text-shadow 在透明字形后面投两层彩边 */
+      @keyframes chroma {
+        0%,
+        91%,
+        100% {
+          text-shadow: none;
+        }
+        92% {
+          text-shadow: -1.5px 0 rgba(53, 208, 224, 0.8), 1.5px 0 rgba(255, 70, 130, 0.6);
+        }
+        94% {
+          text-shadow: 1.5px 0 rgba(53, 208, 224, 0.65), -1.5px 0 rgba(255, 70, 130, 0.5);
+        }
+        96% {
+          text-shadow: none;
         }
       }
 
@@ -332,6 +538,18 @@
         background: var(--ink-500);
         overflow: hidden;
         border-radius: 2px;
+      }
+      /* 每 10px 压一道暗线，进度条读起来像刻度尺而不是一根实心条 */
+      .bar::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background-image: repeating-linear-gradient(
+          90deg,
+          transparent 0 9px,
+          rgba(7, 9, 13, 0.85) 9px 10px
+        );
       }
       .bar-fill {
         position: absolute;
@@ -415,11 +633,17 @@
   </head>
   <body>
     <div class="stage">
+      <div class="grid-far"></div>
       <div class="grid"></div>
+      <div class="horizon"></div>
       <div class="halo"></div>
       <div class="scan"></div>
       <div class="crt"></div>
+      <div class="glitchbar"></div>
       <div class="vignette"></div>
+
+      <div class="ruler l"></div>
+      <div class="ruler r"></div>
 
       <div class="corner tl"></div>
       <div class="corner tr"></div>
@@ -451,6 +675,37 @@
               stroke-dasharray="4 6"
             />
           </svg>
+          <!-- 最外圈刻度环：24 根短线，转得最慢，给核心一个「量程」 -->
+          <svg class="ticks" viewBox="0 0 100 100" fill="none">
+            <g stroke="#3a4560" stroke-width="1">
+              <path d="M50 1v6" />
+              <path d="M74.5 7.5l-3 5.2" />
+              <path d="M93 26l-5.2 3" />
+              <path d="M99 50h-6" />
+              <path d="M93 74l-5.2-3" />
+              <path d="M74.5 92.5l-3-5.2" />
+              <path d="M50 99v-6" />
+              <path d="M25.5 92.5l3-5.2" />
+              <path d="M7 74l5.2-3" />
+              <path d="M1 50h6" />
+              <path d="M7 26l5.2 3" />
+              <path d="M25.5 7.5l3 5.2" />
+            </g>
+          </svg>
+          <!-- 扫掠弧：周长 2πr ≈ 289，dasharray 26/263 只留一小段亮弧 -->
+          <svg class="arc" viewBox="0 0 100 100" fill="none">
+            <circle
+              cx="50"
+              cy="50"
+              r="46"
+              stroke="#f5a524"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-dasharray="26 263"
+              opacity="0.8"
+            />
+          </svg>
+          <div class="ping"></div>
           <div class="pulse"></div>
         </div>
 

@@ -53,8 +53,26 @@
   Var ChaosUrl
   Var ChaosTag
   Var ChaosFile
+  Var ChaosSize   ; expected byte count, from the manifest
+  Var ChaosGot    ; byte count actually on disk
 
   !include "${BUILD_RESOURCES_DIR}\versions.nsh"
+
+  ; Byte count of $ChaosFile -> $ChaosGot (0 when it does not exist).
+  ; NSIS has no runtime file-size instruction (FileSize only works at compile time),
+  ; so open the file and seek to the end. Touches only $9: $0 still holds the list
+  ; selection while the page is leaving.
+  Function ChaosMeasureFile
+    StrCpy $ChaosGot "0"
+    ${If} ${FileExists} "$ChaosFile"
+      ClearErrors
+      FileOpen $9 "$ChaosFile" r
+      ${IfNot} ${Errors}
+        FileSeek $9 0 END $ChaosGot
+        FileClose $9
+      ${EndIf}
+    ${EndIf}
+  FunctionEnd
 
   Function ChaosVersionPageCreate
     !insertmacro MUI_HEADER_TEXT "${CHAOS_STR_PAGE_TITLE}" "${CHAOS_STR_PAGE_SUB}"
@@ -91,8 +109,15 @@
     ${EndIf}
 
     StrCpy $ChaosFile "$TEMP\ChaosConsole-Setup-$ChaosTag.exe"
-    ; Overwrite anything left over from an earlier attempt
-    Delete "$ChaosFile"
+    Call ChaosMeasureFile
+
+    ; Already complete (a previous attempt downloaded it, then the hand-off or the
+    ; install failed)? Skip the network entirely and go straight to launching it.
+    ${If} $ChaosSize != "0"
+    ${AndIf} $ChaosGot == $ChaosSize
+      ${NSD_SetText} $ChaosStatus "${CHAOS_STR_LAUNCHING}"
+      Goto ChaosLaunch
+    ${EndIf}
 
     ${NSD_SetText} $ChaosStatus "${CHAOS_STR_DOWNLOADING}$ChaosTag ..."
 
@@ -101,16 +126,57 @@
     ; It goes through WinINet, i.e. the same stack as the system browser.
     ; Parameter names are lowercase to match the strings inside the plugin.
     ; Returns "OK" on success, "Cancelled", or an error description otherwise.
-    inetc::get /caption "${CHAOS_STR_DL_TITLE}$ChaosTag" /popup "${CHAOS_STR_CANCEL}" "$ChaosUrl" "$ChaosFile"
+    ;
+    ; The option syntax from the plugin's documentation, and the two traps in it:
+    ;
+    ;   [/CAPTION TEXT] [/RESUME RETRY_QUESTION] [/POPUP HOST_ALIAS] [/CANCELTEXT TEXT]
+    ;
+    ;   1. /RESUME takes an argument, it is not a bare flag. Writing it as a flag
+    ;      makes the *next* option its text, shifting everything by one -- the
+    ;      caption text then lands in the URL slot and the plugin fails with
+    ;      "URL Parts Error" before a single byte moves. Cost us a full debugging
+    ;      round; the standalone makensis probe that would have caught it in
+    ;      seconds got quarantined by the antivirus on this machine.
+    ;   2. /POPUP's argument is a HOST_ALIAS that *replaces* the URL in the dialog
+    ;      (it exists so a URL with credentials can be hidden), NOT the Cancel
+    ;      button's label -- that is /CANCELTEXT. Passing the word "cancel" here
+    ;      only made the dialog print "cancel" where the URL belongs. An empty
+    ;      alias shows the real URL, which is what we want.
+    ;
+    ; /RESUME matters on a bad link: without it a dropped connection ends the
+    ; download outright, and since an 86 MB transfer on this kind of link does not
+    ; survive many drops, the version page would simply never work. With it the
+    ; plugin offers a Retry that continues from the partial file. That partial file
+    ; must therefore NOT be deleted when something goes wrong -- see below.
+    inetc::get /CAPTION "${CHAOS_STR_DL_TITLE}$ChaosTag" /RESUME "${CHAOS_STR_RESUME}" /POPUP "" /CANCELTEXT "${CHAOS_STR_CANCEL}" "$ChaosUrl" "$ChaosFile"
     Pop $0
 
     ${If} $0 != "OK"
+      ; Keep the partial file on disk: the next click on Install resumes it.
       MessageBox MB_ICONEXCLAMATION|MB_OK "${CHAOS_STR_DL_FAIL}$0${CHAOS_STR_DL_HINT}"
-      ${If} ${FileExists} "$ChaosFile"
-        Delete "$ChaosFile"
-      ${EndIf}
       Abort ; stay on this page so the user can pick something else
     ${EndIf}
+
+    ; The one integrity check we can make: the manifest knows every release asset's
+    ; exact size. A truncated (or, after an ignored Range request, concatenated)
+    ; file would otherwise be handed to the downloaded installer, which can only
+    ; report "installer is corrupted" -- with no hint about what actually happened.
+    Call ChaosMeasureFile
+    ${If} $ChaosSize != "0"
+    ${AndIf} $ChaosGot != $ChaosSize
+      ${If} $ChaosGot > $ChaosSize
+        ; Bigger than expected = the server ignored Range and the plugin appended.
+        ; Nothing salvageable, and a resume would keep appending: drop it.
+        Delete "$ChaosFile"
+        StrCpy $ChaosGot "0"
+        MessageBox MB_ICONEXCLAMATION|MB_OK "${CHAOS_STR_DL_DIRTY}"
+      ${Else}
+        MessageBox MB_ICONEXCLAMATION|MB_OK "${CHAOS_STR_DL_SHORT}"
+      ${EndIf}
+      Abort ; stay here; Install again continues from what we have
+    ${EndIf}
+
+  ChaosLaunch:
 
     ${NSD_SetText} $ChaosStatus "${CHAOS_STR_LAUNCHING}"
 
@@ -126,7 +192,21 @@
     ; So hand off to a detached cmd that waits a couple of seconds (plenty for us
     ; to exit and drop the lock) and then starts the downloaded installer.
     ; The cost is a console window flashing for ~2s.
-    Exec '"$SYSDIR\cmd.exe" /c ping -n 3 127.0.0.1 >nul & start "" "$ChaosFile"'
+    ;
+    ; Pass the install mode through. Without it the downloaded installer asks again
+    ; and defaults to "all users" -- someone who picked "only me" gets a UAC prompt
+    ; out of nowhere, and on a machine that already has the other scope installed it
+    ; would even uninstall it first (which is what made this fail on the machine this
+    ; was tested on). $installMode is "CurrentUser" or "all" (multiUser.nsh).
+    ;
+    ; /D=<dir> is deliberately NOT forwarded: NSIS requires it unquoted and last, and
+    ; a target path containing spaces (D:\软件与文档\...) does not survive the trip
+    ; through cmd/start intact. Worst case the user gets the default directory back.
+    StrCpy $0 "/currentuser"
+    ${If} $installMode == "all"
+      StrCpy $0 "/allusers"
+    ${EndIf}
+    Exec '"$SYSDIR\cmd.exe" /c ping -n 3 127.0.0.1 >nul & start "" "$ChaosFile" $0'
     Quit
   FunctionEnd
 

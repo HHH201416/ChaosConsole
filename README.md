@@ -34,10 +34,10 @@
 |---|---|
 | **登录页** | 启动先输授权码 `Hyc13579`，通过后进入控制台；会话 token 存本地，后端重启会失效并要求重新登录 |
 | **顶部栏** | 应用名、版本号、WebSocket 连接状态、执行中任务数；`+ 新岗位`、`+ 新任务`、`MCP`、`检查更新`、设置、退出 |
-| **左侧岗位栏** | 11 个默认岗位（含系统提示词），**只显示「是干什么的」，不显示姓名**；显示执行器、状态（空闲/工作中）、名下未完成任务数；点开可看系统提示词、可移除 |
+| **左侧岗位栏** | 21 个默认岗位（含系统提示词），**只显示「是干什么的」，不显示姓名**；显示执行器、状态（空闲/工作中）、名下未完成任务数；点开可看系统提示词、可移除 |
 | **中间看板** | 四列：待处理 / 进行中 / 需要输入 / 已完成。卡片含任务名、负责岗位、标签，以及 `Start` / `Cancel` / `Done` 按钮，**支持拖拽换列** |
 | **右侧对话页** | 直接说要做什么，**自动挑一个岗位去做**；消息流按「职能 + 执行器」标注；顶部有`历史`入口可翻看所有往期对话；底部可切换执行器与模型、继续追问（同一会话续跑）；可切到`事件`视图看工具调用明细 |
-| **自动派单** | 按内容关键词匹配岗位画像挑人（对话页和看板共用同一套关键词） |
+| **自动派单** | 按内容关键词匹配岗位画像挑人（对话页和看板共用同一套关键词）；**一个关键词都没命中时交给「日常对话」兜底**，不再硬塞给「代码实现」 |
 | **实时推送** | CLI 的事件流逐行解析后经 WebSocket 推到前端，**界面无需刷新** |
 | **续跑** | 后续追问复用同一个会话（claude 用 `--resume`，deveco 用 `-s`），Agent 保留上下文 |
 | **自动落位** | 执行成功 → 已完成；Agent 提出疑问 → 需要输入；出错 → 需要输入并附错误；取消 → 退回待处理 |
@@ -96,7 +96,12 @@ CHAOS_AUTH_CODE=你的新授权码 npm run dev:server
 | 开发（`npm run dev:server`） | `D:\ChaosConsole\data\chaos.db` |
 | 打包安装后 | `%APPDATA%\chaos-console\data\chaos.db` |
 
-都是 SQLite 单文件。删掉它 = 恢复出厂（下次启动重新灌入 10 名员工 + 3 条示例任务）。
+都是 SQLite 单文件。删掉它 = 恢复出厂（下次启动重新灌入 21 名默认员工；任务本身从不预置）。
+
+老库不会因为这次扩编而重建：**启动时会做花名册增量补齐**——默认花名册里缺席的岗位
+（比如鸿蒙那 10 个）自动补进库里，已有的岗位一律不动，用户改过的提示词/执行器/模型
+不会被覆盖，用户主动删掉的默认岗位也不会复活（删的时候在 `settings.removedDefaultRoles`
+里留了记号）。
 
 ---
 
@@ -123,7 +128,7 @@ ChaosConsole/
 │   ├── executors.js        # 执行器注册表（claude / deveco）与模型列表
 │   ├── runner.js           # spawn CLI + 两套事件流解析适配器
 │   ├── mcp.js              # MCP 服务器安装、注册、启停
-│   └── seed.js             # 11 个默认岗位及其系统提示词（不含示例任务）
+│   └── seed.js             # 21 个默认岗位及其系统提示词（不含示例任务）
 │
 ├── src/                    # 前端
 │   ├── App.jsx             # 布局与路由（登录页 / 控制台）
@@ -199,8 +204,8 @@ ChaosConsole/
 stdin、让 argv 只剩静态 ASCII 参数，可以从根本上绕开这个问题（两者都已实测支持从
 stdin 读提示词）。
 
-**默认分配**：11 个岗位里，10 个用 claude，「鸿蒙应用开发」用 deveco。
-在 ⚙ 设置或岗位详情里可以逐个改。
+**默认分配**：21 个岗位里，11 个用 claude（10 个工程岗位 + 「日常对话」），
+10 个用 deveco（鸿蒙各岗位）。在 ⚙ 设置或岗位详情里可以逐个改。
 
 ### DevEco 的权限问题（重要）
 
@@ -260,8 +265,8 @@ npm run dist
 
 ```
 release/
-├── AI Agent开发控制台 Setup.exe          ← 安装程序，双击即可安装
-├── AI Agent开发控制台 Setup.exe.blockmap ← 增量更新用的差分信息
+├── ChaosConsole-Setup-3.0.0.exe          ← 安装程序，双击即可安装
+├── ChaosConsole-Setup-3.0.0.exe.blockmap ← 增量更新用的差分信息
 ├── latest.yml                        ← 自动更新的版本清单（关键文件）
 └── win-unpacked/                     ← 免安装的绿色版目录
 ```
@@ -313,25 +318,36 @@ release/
 - **`"signAndEditExecutable": false`** + **`afterPack` 钩子** —— 关掉 electron-builder
   自带的 rcedit，改用 `scripts/after-pack.js` 注入图标与版本信息
 
-### 关于安装包的中文文件名
+### 关于安装包文件名（改之前先读这段）
 
-`artifactName` 配的是中文「AI Agent开发控制台 Setup.${ext}」，文件也确实是这个名字。但
-**electron-builder 在生成更新元数据 `latest.yml` 时会退回默认的 ASCII 命名**
-（`chaos-console-setup-1.0.0.exe`），两者对不上会导致 electron-updater 去下载一个
-不存在的资源，自动更新直接 404。
+`artifactName` 配的是 **`ChaosConsole-Setup-${version}.${ext}`** —— 纯 ASCII、带版本号、
+**不含空格**。这三条都不是审美选择，改坏了自动更新会直接失效：
 
-`scripts/build.js` 里有一段 `fixLatestYml()`，打包完成后会按磁盘上真实的文件重算
-`sha512` / `size` / `blockMapSize` 并重写 `latest.yml`，所以这个坑已经填上了。
+**① 不能有空格。** 这是最容易踩的坑，而且**不是 GitHub 的限制，是 electron-updater
+自己改文件名**。[`GitHubProvider.resolveFiles()`][ghprovider] 拼下载地址时会做
 
-> **如果你在自动更新上仍然遇到问题**（比如 GitHub 对某些字符做了资源名改写），
-> 把 `package.json` 里的 `artifactName` 换成纯 ASCII 即可根治：
->
-> ```json
-> "artifactName": "ChaosConsole-Setup-${version}.${ext}"
-> ```
->
-> 改完 `latest.yml` 会自动与之一致，不再需要修正。安装后的**桌面快捷方式名、
-> 窗口标题仍然显示「AI Agent开发控制台」**，只有安装包文件名会变成英文。
+```js
+p => this.getBaseDownloadPath(updateInfo.tag, p.replace(/ /g, '-'))
+```
+
+于是 `AI Agent开发控制台 Setup.exe` 被请求成 `AI-Agent开发控制台-Setup.exe`，而 GitHub
+上的资源名里是空格 —— 名字对不上，404。中文本身没问题（URL 会做百分号编码），
+**空格才是致命的**。装完之后的桌面快捷方式名、窗口标题仍然显示「AI Agent开发控制台」，
+只有安装包文件名是英文。
+
+**② 要带版本号。** 同名的资源在 `release/` 目录里会互相覆盖，手动从 Releases 下载的
+人也分不清哪个是哪个；回退时会同时存在多个版本的安装包，靠文件名才能对上。
+
+**③ 要纯 ASCII。** 除了空格，别的字符（中文、全角标点）在下载 URL、杀软扫描、
+别的机器上解压时都可能出意外，而这里没有任何收益。
+
+**为什么还要 `fixLatestYml()`。** electron-builder 生成 `latest.yml` 时会退回它自己的
+默认 ASCII 命名（`chaos-console-setup-1.0.0.exe` —— 全小写、没有连字符），和上面这个
+名字大小写对不上，于是 `latest.yml` 会指向一个不存在的资源。`fixLatestYml()` 在打包完
+之后按磁盘上真实的文件重算 `sha512` / `size` / `blockMapSize` 并重写 `latest.yml`。
+期望的文件名是从 `artifactName` 推出来的，所以改配置时不会失配。
+
+[ghprovider]: https://github.com/electron-userland/electron-builder/blob/master/packages/electron-updater/src/providers/GitHubProvider.ts
 
 ---
 
@@ -429,7 +445,7 @@ electron-builder --win nsis --publish always
 ```
 
 它会自动完成：打包 → 在 GitHub 上创建 `v1.0.1` 的 Release → 上传
-`AI Agent开发控制台 Setup.exe`、`latest.yml`、`.blockmap`。
+`ChaosConsole-Setup-<版本号>.exe`、`latest.yml`、`.blockmap`。
 
 **④ 去 GitHub 检查**
 
@@ -448,8 +464,8 @@ npm run dist      # 只打包，产物在 release/
 
 1. **Tag** 填 `v1.0.1`（必须和 package.json 的 version 一致，前面加 `v`）
 2. 上传这三个文件（都在 `release/` 目录）：
-   - `AI Agent开发控制台 Setup.exe`
-   - `AI Agent开发控制台 Setup.exe.blockmap`
+   - `ChaosConsole-Setup-<版本号>.exe`
+   - `ChaosConsole-Setup-<版本号>.exe.blockmap`
    - `latest.yml`
 3. 点 `Publish release`
 
@@ -613,7 +629,7 @@ Windows Defender 的话：设置 → 隐私和安全性 → 病毒和威胁防�
 ## 端到端自检
 
 `scripts/e2e-check.js` 会用 Chrome DevTools Protocol 连上真实运行的 Electron 窗口，
-逐项验证登录、看板四列、10 名员工、实时推送、自动派单、拖拽列、详情栏渲染等 30 项行为。
+逐项验证登录、看板四列、21 个岗位、实时推送、自动派单、拖拽列、详情栏渲染等行为。
 
 ```bash
 # 终端 1：带调试端口启动

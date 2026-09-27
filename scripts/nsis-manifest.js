@@ -25,6 +25,20 @@ const OUT_FILE = path.join(__dirname, '..', 'build', 'versions.nsh')
 
 const fmtMB = (bytes) => (bytes ? `${Math.round(bytes / 1024 / 1024)} MB` : '')
 
+/**
+ * 下载地址的基准。默认是 GitHub，可用 CHAOS_RELEASE_BASE_URL 覆盖成本机地址 ——
+ * 这条通道只在测试时有意义：这台机器到 GitHub 只有几 kB/s，装一次要几小时，
+ * 而走 localhost 就能把「下载 → 交接 → 安装」整条链跑通并截图。
+ * 布局刻意与 GitHub 保持一致（`<base>/<tag>/<文件名>`），这样覆盖只是换个前缀。
+ * 产出的是**测试安装器**，别发布 —— 下面会把这个事实写进生成的文件里。
+ */
+const RELEASE_BASE =
+  (process.env.CHAOS_RELEASE_BASE_URL || `https://github.com/${OWNER}/${REPO}/releases/download`).replace(
+    /\/+$/,
+    '',
+  )
+const IS_TEST_BASE = RELEASE_BASE !== `https://github.com/${OWNER}/${REPO}/releases/download`
+
 async function fetchReleases() {
   const url = `https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=50`
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'chaosconsole-build' }
@@ -46,7 +60,9 @@ async function fetchReleases() {
             name: r.name || r.tag_name,
             prerelease: Boolean(r.prerelease),
             size: asset.size,
-            url: asset.browser_download_url,
+            // 按 <base>/<tag>/<文件名> 拼，而不是直接用 API 给的 browser_download_url ——
+            // 后者写死了 github.com，CHAOS_RELEASE_BASE_URL 就覆盖不动了。
+            url: `${RELEASE_BASE}/${encodeURIComponent(r.tag_name)}/${encodeURIComponent(asset.name)}`,
           }
         : null
     })
@@ -75,6 +91,12 @@ function render(version, releases) {
   lines.push('; ==================================================================')
   lines.push(';  本文件由 scripts/nsis-manifest.js 自动生成，请勿手工编辑。')
   lines.push(`;  生成时间基准版本：${version}    条目数：${rows.length}`)
+  if (IS_TEST_BASE) {
+    lines.push(';')
+    lines.push(';  !!! 测试安装器 —— 下载地址被 CHAOS_RELEASE_BASE_URL 覆盖成了本机地址 !!!')
+    lines.push(`;  下载基准：${RELEASE_BASE}`)
+    lines.push(';  不要发布这个安装器：它会让用户去连一个只在本机存在的地址。')
+  }
   lines.push(';')
   lines.push(';  所有中文文案都放在这里（而不是 build/installer.nsh 里），是因为 makensis')
   lines.push(';  靠 UTF-8 BOM 判断源文件编码 —— 本文件每次构建都重新生成、BOM 由脚本写入，')
@@ -89,9 +111,22 @@ function render(version, releases) {
   lines.push(`!define CHAOS_STR_HINT "本安装包内置的是 v${version}，选它可以直接安装、不需要联网。"`)
   lines.push(`!define CHAOS_STR_DOWNLOADING "正在下载 "`)
   lines.push(`!define CHAOS_STR_CANCEL "取消"`)
+  lines.push(
+    `!define CHAOS_STR_RESUME "下载被中断了。点「重试」会接着已经下好的部分继续，不会从 0 开始。"`,
+  )
   lines.push(`!define CHAOS_STR_DL_TITLE "正在下载 "`)
   lines.push(`!define CHAOS_STR_DL_FAIL "下载失败，错误码： "`)
-  lines.push(`!define CHAOS_STR_DL_HINT "$\\r$\\n$\\r$\\n可以改选内置的 v${version}（不需要联网），或者稍后再试。"`)
+  lines.push(
+    `!define CHAOS_STR_DL_HINT "$\\r$\\n$\\r$\\n点「安装」会接着上次的进度继续下载（不会从 0 开始）。$\\r$\\n` +
+      `也可以改选内置的 v${version}（不需要联网），装完在应用里用「版本回退」切到想要的版本。"`,
+  )
+  lines.push(
+    `!define CHAOS_STR_DL_SHORT "下载不完整：已收到 $ChaosGot 字节，应为 $ChaosSize 字节。$\\r$\\n$\\r$\\n` +
+      `下载被中断了（网络不稳或代理拖慢）。点「安装」会接着下载已经拿到的部分。"`,
+  )
+  lines.push(
+    `!define CHAOS_STR_DL_DIRTY "下载下来的文件体积不对（$ChaosGot 字节，应为 $ChaosSize 字节），已清除。$\\r$\\n$\\r$\\n点「安装」重新下载。"`,
+  )
   lines.push(`!define CHAOS_STR_LAUNCHING "正在启动它的安装程序…"`)
   lines.push('')
 
@@ -105,15 +140,18 @@ function render(version, releases) {
   lines.push('FunctionEnd')
   lines.push('')
 
-  lines.push('; 入参 $0 = 列表索引，出参 $ChaosUrl（空串表示内置版本，不需要下载）/ $ChaosTag')
+  lines.push('; 入参 $0 = 列表索引，出参 $ChaosUrl（空串表示内置版本，不需要下载）/ $ChaosTag / $ChaosSize')
   lines.push('Function ChaosPickVersion')
   lines.push('  StrCpy $ChaosUrl ""')
   lines.push('  StrCpy $ChaosTag ""')
+  lines.push('  StrCpy $ChaosSize "0"')
   rows.forEach((r, i) => {
-    if (i === 0) return // 索引 0 是内置版本，两个变量保持空串即可
+    if (i === 0) return // 索引 0 是内置版本，三个变量保持空/0 即可
     lines.push(`  \${If} $0 == ${i}`)
     lines.push(`    StrCpy $ChaosTag "${esc(r.tag)}"`)
     lines.push(`    StrCpy $ChaosUrl "${esc(r.url)}"`)
+    // 体积是下载完之后唯一的完整性依据：断点续传拿回来的文件必须与它相符才敢交接
+    lines.push(`    StrCpy $ChaosSize "${r.size || 0}"`)
     lines.push('  ${EndIf}')
   })
   lines.push('FunctionEnd')

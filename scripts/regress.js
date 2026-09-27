@@ -204,6 +204,77 @@ async function main() {
     await sleep(800)
   }
 
+  /* ---- 9. 老库要能补上后来新增的岗位（鸿蒙从 1 个拆成 10 个） ---- */
+  {
+    // 摆出「老库」的样子：只留下鸿蒙应用开发那一个 DevEco 岗位。
+    // 这里必须绕过 store.deleteAgent 直接删行 —— 走 deleteAgent 会被记成
+    // 「用户主动删过」，那正是后面那条断言要否定的行为。
+    const HARMONY_KEEP = 'HarmonyOS'
+    for (const a of store.listAgents()) {
+      if (a.executor === 'deveco' && a.role !== HARMONY_KEEP) {
+        dbMod.run('DELETE FROM agents WHERE id = ?', [a.id])
+      }
+    }
+    const before = store.listAgents().length
+    store.bootstrap()
+    const rows = store.listAgents()
+    const deveco = rows.filter((a) => a.executor === 'deveco')
+    check(
+      '老库启动时补齐缺席的默认岗位（鸿蒙补到 10 个）',
+      deveco.length === 10,
+      `补前 ${before} 人 / 补后 ${rows.length} 人，DevEco ${deveco.length} 个`,
+    )
+
+    // 只补不删不改：改过提示词的岗位不能被覆盖
+    const coder = rows.find((a) => a.role === 'Coder')
+    store.updateAgent(coder.id, { systemPrompt: '被用户改过的提示词', model: 'opus' })
+    store.bootstrap()
+    const coderAfter = store.getAgent(coder.id)
+    check(
+      '补齐不会覆盖用户改过的岗位',
+      coderAfter.systemPrompt === '被用户改过的提示词' && coderAfter.model === 'opus',
+    )
+
+    // 用户主动删掉的默认岗位不该在下次启动复活
+    const designer = rows.find((a) => a.role === 'Designer')
+    store.deleteAgent(designer.id)
+    store.bootstrap()
+    check('用户删掉的默认岗位重启后不复活', !store.listAgents().some((a) => a.role === 'Designer'))
+  }
+
+  /* ---- 10. 匹配不上关键词的任务交给「日常对话」兜底 ---- */
+  {
+    const makeTask = (title, description = '') => ({ title, description, tags: [] })
+    // 只留一个候选在岗，验证单独命中时的归属
+    const idleOnly = (role) => {
+      for (const a of store.listAgents()) {
+        store.updateAgent(a.id, { status: a.role === role ? 'idle' : 'working' })
+      }
+    }
+
+    idleOnly('Chat')
+    const smalltalk = queue.pickIdleAgent(makeTask('今天天气不错，随便聊聊'))
+    check('闲聊类内容 → 日常对话', smalltalk?.role === 'Chat', `派给 ${smalltalk?.role}`)
+
+    const unmatched = queue.pickIdleAgent(makeTask('嗯'))
+    check('没命中任何关键词的任务 → 日常对话兜底', unmatched?.role === 'Chat', `派给 ${unmatched?.role}`)
+
+    idleOnly('Coder')
+    const dev = queue.pickIdleAgent(makeTask('修一下这个组件的报错'))
+    check('开发类内容仍归代码实现（兜底不抢活）', dev?.role === 'Coder', `派给 ${dev?.role}`)
+
+    idleOnly('HarmonyOS')
+    const hm = queue.pickIdleAgent(makeTask('鸿蒙 ArkTS 里怎么做一个列表页面'))
+    check('鸿蒙内容仍归鸿蒙应用开发', hm?.role === 'HarmonyOS', `派给 ${hm?.role}`)
+
+    // 兜底只在「一个都没命中」时生效：有命中就走分数
+    const chatAgent = store.listAgents().find((a) => a.role === 'Chat')
+    const scored = queue.scoreAgent(chatAgent, makeTask('帮我写个鸿蒙界面'))
+    check('有关键词命中时日常对话不靠兜底抢单', scored === 0, `得分 ${scored}`)
+
+    for (const a of store.listAgents()) store.updateAgent(a.id, { status: 'idle' })
+  }
+
   await server.stop()
 
   const passed = results.filter((r) => r.ok).length

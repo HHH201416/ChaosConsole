@@ -124,8 +124,15 @@ def _same_proc(exe_basename, proc_name):
     QueryFullProcessImageNameW 返回的是 'devecostudio64.exe'，
     精确比较永远不相等（这个坑踩过一次）。
     """
-    a = os.path.splitext(exe_basename)[0].lower()
-    b = os.path.splitext(proc_name)[0].lower()
+    def norm(name):
+        n = (name or "").lower()
+        # 只砍末尾的 '.exe'，不用 os.path.splitext：后者在**最后一个点**处切分，
+        # 而名字里带版本号时最后那个点是版本的一部分 ——
+        # splitext('ChaosConsole-Setup-1.0.2') 得到 'ChaosConsole-Setup-1.0'，
+        # 于是它和 'ChaosConsole-Setup-1.0.2.exe' 永远比不相等。
+        return n[:-4] if n.endswith(".exe") else n
+
+    a, b = norm(exe_basename), norm(proc_name)
     return bool(a) and a == b
 
 

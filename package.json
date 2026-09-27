@@ -1,6 +1,6 @@
 {
   "name": "chaos-console",
-  "version": "1.0.2",
+  "version": "3.0.0",
   "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
   "main": "electron/main.js",
   "author": {

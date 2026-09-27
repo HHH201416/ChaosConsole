@@ -40,6 +40,13 @@ const FUNCTION_KEYWORDS = {
   Writer: ['文档', 'readme', '说明', '写作', '手册', '注释', 'doc', '教程', '介绍'],
   Security: ['安全', '漏洞', '审计', '权限', '加密', '攻击', 'security', '注入', '越权'],
   PM: ['需求', '排期', '计划', '拆解', '管理', '协调', '项目', '优先级', '里程碑'],
+  /* 日常闲聊/杂事。关键词一律避开「写」「做」这种会误伤的泛用词，
+     也别用 hi / ok 这类短英文 —— 关键词是子串匹配，会命中 this / which。 */
+  Chat: [
+    '闲聊', '聊天', '聊聊', '随便聊', '你好', '您好', '在吗', 'hello',
+    '翻译', '写邮件', '写文案', '取名', '起名', '起个名', '出主意', '拿主意',
+    '科普', '是什么意思', '怎么理解', '建议一下',
+  ],
   /* DevEco 那 10 位。关键词一律带鸿蒙限定，别用「界面」「布局」「构建」这种
      泛用词 —— 否则会把本该给 Claude 岗位的活抢过来。 */
   HarmonyOS: ['鸿蒙', 'harmonyos', 'arkts', 'deveco', 'ohos', '华为'],
@@ -84,6 +91,9 @@ function agentIsBusy(agentId, exceptTaskId) {
     )
 }
 
+/** 一个关键词都没命中时，交给这个岗位兜底（见 pickIdleAgent） */
+const FALLBACK_ROLE = 'Chat'
+
 /** 挑一个空闲 Agent；没有空闲的返回 null */
 function pickIdleAgent(task) {
   const agents = store.listAgents()
@@ -98,6 +108,14 @@ function pickIdleAgent(task) {
       bestScore = s
       best = a
     }
+  }
+  // 谁都匹配不上：交给「日常对话」兜底。
+  // 以前这种任务会按并列最低分落到「代码实现」（最早入职的那位）头上，
+  // 结果闲聊和没头绪的杂事全被当成开发任务派下去。
+  // 库里没有这个岗位（用户删了）就退回原来的行为。
+  if (bestScore <= 0) {
+    const chat = idle.find((a) => a.role === FALLBACK_ROLE)
+    if (chat) return chat
   }
   return best
 }

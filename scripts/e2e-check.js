@@ -97,7 +97,7 @@ async function main() {
 
     await evaluate(`
       // chaos.ui 是跨运行存活的（面板折叠状态 / 上次选中的会话）。上次折叠过侧栏的话，
-      // 这次 aside 里就读不到那 20 个职能名；上次选中过对话的话，对话页就不是空状态。
+      // 这次 aside 里就读不到那 21 个职能名；上次选中过对话的话，对话页就不是空状态。
       // 和 token 一样必须在 reload 之前清 —— store 只在启动时读一次 localStorage。
       localStorage.removeItem('chaos.token')
       localStorage.removeItem('chaos.ui')
@@ -188,14 +188,17 @@ async function main() {
       const txt = document.body.innerText
       // 界面上应当只出现「是干什么的」，不出现姓名
       const functions = [
-        // 10 个 Claude 岗位
+        // 10 个 Claude 工程岗位
         '代码实现','架构设计','界面设计','测试验证','技术调研','构建发布','数据分析','文档撰写','安全审计','需求拆解',
+        // 1 个闲聊兜底岗位
+        '日常对话',
         // 10 个 DevEco（鸿蒙）岗位
         '鸿蒙应用开发','鸿蒙界面开发','元服务与卡片','鸿蒙工程架构','鸿蒙测试验证',
         '鸿蒙构建发布','分布式能力','鸿蒙数据管理','鸿蒙性能调优','权限与隐私合规',
       ]
       const names = [
         '张全栈','李架构','王设计','赵测试','钱研究','孙运维','周数据','吴文档','郑安全','冯项目',
+        '白小助',
         '何鸿蒙','刘界面','陈卡片','孙架构','周测试','吴构建','郑分布','冯数据','钱性能','赵安全',
       ]
       const cols = [...document.querySelectorAll('main > div')].map(c => c.innerText.split('\\n')[0])
@@ -225,9 +228,9 @@ async function main() {
     check('顶栏标题正确', board.heading === 'AI Agent开发控制台', board.heading)
     check('看板四列齐全', board.columns.length === 4, board.columns.join(' / '))
     check(
-      '20 个岗位全部显示（按职能）',
-      board.functionsFound === 20,
-      `${board.functionsFound}/20  缺失: ${JSON.stringify(board.functionsMissing || [])}  侧边栏 ${board.asideScrollH}/${board.asideClientH}`,
+      '21 个岗位全部显示（按职能）',
+      board.functionsFound === 21,
+      `${board.functionsFound}/21  缺失: ${JSON.stringify(board.functionsMissing || [])}  侧边栏 ${board.asideScrollH}/${board.asideClientH}`,
     )
     check('界面上不出现员工姓名', board.namesVisible === 0, `出现 ${board.namesVisible} 处`)
     check('首次启动看板为 0 任务', board.taskCount === 0, `当前 ${board.taskCount} 条`)

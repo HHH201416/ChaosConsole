@@ -85,6 +85,7 @@ export const ROLE_PRESETS = [
   'Writer',
   'Security',
   'PM',
+  'Chat',
 ]
 
 export const ROLE_COLORS = {
@@ -98,6 +99,7 @@ export const ROLE_COLORS = {
   Writer: 'bg-amber-500/15 text-amber-300',
   Security: 'bg-rose-500/15 text-rose-300',
   PM: 'bg-cyan-500/15 text-cyan-300',
+  Chat: 'bg-fuchsia-500/15 text-fuchsia-300',
 }
 
 export function roleColor(role) {

@@ -136,6 +136,8 @@ dist
 .pnp.*
 release/
 dist/
+# 测试构建产物（CHAOS_OUTPUT_DIR=release-test，配合 local-release-server.js 用）
+release-test/
 # Python 字节码缓存（deveco-studio.py 被 import 时会产生）
 __pycache__/
 *.pyc

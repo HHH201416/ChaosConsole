@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI Agent 开发控制台 · 下载</title>
+<meta name="description" content="ChaosConsole —— 21 个 AI 岗位分工协作的开发控制台。Windows 10/11 版免费下载，镜像加速约 20 秒，附 SHA-512 校验值。">
+<meta name="theme-color" content="#07090d">
+<!-- 纯静态页，没有任何外部依赖。这条 CSP 是纵深防御：内联是页面自己需要，
+     但它把外域脚本、外链资源、表单外发全部堵死。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta property="og:type" content="website">
+<meta property="og:title" content="AI Agent 开发控制台 · 下载">
+<meta property="og:description" content="21 个 AI 岗位分工协作，任务运行中可换岗，MCP 按岗位挂载。Windows 版免费下载。">
+<meta property="og:image" content="https://hhh201416.github.io/ChaosConsole/icon.png">
+<link rel="icon" href="./icon.png">
+<link rel="apple-touch-icon" href="./icon.png">
+<!-- 在首屏绘制之前打上 .anim。滚动入场只在有这个类时才把内容藏起来，
+     所以脚本一旦没执行（被拦截、报错、老浏览器），页面照样是完整的。 -->
+<script>document.documentElement.className += ' anim';</script>
+
+<style>
+/* ============================================================
+   配色直接取自主程序（tailwind.config.js 的 ink / boss 两组），
+   这样下载页和用户装完看到的界面是同一套色，不会像两个产品。
+   ============================================================ */
+:root{
+  --bg:#07090d; --bg-2:#0b0e14;
+  --surface:#11151f; --surface-2:#161b28;
+  --line:#1e2536; --line-2:#2a3346;
+  --text:#e8ecf4; --muted:#8f9bb0; --dim:#6b7688;
+  --amber:#f5a524; --amber-lt:#ffc457; --amber-dk:#c47f13;
+  --cool:#5b8fd6;
+  --r-lg:20px; --r-md:14px; --r-sm:9px;
+  --shadow:0 20px 50px -20px rgba(0,0,0,.85);
+  --font:"Microsoft YaHei","PingFang SC","HarmonyOS Sans SC",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:Consolas,"Cascadia Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+
+html{scroll-behavior:smooth; -webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font); font-size:16px; line-height:1.65;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+a{color:inherit; text-decoration:none}
+img{max-width:100%; display:block}
+button{font:inherit; color:inherit; cursor:pointer}
+
+:focus-visible{outline:2px solid var(--amber); outline-offset:3px; border-radius:6px}
+
+/* ---------- 背景层：两团极光 + 点阵网格 + 跟随鼠标的柔光 ---------- */
+.bg{position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden}
+.blob{position:absolute; border-radius:50%; filter:blur(90px); opacity:.55; will-change:transform}
+.blob.a{
+  width:52vw; height:52vw; min-width:420px; min-height:420px;
+  background:radial-gradient(circle at 50% 50%, rgba(245,165,36,.42), transparent 68%);
+  top:-16vw; left:-10vw; animation:drift1 26s ease-in-out infinite;
+}
+.blob.b{
+  width:46vw; height:46vw; min-width:380px; min-height:380px;
+  background:radial-gradient(circle at 50% 50%, rgba(91,143,214,.36), transparent 68%);
+  top:22vh; right:-14vw; animation:drift2 32s ease-in-out infinite;
+}
+.blob.c{
+  width:40vw; height:40vw; min-width:320px; min-height:320px;
+  background:radial-gradient(circle at 50% 50%, rgba(196,127,19,.26), transparent 70%);
+  top:88vh; left:26vw; animation:drift3 38s ease-in-out infinite;
+}
+@keyframes drift1{
+  0%,100%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(7vw,5vh,0) scale(1.14)}
+}
+@keyframes drift2{
+  0%,100%{transform:translate3d(0,0,0) scale(1.05)}
+  50%{transform:translate3d(-8vw,7vh,0) scale(.9)}
+}
+@keyframes drift3{
+  0%,100%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(5vw,-6vh,0) scale(1.18)}
+}
+.grid{
+  position:absolute; inset:0;
+  background-image:radial-gradient(circle, rgba(232,236,244,.13) 1px, transparent 1px);
+  background-size:34px 34px;
+  -webkit-mask-image:radial-gradient(ellipse 78% 55% at 50% 26%, #000 0%, transparent 78%);
+  mask-image:radial-gradient(ellipse 78% 55% at 50% 26%, #000 0%, transparent 78%);
+  opacity:.5;
+}
+/* 鼠标柔光：位置由 --mx/--my 驱动，触摸设备上一直停在初始位置也看不出问题 */
+.spot{
+  position:absolute; inset:0;
+  background:radial-gradient(420px circle at var(--mx,50%) var(--my,18%), rgba(245,165,36,.10), transparent 62%);
+  transition:background .12s linear;
+}
+
+/* ---------- 通用容器 ---------- */
+.wrap{position:relative; z-index:1; width:100%; max-width:1120px; margin:0 auto; padding:0 24px}
+
+/* ---------- 顶栏 ---------- */
+.nav{
+  position:sticky; top:0; z-index:50;
+  backdrop-filter:blur(14px) saturate(150%); -webkit-backdrop-filter:blur(14px) saturate(150%);
+  background:rgba(7,9,13,.72); border-bottom:1px solid transparent;
+  transition:border-color .3s, background .3s;
+}
+.nav.stuck{border-bottom-color:var(--line); background:rgba(7,9,13,.9)}
+.nav-in{display:flex; align-items:center; gap:14px; height:64px}
+.brand{display:flex; align-items:center; gap:11px; font-weight:700; letter-spacing:.2px}
+.brand img{width:30px; height:30px; border-radius:8px}
+.brand b{font-size:16px}
+.brand span{color:var(--dim); font-weight:500; font-size:12.5px; padding-left:9px; border-left:1px solid var(--line-2)}
+.nav-links{margin-left:auto; display:flex; align-items:center; gap:6px}
+.nav-links a{
+  padding:8px 13px; border-radius:var(--r-sm); font-size:14px; color:var(--muted);
+  transition:color .18s, background .18s;
+}
+.nav-links a:hover{color:var(--text); background:rgba(42,51,70,.5)}
+.gh{
+  display:inline-flex; align-items:center; gap:7px; margin-left:6px;
+  padding:8px 14px; border:1px solid var(--line-2); border-radius:var(--r-sm);
+  font-size:13.5px; color:var(--text); transition:border-color .2s, transform .2s;
+}
+.gh:hover{border-color:var(--amber); transform:translateY(-1px)}
+.gh svg{width:16px; height:16px; fill:currentColor}
+
+/* ---------- Hero ---------- */
+.hero{padding:88px 0 64px; text-align:center}
+.pill{
+  display:inline-flex; align-items:center; gap:9px; padding:6px 15px 6px 11px;
+  border:1px solid rgba(245,165,36,.32); border-radius:999px;
+  background:rgba(245,165,36,.09); color:var(--amber-lt);
+  font-size:13px; font-weight:600; letter-spacing:.3px;
+}
+.dot{
+  width:7px; height:7px; border-radius:50%; background:var(--amber);
+  box-shadow:0 0 0 0 rgba(245,165,36,.65); animation:ping 2s ease-out infinite;
+}
+@keyframes ping{
+  0%{box-shadow:0 0 0 0 rgba(245,165,36,.6)}
+  70%{box-shadow:0 0 0 9px rgba(245,165,36,0)}
+  100%{box-shadow:0 0 0 0 rgba(245,165,36,0)}
+}
+h1{
+  margin:24px 0 0; font-size:clamp(34px,6.2vw,62px); line-height:1.12;
+  font-weight:800; letter-spacing:-1px;
+  background:linear-gradient(180deg,#ffffff 18%, #b9c4d8 72%, #8a95ab 100%);
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+h1 em{
+  font-style:normal;
+  background:linear-gradient(120deg,var(--amber-lt),var(--amber) 55%,var(--amber-dk));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.lede{
+  margin:20px auto 0; max-width:610px; font-size:clamp(15px,2.1vw,17.5px);
+  color:var(--muted); line-height:1.8;
+}
+.lede b{color:var(--text); font-weight:600}
+
+/* 下载主按钮 */
+.cta-row{margin-top:38px; display:flex; flex-direction:column; align-items:center; gap:14px}
+.cta{
+  position:relative; overflow:hidden;
+  display:inline-flex; align-items:center; gap:12px;
+  padding:17px 34px; border:0; border-radius:999px;
+  background:linear-gradient(135deg,var(--amber-lt),var(--amber));
+  color:#160f02; font-size:17.5px; font-weight:800; letter-spacing:.3px;
+  box-shadow:0 12px 34px -10px rgba(245,165,36,.62), inset 0 1px 0 rgba(255,255,255,.42);
+  transition:transform .2s cubic-bezier(.2,.8,.3,1), box-shadow .25s;
+}
+.cta:hover{transform:translateY(-2px) scale(1.015); box-shadow:0 20px 46px -12px rgba(245,165,36,.78), inset 0 1px 0 rgba(255,255,255,.5)}
+.cta:active{transform:translateY(0) scale(.995)}
+.cta svg{width:20px; height:20px; fill:currentColor; flex:none}
+/* 划过时的高光扫过 —— 纯装饰，不影响点击区域 */
+.cta::after{
+  content:""; position:absolute; top:0; bottom:0; width:44%;
+  left:-60%; transform:skewX(-22deg);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+}
+.cta:hover::after{animation:sweep .85s ease-out}
+@keyframes sweep{from{left:-60%} to{left:130%}}
+.cta-note{font-size:13.5px; color:var(--dim)}
+.cta-note a{color:var(--muted); border-bottom:1px dashed var(--line-2)}
+.cta-note a:hover{color:var(--amber)}
+
+/* 体积 / 平台 / 版本 一行说明 */
+.meta{
+  margin-top:26px; display:flex; flex-wrap:wrap; justify-content:center; gap:10px 8px;
+  font-size:13px; color:var(--dim);
+}
+.meta span{
+  display:inline-flex; align-items:center; gap:7px;
+  padding:6px 13px; border:1px solid var(--line); border-radius:999px;
+  background:rgba(17,21,31,.66);
+}
+.meta i{width:5px; height:5px; border-radius:50%; background:var(--line-2); font-style:normal}
+.meta span:first-child i{background:var(--amber)}
+
+/* 数字统计 */
+.stats{
+  margin-top:52px; display:grid; grid-template-columns:repeat(4,1fr); gap:14px;
+  border-top:1px solid var(--line); padding-top:34px;
+}
+.stat b{
+  display:block; font-size:clamp(26px,4vw,38px); font-weight:800; letter-spacing:-1px;
+  background:linear-gradient(180deg,#fff,#a8b4c9);
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  font-variant-numeric:tabular-nums;
+}
+.stat small{display:block; margin-top:5px; font-size:12.5px; color:var(--dim); letter-spacing:.4px}
+
+/* ---------- 分节标题 ---------- */
+/* 吸顶导航有 64px 高，锚点跳过去会把标题压在它底下，留出这段余量 */
+section[id]{scroll-margin-top:84px}
+section{padding:76px 0}
+.sec-head{margin-bottom:38px; max-width:660px}
+.sec-kicker{
+  font-size:12.5px; font-weight:700; letter-spacing:2px; text-transform:uppercase;
+  color:var(--amber); margin-bottom:10px;
+}
+h2{margin:0; font-size:clamp(23px,3.4vw,32px); font-weight:800; letter-spacing:-.5px}
+.sec-head p{margin:12px 0 0; color:var(--muted); font-size:15.5px}
+
+/* ---------- 下载方式（两张卡） ---------- */
+.routes{display:grid; grid-template-columns:1.25fr 1fr; gap:18px}
+.route{
+  position:relative; overflow:hidden;
+  padding:26px; border:1px solid var(--line); border-radius:var(--r-lg);
+  background:linear-gradient(160deg,var(--surface),#0d1119);
+  transition:border-color .25s, transform .25s, box-shadow .25s;
+}
+.route:hover{transform:translateY(-3px); border-color:var(--line-2); box-shadow:var(--shadow)}
+.route.best{border-color:rgba(245,165,36,.34)}
+.route.best::before{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(520px circle at 88% -12%, rgba(245,165,36,.13), transparent 62%);
+}
+.tag{
+  position:absolute; top:18px; right:18px;
+  padding:4px 11px; border-radius:999px; font-size:11.5px; font-weight:700; letter-spacing:.4px;
+  background:rgba(245,165,36,.15); color:var(--amber-lt); border:1px solid rgba(245,165,36,.3);
+}
+.route h3{margin:0 0 6px; font-size:17.5px; font-weight:700; display:flex; align-items:center; gap:9px}
+.route h3 svg{width:18px; height:18px; fill:var(--amber); flex:none}
+.route > p{margin:0 0 18px; font-size:14px; color:var(--muted); min-height:44px}
+.speed{
+  display:flex; align-items:baseline; gap:8px; margin-bottom:18px;
+  font-family:var(--mono); font-size:13px; color:var(--dim);
+}
+.speed b{font-size:22px; font-weight:700; color:var(--amber); font-family:var(--font); letter-spacing:-.5px}
+
+/* 次级按钮 */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:9px;
+  width:100%; padding:13px 20px; border-radius:var(--r-md);
+  border:1px solid var(--line-2); background:rgba(30,37,54,.5);
+  font-size:15px; font-weight:600; transition:all .2s;
+}
+.btn:hover{border-color:var(--amber); background:rgba(245,165,36,.1); color:var(--amber-lt)}
+.btn svg{width:17px; height:17px; fill:currentColor; flex:none}
+
+/* ---------- 校验值 ---------- */
+.verify{
+  margin-top:18px; padding:22px 24px;
+  border:1px solid var(--line); border-radius:var(--r-lg);
+  background:linear-gradient(160deg,var(--surface),#0d1119);
+}
+.verify-head{display:flex; align-items:center; gap:10px; margin-bottom:6px}
+.verify-head svg{width:18px; height:18px; fill:var(--amber); flex:none}
+.verify-head h3{margin:0; font-size:16px; font-weight:700}
+.verify > p{margin:0 0 16px; font-size:13.5px; color:var(--muted)}
+.hash{display:flex; align-items:center; gap:10px; margin-top:10px}
+.hash code{
+  flex:1; min-width:0; padding:10px 13px; border-radius:var(--r-sm);
+  background:#07090d; border:1px solid var(--line);
+  font-family:var(--mono); font-size:12px; color:#a9b6cc;
+  overflow-x:auto; white-space:nowrap; scrollbar-width:thin;
+}
+.hash code::-webkit-scrollbar{height:5px}
+.hash code::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:3px}
+.copy{
+  flex:none; padding:10px 14px; border-radius:var(--r-sm); font-size:12.5px;
+  border:1px solid var(--line-2); background:transparent; color:var(--muted);
+  transition:all .2s; white-space:nowrap;
+}
+.copy:hover{border-color:var(--amber); color:var(--amber-lt)}
+.copy.done{border-color:#2f7d52; color:#5bd18e}
+.hash-label{font-size:12px; color:var(--dim); margin-top:16px; font-weight:600; letter-spacing:.4px}
+
+/* ---------- 功能卡 ---------- */
+.feats{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+.feat{
+  padding:24px; border:1px solid var(--line); border-radius:var(--r-lg);
+  background:linear-gradient(160deg,var(--surface),#0d1119);
+  transition:border-color .25s, transform .25s;
+}
+.feat:hover{transform:translateY(-3px); border-color:var(--line-2)}
+.feat .ico{
+  width:40px; height:40px; border-radius:11px; display:grid; place-items:center;
+  background:rgba(245,165,36,.11); border:1px solid rgba(245,165,36,.22); margin-bottom:15px;
+}
+.feat .ico svg{width:20px; height:20px; fill:var(--amber)}
+.feat h3{margin:0 0 7px; font-size:15.5px; font-weight:700}
+.feat p{margin:0; font-size:13.8px; color:var(--muted); line-height:1.72}
+
+/* ---------- 安装步骤 ---------- */
+.steps{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; counter-reset:s}
+.step{
+  position:relative; padding:24px 22px 22px;
+  border:1px solid var(--line); border-radius:var(--r-lg);
+  background:linear-gradient(160deg,var(--surface),#0d1119);
+}
+.step .n{
+  width:29px; height:29px; border-radius:9px; display:grid; place-items:center;
+  background:linear-gradient(135deg,var(--amber-lt),var(--amber)); color:#160f02;
+  font-size:14px; font-weight:800; margin-bottom:14px;
+}
+.step h3{margin:0 0 7px; font-size:15px; font-weight:700}
+.step p{margin:0; font-size:13.5px; color:var(--muted); line-height:1.72}
+.step code{
+  font-family:var(--mono); font-size:12.2px; padding:1.5px 6px; border-radius:5px;
+  background:#07090d; border:1px solid var(--line); color:var(--amber-lt);
+}
+/* 没买代码签名证书的 exe 必然会撞上 SmartScreen，提前写清楚省得用户以为中毒了 */
+.tip{
+  margin-top:20px; padding:17px 20px; display:flex; gap:13px;
+  border:1px solid rgba(245,165,36,.26); border-left:3px solid var(--amber);
+  border-radius:var(--r-md); background:rgba(245,165,36,.06);
+}
+.tip svg{width:19px; height:19px; fill:var(--amber); flex:none; margin-top:2px}
+.tip p{margin:0; font-size:13.8px; color:#d3dae7; line-height:1.75}
+.tip b{color:var(--amber-lt)}
+
+/* ---------- 版本列表 ---------- */
+.vers{border:1px solid var(--line); border-radius:var(--r-lg); overflow:hidden; background:var(--surface)}
+.ver{
+  display:grid; grid-template-columns:118px 1fr 92px 152px; align-items:center; gap:16px;
+  padding:17px 22px; border-bottom:1px solid var(--line);
+  transition:background .18s;
+}
+.ver:last-child{border-bottom:0}
+.ver:hover{background:rgba(30,37,54,.42)}
+.ver-tag{
+  display:inline-flex; align-items:center; gap:7px;
+  font-family:var(--mono); font-size:13.5px; font-weight:700; color:var(--text);
+}
+.ver-tag .now{
+  padding:2.5px 8px; border-radius:999px; font-family:var(--font);
+  font-size:10.5px; font-weight:700; letter-spacing:.3px;
+  background:rgba(245,165,36,.16); color:var(--amber-lt); border:1px solid rgba(245,165,36,.3);
+}
+.ver-name{font-size:13.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.ver-size{font-size:12.5px; color:var(--dim); font-family:var(--mono); text-align:right}
+.ver-act{display:flex; gap:8px; justify-content:flex-end}
+.ver-act a{
+  padding:7px 13px; border-radius:var(--r-sm); font-size:12.5px; font-weight:600;
+  border:1px solid var(--line-2); transition:all .18s; white-space:nowrap;
+}
+.ver-act a.mirror{border-color:rgba(245,165,36,.3); color:var(--amber-lt); background:rgba(245,165,36,.07)}
+.ver-act a.mirror:hover{background:rgba(245,165,36,.17); border-color:var(--amber)}
+.ver-act a.plain{color:var(--dim)}
+.ver-act a.plain:hover{color:var(--text); border-color:var(--line-2)}
+
+/* 非 Windows 访问时的提示条 */
+.os-warn{
+  display:none; margin:0 auto 30px; max-width:660px; padding:14px 20px;
+  border:1px solid var(--line-2); border-radius:var(--r-md);
+  background:rgba(30,37,54,.5); font-size:13.8px; color:var(--muted); text-align:left;
+}
+.os-warn.show{display:block}
+.os-warn b{color:var(--text)}
+
+/* ---------- 页脚 ---------- */
+footer{
+  border-top:1px solid var(--line); padding:38px 0 52px; margin-top:34px;
+  font-size:13.5px; color:var(--dim);
+}
+.foot{display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between}
+.foot a{color:var(--muted); transition:color .18s}
+.foot a:hover{color:var(--amber)}
+
+/* ---------- 滚动入场 ----------
+   注意方向：默认是「可见」，只有 html 带 .anim 时才隐藏起来做入场。
+   反过来写（默认 opacity:0 等 JS 来点亮）一旦观察器没跑到，整页就是黑的 ——
+   对一个下载页来说等于白给。 */
+.reveal{transition:opacity .7s cubic-bezier(.2,.7,.3,1), transform .7s cubic-bezier(.2,.7,.3,1)}
+.anim .reveal{opacity:0; transform:translateY(22px)}
+.anim .reveal.in{opacity:1; transform:none}
+/* 逐个错开，让卡片是「一片片落下来」而不是整块闪现 */
+.feats .reveal:nth-child(2),.steps .reveal:nth-child(2){transition-delay:.07s}
+.feats .reveal:nth-child(3),.steps .reveal:nth-child(3){transition-delay:.14s}
+.feats .reveal:nth-child(4),.steps .reveal:nth-child(4){transition-delay:.21s}
+.feats .reveal:nth-child(5){transition-delay:.28s}
+.feats .reveal:nth-child(6){transition-delay:.35s}
+
+/* ---------- 复制反馈 ---------- */
+.toast{
+  position:fixed; left:50%; bottom:34px; z-index:99;
+  transform:translate(-50%,26px); opacity:0; pointer-events:none;
+  padding:13px 22px; border-radius:999px;
+  border:1px solid var(--line-2); background:rgba(22,27,40,.97);
+  box-shadow:0 16px 40px -12px rgba(0,0,0,.9);
+  font-size:14px; font-weight:600; backdrop-filter:blur(10px);
+  transition:opacity .3s, transform .3s cubic-bezier(.2,.8,.3,1);
+}
+.toast.show{opacity:1; transform:translate(-50%,0)}
+.toast b{color:var(--amber-lt)}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:940px){
+  .routes,.feats{grid-template-columns:1fr 1fr}
+  .steps{grid-template-columns:1fr 1fr}
+  .stats{grid-template-columns:1fr 1fr; gap:26px 14px}
+  .ver{grid-template-columns:104px 1fr 84px; gap:12px}
+  .ver-name{display:none}
+}
+@media (max-width:640px){
+  .wrap{padding:0 18px}
+  .hero{padding:60px 0 40px}
+  section{padding:56px 0}
+  .routes,.feats,.steps{grid-template-columns:1fr}
+  .nav-links a:not(.gh){display:none}
+  .brand span{display:none}
+  .cta{width:100%; justify-content:center; padding:16px 24px; font-size:16px}
+  .ver{grid-template-columns:1fr auto; gap:10px}
+  .ver-size{text-align:left}
+  .ver-act{grid-column:1 / -1; justify-content:flex-start}
+  .hash{flex-direction:column; align-items:stretch}
+  .copy{width:100%}
+}
+
+/* 系统开了「减少动态效果」就全部停掉 —— 前庭敏感的用户不该被这些东西晃到 */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important}
+  html{scroll-behavior:auto}
+  .anim .reveal{opacity:1; transform:none}
+  .spot{display:none}
+}
+</style>
+</head>
+<body>
+
+<div class="bg" aria-hidden="true">
+  <div class="blob a"></div>
+  <div class="blob b"></div>
+  <div class="blob c"></div>
+  <div class="grid"></div>
+  <div class="spot" id="spot"></div>
+</div>
+
+<nav class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top">
+      <img src="./icon.png" alt="" width="30" height="30">
+      <b>ChaosConsole</b>
+      <span>AI Agent 开发控制台</span>
+    </a>
+    <div class="nav-links">
+      <a href="#download">下载</a>
+      <a href="#features">功能</a>
+      <a href="#install">安装</a>
+      <a href="#versions">历史版本</a>
+      <a class="gh" id="ghLink" href="https://github.com/HHH201416/ChaosConsole" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<a id="top"></a>
+
+<header class="wrap hero">
+  <div class="os-warn" id="osWarn">
+    <b>当前只提供 Windows 版</b>（Windows 10/11 64 位）。你现在的系统看起来不是 Windows，仍然可以下载，但装不上。
+  </div>
+
+  <div class="pill"><span class="dot"></span><span id="pillText">最新版 v3.6.0</span></div>
+
+  <h1>把 21 个 AI 岗位<br>编进<em>一个控制台</em></h1>
+
+  <p class="lede">
+    需求进来，自动派给对的岗位；<b>跑挂了能中途换岗</b>，不用从头再来。
+    每个岗位只挂它自己该用的 MCP 工具。<br>
+    Windows 桌面应用，下载即用，<b>不收费</b>。
+  </p>
+
+  <div class="cta-row">
+    <a class="cta" id="mainCta" href="https://github.com/HHH201416/ChaosConsole/releases/latest">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1Zm-7 15a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v1.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20.5V19a1 1 0 0 1 1-1Z"/></svg>
+      <span id="ctaText">下载最新版</span>
+    </a>
+    <div class="cta-note" id="ctaNote">镜像加速 · 约 20 秒 · 86.9 MB</div>
+  </div>
+
+  <div class="meta">
+    <span><i></i><span id="metaVer">v3.6.0</span></span>
+    <span><i></i>Windows 10 / 11 · 64 位</span>
+    <span><i></i><span id="metaSize">86.9 MB</span></span>
+    <span><i></i>安装后自动更新</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat reveal"><b data-count="21">0</b><small>个 AI 岗位</small></div>
+    <div class="stat reveal"><b data-count="4">0</b><small>阶段流水线</small></div>
+    <div class="stat reveal"><b data-count="116">0</b><small>条门禁用例</small></div>
+    <div class="stat reveal"><b data-count="7">0</b><small>个已发布版本</small></div>
+  </div>
+</header>
+
+<main>
+
+<!-- ===================== 下载 ===================== -->
+<section class="wrap" id="download">
+  <div class="sec-head reveal">
+    <div class="sec-kicker">Download</div>
+    <h2>选一条下载线路</h2>
+    <p>两个地址拿到的是同一个文件。国内直连 GitHub 常常只有 0.1 MB/s，走镜像大约 20 秒。</p>
+  </div>
+
+  <div class="routes">
+    <div class="route best reveal">
+      <span class="tag">推荐</span>
+      <h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg>镜像加速下载</h3>
+      <p>经由公共镜像转发，实测 5～11 MB/s。装完的程序和直连下载的完全一致。</p>
+      <div class="speed"><b>5～11</b><span>MB/s · 约 20 秒</span></div>
+      <a class="btn" id="btnMirror" href="https://github.com/HHH201416/ChaosConsole/releases/latest">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1Zm-7 15a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v1.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20.5V19a1 1 0 0 1 1-1Z"/></svg>
+        下载 v3.6.0 安装包
+      </a>
+    </div>
+
+    <div class="route reveal">
+      <h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 6h-2.6a15.6 15.6 0 0 0-1.3-3.3A8 8 0 0 1 18.9 8ZM12 4.2c.7 1 1.3 2.3 1.7 3.8h-3.4c.4-1.5 1-2.8 1.7-3.8ZM4.3 14a8 8 0 0 1 0-4h3a19 19 0 0 0 0 4h-3Zm.8 2h2.6c.3 1.2.8 2.3 1.3 3.3A8 8 0 0 1 5.1 16Zm2.6-8H5.1a8 8 0 0 1 3.9-3.3A15.6 15.6 0 0 0 7.7 8ZM12 19.8c-.7-1-1.3-2.3-1.7-3.8h3.4c-.4 1.5-1 2.8-1.7 3.8ZM14.2 14H9.8a17 17 0 0 1 0-4h4.4a17 17 0 0 1 0 4Zm.8 5.3c.5-1 1-2.1 1.3-3.3h2.6a8 8 0 0 1-3.9 3.3ZM16.7 14a19 19 0 0 0 0-4h3a8 8 0 0 1 0 4h-3Z"/></svg>GitHub 直连</h3>
+      <p>从 Release 原地址下载，不经任何第三方。国内速度取决于你到 GitHub 的线路。</p>
+      <div class="speed"><b>0.1</b><span>MB/s · 可能十几分钟</span></div>
+      <a class="btn" id="btnDirect" href="https://github.com/HHH201416/ChaosConsole/releases/latest">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1Zm-7 15a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v1.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20.5V19a1 1 0 0 1 1-1Z"/></svg>
+        从 GitHub 下载
+      </a>
+    </div>
+  </div>
+
+  <!-- 校验值：镜像毕竟是第三方，装之前能自己核一遍 -->
+  <div class="verify reveal" id="verify">
+    <div class="verify-head">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 3.8 5v7.1c0 5 3.5 9.1 8.2 10.4 4.7-1.3 8.2-5.4 8.2-10.4V5L12 1.5Zm3.9 7.5-4.6 5.4a1 1 0 0 1-1.5 0L7.6 12a1 1 0 1 1 1.5-1.3l1.5 1.7 3.8-4.5A1 1 0 1 1 15.9 9Z"/></svg>
+      <h3>校验下载到的安装包</h3>
+    </div>
+    <p>镜像转发的是「接下来会被执行的程序」，所以这里把官方校验值列出来，下完可以自己对一遍。程序内的自动更新也是按这个值校验的。</p>
+
+    <div class="hash-label">SHA-512</div>
+    <div class="hash">
+      <code id="sha512">读取中…</code>
+      <button class="copy" data-copy="sha512">复制</button>
+    </div>
+
+    <div class="hash-label">SHA-256（GitHub 计算）</div>
+    <div class="hash">
+      <code id="sha256">读取中…</code>
+      <button class="copy" data-copy="sha256">复制</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 功能 ===================== -->
+<section class="wrap" id="features">
+  <div class="sec-head reveal">
+    <div class="sec-kicker">Features</div>
+    <h2>它到底替你做了什么</h2>
+    <p>核心是一件事：让多个 AI 岗位像一支队伍那样接力干活，而不是丢给一个对话框反复重来。</p>
+  </div>
+
+  <div class="feats">
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm0 2c-3.3 0-6 1.8-6 4v1.5c0 .8.7 1.5 1.5 1.5H13a6.5 6.5 0 0 1-.7-3c0-1.5.4-2.9 1.2-4.1A9 9 0 0 0 9 13Zm8.5 1.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm-2.6 6.5h5.6l-2.8-4.6-2.8 4.6Z"/></svg></div>
+      <h3>21 个岗位分工</h3>
+      <p>11 个 Claude 岗 + 10 个 DevEco 岗。关键词自动派单，没命中就兜底给「日常对话」，不用你手动挑人。</p>
+    </div>
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M7.5 3.5 4 7l3.5 3.5V8H15a3 3 0 0 1 0 6H8a5 5 0 0 0 0 10h1v-2H8a3 3 0 0 1 0-6h7a5 5 0 0 0 0-10H7.5V3.5Z"/></svg></div>
+      <h3>跑挂了能中途换岗</h3>
+      <p>任务失败或超时会自动换一个岗位接手，另配四道护栏，避免它在两个岗位之间来回踢皮球。</p>
+    </div>
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h2V1h2v2h6V1h2v2h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Zm16 4H5v10h14V9ZM7.5 12h3v3h-3v-3Z"/></svg></div>
+      <h3>四阶段流水线</h3>
+      <p>方案 → 编码 → 构建 → 测试，每一阶段的产出交给下一个岗位，过程在界面上可见。</p>
+    </div>
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2 3 6.5v7c0 5 3.8 8.7 9 9.5 5.2-.8 9-4.5 9-9.5v-7L12 2Zm0 3.6 1.8 3.9 4.2.5-3.1 2.9.8 4.2-3.7-2.1-3.7 2.1.8-4.2L6 10l4.2-.5L12 5.6Z"/></svg></div>
+      <h3>MCP 按岗位挂载</h3>
+      <p>每个岗位只挂它该用的工具。写代码的岗位拿不到发布权限，减少「手滑改坏别的东西」。</p>
+    </div>
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z"/></svg></div>
+      <h3>下载加速 + 完整性校验</h3>
+      <p>更新走镜像，约 20 秒装完。校验值只从 GitHub 官方接口取，对不上就删文件报错，不装。</p>
+    </div>
+    <div class="feat reveal">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z"/></svg></div>
+      <h3>一键回退任意版本</h3>
+      <p>设置里列出全部历史版本，新版不满意可以直接退回旧版，退回后程序会自动重新拉起来。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 安装 ===================== -->
+<section class="wrap" id="install">
+  <div class="sec-head reveal">
+    <div class="sec-kicker">Install</div>
+    <h2>装起来四步</h2>
+    <p>下载完是个 .exe 安装向导，全程点几下就行，不需要装 Node、也不需要配置环境。</p>
+  </div>
+
+  <div class="steps">
+    <div class="step reveal">
+      <div class="n">1</div>
+      <h3>下载安装包</h3>
+      <p>点上面的按钮，得到一个约 86.9 MB 的 <code>.exe</code>。浏览器可能会先问一句「是否保留」，选保留。</p>
+    </div>
+    <div class="step reveal">
+      <div class="n">2</div>
+      <h3>双击运行</h3>
+      <p>如果弹出蓝色的「Windows 已保护你的电脑」，点<b>更多信息</b> → <b>仍要运行</b>。原因见下方说明。</p>
+    </div>
+    <div class="step reveal">
+      <div class="n">3</div>
+      <h3>选「仅为我安装」</h3>
+      <p>这样后续升级和回退都是静默的，不会再弹权限确认框。选「为所有人安装」则每次更新都要点一次 UAC。</p>
+    </div>
+    <div class="step reveal">
+      <div class="n">4</div>
+      <h3>启动即可用</h3>
+      <p>第一次打开会自动把岗位名册补齐。以后有新版，程序内直接提示更新。</p>
+    </div>
+  </div>
+
+  <div class="tip reveal">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 1 21h22L12 2Zm0 6a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0V9a1 1 0 0 1 1-1Zm0 10.5a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z"/></svg>
+    <p><b>关于那个蓝色警告：</b>这个安装包没有买代码签名证书（一张证书一年要几百到几千块），Windows 对没有签名、又没被下载过几次的 exe 一律会弹这个提示，和程序本身有没有问题是两回事。想更稳妥的话，可以按上面的 SHA-512 自己核对一遍文件再装。</p>
+  </div>
+</section>
+
+<!-- ===================== 历史版本 ===================== -->
+<section class="wrap" id="versions">
+  <div class="sec-head reveal">
+    <div class="sec-kicker">Versions</div>
+    <h2>历史版本</h2>
+    <p>一般用最新版就行。需要退回旧版时可以从这里下，装完在设置里也能直接切。</p>
+  </div>
+
+  <div class="vers reveal" id="verList">
+    <div class="ver"><span class="ver-tag">读取中…</span></div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>AI Agent 开发控制台 · ChaosConsole —— 免费提供，无内购</div>
+    <div>
+      <a href="https://github.com/HHH201416/ChaosConsole" target="_blank" rel="noopener">源码仓库</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/HHH201416/ChaosConsole/releases" target="_blank" rel="noopener">全部 Release</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/HHH201416/ChaosConsole/issues" target="_blank" rel="noopener">反馈问题</a>
+    </div>
+  </div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function(){
+  'use strict';
+  var REPO = 'HHH201416/ChaosConsole';
+  var MIRROR = 'https://gh-proxy.com';
+  var RELEASES_PAGE = 'https://github.com/' + REPO + '/releases';
+
+  /* 页面不打 API，只读同目录的 releases.json（发版后由 scripts/gen-site-data.js 生成）。
+     这份内嵌数据是兜底：万一 json 没跟着部署上去，页面显示旧版本号而不是直接白屏。 */
+  var FALLBACK = {
+    latest: {
+      tag:'v3.6.0', version:'3.6.0', sizeText:'86.9 MB', publishedAt:'2026-09-27T08:07:53Z',
+      exeName:'ChaosConsole-Setup-3.6.0.exe',
+      direct:'https://github.com/HHH201416/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
+      mirror:'https://gh-proxy.com/https://github.com/HHH201416/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
+      sha512:'HxddeHNVlXV7udYAo3NjE0nwHMTrVmql9TizUdKZ+cglFyJof9MN0NY9qlfLBpXtJ95aXEL7Jfi6cP5dRq/yMA==',
+      sha256:'0bf83ea1e4de8330bcf49dc761cdf8e0de214b44829b8318da40c9b7395cadca'
+    },
+    releases: [{ tag:'v3.6.0', version:'3.6.0', sizeText:'86.9 MB', publishedAt:'2026-09-27T08:07:53Z',
+      exeName:'ChaosConsole-Setup-3.6.0.exe',
+      direct:'https://github.com/HHH201416/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
+      mirror:'https://gh-proxy.com/https://github.com/HHH201416/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe' }]
+  };
+
+  var $ = function(id){ return document.getElementById(id) };
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  /* 日期只取 ISO 的日期段。跨时区可能差几小时，但版本列表按天看足够，
+     而且这样渲染结果是确定的，不随访问者的时区变来变去。 */
+  function day(iso){ return String(iso || '').slice(0,10) }
+
+  /* ---------- 渲染 ---------- */
+  function render(data){
+    var latest = data.latest;
+    if (!latest) return;
+
+    var label = 'v' + latest.version;
+
+    $('pillText').textContent = '最新版 ' + label;
+    $('metaVer').textContent = label;
+    $('metaSize').textContent = latest.sizeText;
+    $('ctaText').textContent = '下载 ' + label + '（' + latest.sizeText + '）';
+    $('ctaNote').innerHTML = '镜像加速 · 约 20 秒 · <a href="#install">装不上？看这里</a>';
+
+    var m = latest.mirror || latest.direct || RELEASES_PAGE;
+    var d = latest.direct || RELEASES_PAGE;
+    $('mainCta').href = m;
+    $('btnMirror').href = m;
+    $('btnDirect').href = d;
+    $('btnMirror').innerHTML = $('btnMirror').innerHTML.replace(/下载 v?[\d.]+ 安装包|下载安装包/,
+      '下载 ' + esc(label) + ' 安装包');
+
+    $('sha512').textContent = latest.sha512 || '（该版本未提供）';
+    $('sha256').textContent = latest.sha256 || '（该版本未提供）';
+
+    var list = $('verList');
+    list.innerHTML = (data.releases || []).map(function(r, i){
+      var isNew = i === 0;
+      var mm = r.mirror || r.direct || RELEASES_PAGE;
+      var dd = r.direct || RELEASES_PAGE;
+      return '<div class="ver">'
+        + '<span class="ver-tag">' + esc(r.tag) + (isNew ? '<span class="now">最新</span>' : '') + '</span>'
+        + '<span class="ver-name">' + esc(day(r.publishedAt)) + ' 发布</span>'
+        + '<span class="ver-size">' + esc(r.sizeText) + '</span>'
+        + '<span class="ver-act">'
+        +   '<a class="mirror" href="' + esc(mm) + '" rel="noopener">镜像下载</a>'
+        +   '<a class="plain" href="' + esc(dd) + '" rel="noopener">直连</a>'
+        + '</span>'
+        + '</div>';
+    }).join('');
+
+    // 非 Windows 访问就提示一句，省得下完 87MB 才发现装不上
+    if (!/Windows/i.test(navigator.userAgent)) $('osWarn').classList.add('show');
+  }
+
+  /* ---------- 数据：同目录 json 优先，读不到用内嵌兜底 ---------- */
+  var STATIC = null;
+
+  fetch('./releases.json', { cache:'no-cache' })
+    .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json() })
+    .then(function(d){ STATIC = (d && d.latest) ? d : FALLBACK })
+    .catch(function(){ STATIC = FALLBACK })
+    .then(function(){
+      render(STATIC);
+      refreshFromApi(STATIC);
+    });
+
+  /* ---------- 顺带问一句「现在最新是哪个」 ----------
+     releases.json 是发版那会儿生成的，可能比 GitHub 慢一拍；页面要是停在旧版本号上，
+     访客就会下到旧包。所以再问一次官方接口，**只有确实更新**才动页面。
+     问不到就什么都不做 —— 国内访问 api.github.com 时通时不通、匿名调用还有每小时
+     60 次的限流，这些都不该影响页面可用性，静态数据本来就是完整的。 */
+  function isNewer(cur, got){
+    var a = String(got).split('.').map(Number), b = String(cur).split('.').map(Number);
+    for (var i = 0; i < Math.max(a.length, b.length); i++){
+      var d = (a[i] || 0) - (b[i] || 0);
+      if (d) return d > 0;
+    }
+    return false;
+  }
+
+  function fmtMB(bytes){
+    if (!bytes) return '';
+    var mb = bytes / 1048576;
+    return (mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)) + ' MB';
+  }
+
+  function refreshFromApi(base){
+    if (!window.fetch || !base || !base.latest) return;
+    fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
+      headers: { accept: 'application/vnd.github+json' },
+    })
+      .then(function(r){ return r.ok ? r.json() : null })
+      .then(function(rel){
+        if (!rel || !rel.tag_name) return;
+        var m = String(rel.tag_name).match(/\d+(?:\.\d+)*/);
+        if (!m || !isNewer(base.latest.version, m[0])) return;
+
+        var exe = (rel.assets || []).filter(function(a){
+          return /\.exe$/i.test(a.name) && !/\.blockmap$/i.test(a.name);
+        })[0];
+        if (!exe) return;
+
+        var entry = {
+          tag: rel.tag_name, version: m[0], name: rel.name || rel.tag_name,
+          publishedAt: rel.published_at || '',
+          size: exe.size, sizeText: fmtMB(exe.size), exeName: exe.name,
+          direct: exe.browser_download_url,
+          mirror: MIRROR + '/' + exe.browser_download_url,
+          // 校验值不在这里取：镜像返回的东西不能用来给自己做校验，
+          // 这两个字段留给下次跑 gen-site-data.js 时从 GitHub 那边补上
+          sha512: '', sha256: '',
+        };
+
+        // 新版本插到列表最前面（「最新」标记是按第 0 项算的，插进去自动就对了）
+        var list = (base.releases || []).filter(function(r){ return r.version !== entry.version });
+        render({
+          latest: entry,
+          releases: [entry].concat(list),
+          mirror: base.mirror,
+        });
+      })
+      .catch(function(){ /* 问不到就算了 */ });
+  }
+
+  /* ---------- 顶栏加边界线（滚过才加，首屏保持通透） ---------- */
+  var nav = $('nav');
+  var onScroll = function(){ nav.classList.toggle('stuck', window.scrollY > 8) };
+  window.addEventListener('scroll', onScroll, { passive:true });
+  onScroll();
+
+  /* ---------- 鼠标柔光 ---------- */
+  var spot = $('spot');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (spot && !reduce && window.matchMedia('(pointer:fine)').matches){
+    var ticking = false, px = 0, py = 0;
+    window.addEventListener('mousemove', function(e){
+      px = e.clientX; py = e.clientY;
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function(){
+        // 用视口百分比，这样 fixed 定位的背景层跟着滚也没关系
+        spot.style.setProperty('--mx', (px / window.innerWidth * 100).toFixed(2) + '%');
+        spot.style.setProperty('--my', (py / window.innerHeight * 100).toFixed(2) + '%');
+        ticking = false;
+      });
+    }, { passive:true });
+  }
+
+  /* ---------- 滚动入场 ---------- */
+  var items = document.querySelectorAll('.reveal');
+  if (!('IntersectionObserver' in window) || reduce){
+    Array.prototype.forEach.call(items, function(el){ el.classList.add('in') });
+  } else {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        en.target.classList.add('in');
+        io.unobserve(en.target);   // 只播一次，来回滚不再重放
+      });
+    }, { threshold:.12, rootMargin:'0px 0px -8% 0px' });
+    Array.prototype.forEach.call(items, function(el){ io.observe(el) });
+  }
+
+  /* ---------- 数字滚动 ---------- */
+  var nums = document.querySelectorAll('[data-count]');
+  function runCount(el){
+    if (el.dataset.done) return;
+    el.dataset.done = '1';       // 先占位，兜底扫描据此跳过已经跑过的
+    var target = parseInt(el.getAttribute('data-count'), 10) || 0;
+    var t0 = null, DUR = 1100;
+    function frame(ts){
+      if (t0 === null) t0 = ts;
+      var p = Math.min((ts - t0) / DUR, 1);
+      // easeOutExpo：开头冲得快、末尾稳稳停住，比线性像样
+      var e = p === 1 ? 1 : 1 - Math.pow(2, -10 * p);
+      el.textContent = Math.round(target * e);
+      if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+  if (!reduce && 'IntersectionObserver' in window){
+    var io2 = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        runCount(en.target);
+        io2.unobserve(en.target);
+      });
+    }, { threshold:.5 });
+    Array.prototype.forEach.call(nums, function(el){ io2.observe(el) });
+  } else {
+    Array.prototype.forEach.call(nums, function(el){ el.textContent = el.getAttribute('data-count') });
+  }
+
+  /* ---------- 兜底扫描 ----------
+     上面两处动画都依赖 IntersectionObserver。它要是没跑到（被扩展干扰、被策略
+     拦、浏览器有 bug），后果不是「动画没了」而是「内容没了」——
+     卡片停在 opacity:0、数字停在 0（等于对外宣称「0 个岗位」）。
+     所以隔一秒扫一遍视口：该看见却没亮的直接点亮，该跑却没跑的数字直接落到终值。
+     正常运行下这个函数什么都不做。 */
+  function sweep(){
+    var vh = window.innerHeight;
+    Array.prototype.forEach.call(document.querySelectorAll('.reveal:not(.in)'), function(el){
+      var r = el.getBoundingClientRect();
+      if (r.top < vh && r.bottom > 0) el.classList.add('in');
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-count]'), function(el){
+      if (el.dataset.done) return;
+      var r = el.getBoundingClientRect();
+      if (r.top < vh && r.bottom > 0){
+        el.dataset.done = '1';
+        el.textContent = el.getAttribute('data-count');
+      }
+    });
+  }
+  [1200, 3000, 6000].forEach(function(t){ setTimeout(sweep, t) });
+
+  /* ---------- 复制 + 轻提示 ---------- */
+  var toast = $('toast'), toastTimer = null;
+  function say(html){
+    toast.innerHTML = html;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toast.classList.remove('show') }, 2600);
+  }
+
+  document.addEventListener('click', function(e){
+    var btn = e.target.closest ? e.target.closest('.copy') : null;
+    if (!btn) return;
+    var src = document.getElementById(btn.getAttribute('data-copy'));
+    var text = src ? src.textContent : '';
+    if (!text || text.indexOf('（') === 0 || text === '读取中…'){ say('这个版本没有提供校验值'); return }
+    copy(text).then(function(ok){
+      if (ok){
+        btn.classList.add('done'); btn.textContent = '已复制';
+        say('校验值已复制到剪贴板');
+        setTimeout(function(){ btn.classList.remove('done'); btn.textContent = '复制' }, 2000);
+      } else {
+        // 非 HTTPS 或旧浏览器下没有 clipboard API，让用户手动选中
+        say('复制失败，请手动选中复制');
+      }
+    });
+  });
+
+  function copy(text){
+    if (navigator.clipboard && window.isSecureContext){
+      return navigator.clipboard.writeText(text).then(function(){ return true }, function(){ return false });
+    }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return Promise.resolve(ok);
+    } catch (_) { return Promise.resolve(false) }
+  }
+
+  /* ---------- 点下载给个反馈 ----------
+     浏览器下载没有「完成」事件可听，所以只能说「已开始」；
+     真正的进度在浏览器的下载栏里，这里不假装知道。 */
+  document.addEventListener('click', function(e){
+    var a = e.target.closest ? e.target.closest('.cta, .btn, .ver-act a') : null;
+    if (!a || !a.href) return;
+    var isMirror = a.classList.contains('mirror') || a.id === 'mainCta' || a.id === 'btnMirror';
+    say(isMirror
+      ? '已开始下载 · 走镜像，<b>约 20 秒</b>'
+      : '已开始下载 · GitHub 直连，可能要等一会儿');
+  });
+})();
+</script>
+
+<noscript>
+  <div class="wrap" style="padding-bottom:60px">
+    <div class="verify">
+      <div class="verify-head"><h3>下载</h3></div>
+      <p>这个页面用了一点 JavaScript 来显示版本号；你的浏览器关掉了它，所以版本列表没渲染出来。直接去 Release 页面拿安装包即可：</p>
+      <div class="hash"><code>https://github.com/HHH201416/ChaosConsole/releases/latest</code></div>
+    </div>
+  </div>
+</noscript>
+
+</body>
+</html>

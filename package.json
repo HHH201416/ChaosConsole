@@ -19,6 +19,7 @@
     "icon": "node scripts/make-icon.js",
     "regress": "node scripts/regress.js",
     "manifest": "node scripts/nsis-manifest.js",
+    "site:data": "node scripts/gen-site-data.js",
     "dist": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish never",
     "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always"
   },

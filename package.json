@@ -20,6 +20,7 @@
     "regress": "node scripts/regress.js",
     "manifest": "node scripts/nsis-manifest.js",
     "site:data": "node scripts/gen-site-data.js",
+    "site:publish": "node scripts/publish-gitee.js",
     "dist": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish never",
     "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always"
   },

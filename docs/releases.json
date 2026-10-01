@@ -1,12 +1,12 @@
 {
   "repo": "chaosconsole/ChaosConsole",
   "mirror": "",
-  "generatedAt": "2026-10-01T10:34:56.170Z",
+  "generatedAt": "2026-10-01T14:02:20.487Z",
   "latest": {
     "tag": "v3.6.0",
     "version": "3.6.0",
     "name": "3.6.0",
-    "publishedAt": "2026-09-27T08:07:53Z",
+    "publishedAt": "2026-10-01T14:01:39.481Z",
     "size": 91145987,
     "sizeText": "86.9 MB",
     "exeName": "ChaosConsole-Setup-3.6.0.exe",
@@ -22,7 +22,7 @@
       "tag": "v3.6.0",
       "version": "3.6.0",
       "name": "3.6.0",
-      "publishedAt": "2026-09-27T08:07:53Z",
+      "publishedAt": "2026-10-01T14:01:39.481Z",
       "size": 91145987,
       "sizeText": "86.9 MB",
       "exeName": "ChaosConsole-Setup-3.6.0.exe",

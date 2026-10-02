@@ -147,3 +147,6 @@ build/versions.nsh
 
 # 自检脚本的临时隔离数据目录
 .tmp-resp/
+
+# surge.sh 每次发布会往 docs/ 写 CNAME，别提交（会让 GitHub Pages 误认自定义域名）
+docs/CNAME

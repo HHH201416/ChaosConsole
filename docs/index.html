@@ -477,7 +477,7 @@ footer{
     <b>当前只提供 Windows 版</b>（Windows 10/11 64 位）。你现在的系统看起来不是 Windows，仍然可以下载，但装不上。
   </div>
 
-  <div class="pill"><span class="dot"></span><span id="pillText">最新版 v3.6.0</span></div>
+  <div class="pill"><span class="dot"></span><span id="pillText">最新版 v7.0.0</span></div>
 
   <h1>把 21 个 AI 岗位<br>编进<em>一个控制台</em></h1>
 
@@ -496,7 +496,7 @@ footer{
   </div>
 
   <div class="meta">
-    <span><i></i><span id="metaVer">v3.6.0</span></span>
+    <span><i></i><span id="metaVer">v7.0.0</span></span>
     <span><i></i>Windows 10 / 11 · 64 位</span>
     <span><i></i><span id="metaSize">86.9 MB</span></span>
     <span><i></i>安装后自动更新</span>
@@ -506,7 +506,7 @@ footer{
     <div class="stat reveal"><b data-count="21">0</b><small>个 AI 岗位</small></div>
     <div class="stat reveal"><b data-count="4">0</b><small>阶段流水线</small></div>
     <div class="stat reveal"><b data-count="116">0</b><small>条门禁用例</small></div>
-    <div class="stat reveal"><b data-count="7">0</b><small>个已发布版本</small></div>
+    <div class="stat reveal"><b data-count="8">0</b><small>个已发布版本</small></div>
   </div>
 </header>
 
@@ -528,7 +528,7 @@ footer{
       <div class="speed"><b>国内直连</b><span>不中转 · 不翻墙</span></div>
       <a class="btn" id="btnMirror" href="https://gitee.com/chaosconsole/ChaosConsole/releases/latest">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1Zm-7 15a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v1.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20.5V19a1 1 0 0 1 1-1Z"/></svg>
-        下载 v3.6.0 安装包
+        下载 v7.0.0 安装包
       </a>
     </div>
 
@@ -683,21 +683,23 @@ footer{
   var MIRROR = '';
   var RELEASES_PAGE = GIT_HOST + '/' + REPO + '/releases';
 
-  /* 页面不打 API，只读同目录的 releases.json（发版后由 scripts/gen-site-data.js 生成）。
-     这份内嵌数据是兜底：万一 json 没跟着部署上去，页面显示旧版本号而不是直接白屏。 */
+  /* 页面不打 API，只读同目录的 releases.json（发版后由 scripts/publish-gitee.js 生成 ——
+     注意不是 gen-site-data.js，那个从 api.github.com 反查、会把这里的 Gitee 地址冲回
+     GitHub）。这份内嵌数据是兜底：万一 json 没跟着部署上去，页面显示旧版本号而不是白屏。
+     ⚠️ 这份是**手维护**的，脚本不会更新它，发版时记得一起改。 */
   var FALLBACK = {
     latest: {
-      tag:'v3.6.0', version:'3.6.0', sizeText:'86.9 MB', publishedAt:'2026-09-27T08:07:53Z',
-      exeName:'ChaosConsole-Setup-3.6.0.exe',
-      direct:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
-      mirror:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
-      sha512:'HxddeHNVlXV7udYAo3NjE0nwHMTrVmql9TizUdKZ+cglFyJof9MN0NY9qlfLBpXtJ95aXEL7Jfi6cP5dRq/yMA==',
-      sha256:'0bf83ea1e4de8330bcf49dc761cdf8e0de214b44829b8318da40c9b7395cadca'
+      tag:'v7.0.0', version:'7.0.0', sizeText:'86.9 MB', publishedAt:'2026-10-06T13:53:31Z',
+      exeName:'ChaosConsole-Setup-7.0.0.exe',
+      direct:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v7.0.0/ChaosConsole-Setup-7.0.0.exe',
+      mirror:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v7.0.0/ChaosConsole-Setup-7.0.0.exe',
+      sha512:'4eMl28J/rm2ktKyZNL+MWe6YODtwGAs66hg/2AxUGQ3B/DoSy+B+HRbjxAZoQf/o0SZPmgIVWAXOMUfLI+VLjw==',
+      sha256:'4b2d9ed7c152f83c3688f447c9dd9a44bc3c0b76a25ed3989ede8c185c16747f'
     },
-    releases: [{ tag:'v3.6.0', version:'3.6.0', sizeText:'86.9 MB', publishedAt:'2026-09-27T08:07:53Z',
-      exeName:'ChaosConsole-Setup-3.6.0.exe',
-      direct:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe',
-      mirror:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v3.6.0/ChaosConsole-Setup-3.6.0.exe' }]
+    releases: [{ tag:'v7.0.0', version:'7.0.0', sizeText:'86.9 MB', publishedAt:'2026-10-06T13:53:31Z',
+      exeName:'ChaosConsole-Setup-7.0.0.exe',
+      direct:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v7.0.0/ChaosConsole-Setup-7.0.0.exe',
+      mirror:'https://gitee.com/chaosconsole/ChaosConsole/releases/download/v7.0.0/ChaosConsole-Setup-7.0.0.exe' }]
   };
 
   var $ = function(id){ return document.getElementById(id) };

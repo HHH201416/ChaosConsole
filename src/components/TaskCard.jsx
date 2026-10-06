@@ -84,7 +84,7 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
             </span>
           )}
           {task.status === 'needs_input' && (
-            <span className="chip bg-boss/20 text-boss">等待回复</span>
+            <span className="chip bg-boss/20 text-boss-strong">等待回复</span>
           )}
         </div>
       )}

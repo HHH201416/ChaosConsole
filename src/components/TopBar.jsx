@@ -78,7 +78,7 @@ function UpdateControl({ onInstallUpdate }) {
 function ConnBadge({ conn }) {
   const map = {
     open: { cls: 'bg-emerald-500', text: '实时连接', textCls: 'text-emerald-400' },
-    connecting: { cls: 'bg-boss animate-pulseDot', text: '连接中', textCls: 'text-boss' },
+    connecting: { cls: 'bg-boss animate-pulseDot', text: '连接中', textCls: 'text-boss-strong' },
     closed: { cls: 'bg-rose-500', text: '已断开', textCls: 'text-rose-400' },
   }
   const m = map[conn] || map.closed
@@ -87,6 +87,33 @@ function ConnBadge({ conn }) {
       <span className={`h-1.5 w-1.5 rounded-full ${m.cls}`} />
       <span className={`text-[11px] ${m.textCls}`}>{m.text}</span>
     </div>
+  )
+}
+
+/**
+ * 深/浅主题切换。
+ *
+ * 图标画的是「**当前生效**的主题」，点一下翻到另一个；「跟随系统」这个档位只在
+ * 设置里选，顶栏不做三态循环 —— 一键切换要的是可预期，不是让人猜点第几下。
+ * 当前是 system 模式时，第一次点会从「现在生效的那个」翻面（并就此变成显式选择），
+ * 这是 store 里 toggleTheme() 定的语义。
+ *
+ * 是三态里那个 resolvedTheme 而不是 theme 决定图标：system 模式下必须显示真实
+ * 生效的那个，否则图标会和肉眼看到的界面对不上。
+ */
+function ThemeToggle() {
+  const resolvedTheme = useStore((s) => s.resolvedTheme)
+  const toggleTheme = useStore((s) => s.toggleTheme)
+  const light = resolvedTheme === 'light'
+
+  return (
+    <button
+      className="btn-ghost shrink-0 px-2"
+      onClick={toggleTheme}
+      title={light ? '切换到深色主题' : '切换到浅色主题'}
+    >
+      {light ? '☾' : '☀'}
+    </button>
   )
 }
 
@@ -128,7 +155,7 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
         />
         {/* 这几项之间是基线对齐的，外面这层不参与，免得按钮把标题挤歪 */}
         <div className="flex min-w-0 items-baseline gap-3">
-          <h1 className="truncate text-[17px] font-bold tracking-wide text-white">AI Agent开发控制台</h1>
+          <h1 className="truncate text-[17px] font-bold tracking-wide text-slate-100">AI Agent开发控制台</h1>
           {/* 版本号比「任务执行中」徽标先让位：后者是活信息，前者是装饰。
               阈值也不能再高了 —— 150% 缩放的 1080p 内宽只有约 1264。 */}
           <span className="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-slate-600 xl:inline">
@@ -166,6 +193,8 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
         <UpdateControl onInstallUpdate={onInstallUpdate} />
 
         <div className="mx-1 h-5 w-px bg-ink-500" />
+
+        <ThemeToggle />
 
         <button className="btn-ghost" onClick={onSettings} title="运行设置">
           ⚙

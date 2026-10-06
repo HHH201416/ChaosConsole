@@ -13,7 +13,7 @@ function Bubble({ message, agent, executorLabel }) {
   if (isSystem) {
     return (
       <div className="flex justify-center">
-        <div className="max-w-[92%] rounded-lg border border-boss/25 bg-boss/10 px-3 py-1.5 text-[11px] leading-relaxed text-boss">
+        <div className="max-w-[92%] rounded-lg border border-boss/25 bg-boss/10 px-3 py-1.5 text-[11px] leading-relaxed text-boss-strong">
           {message.content}
         </div>
       </div>
@@ -66,7 +66,7 @@ function HistoryList({ conversations, currentId, onPick, onClose }) {
     <div className="absolute inset-x-0 top-0 z-20 flex h-full flex-col border-r border-ink-600 bg-ink-800/98 backdrop-blur">
       <div className="flex shrink-0 items-center justify-between border-b border-ink-600 px-4 py-3">
         <div>
-          <div className="text-[13px] font-semibold text-white">历史对话</div>
+          <div className="text-[13px] font-semibold text-slate-100">历史对话</div>
           <div className="text-[10px] text-slate-500">共 {conversations.length} 条 · 点任意一条继续</div>
         </div>
         <button className="btn-ghost" onClick={onClose}>
@@ -262,7 +262,7 @@ export default function ChatPanel() {
       <div className="flex shrink-0 items-center gap-2 border-b border-ink-600 px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-white">对话</span>
+            <span className="text-[13px] font-semibold text-slate-100">对话</span>
             {isRunning && (
               <span className="flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-300">
                 <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
@@ -316,21 +316,21 @@ export default function ChatPanel() {
 
           <div className="ml-auto flex gap-1">
             <button
-              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-white"
+              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => setShowEvents((v) => !v)}
               title="查看事件列表（工具调用明细）"
             >
               {showEvents ? '看对话' : `事件 ${events.length}`}
             </button>
             <button
-              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-white"
+              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => openHandoff(task.id)}
               title="交给另一个岗位接手（运行中会交接，不是中断）"
             >
               换岗
             </button>
             <button
-              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-white"
+              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => (isRunning ? cancelTask(task.id) : startTask(task.id))}
               disabled={task.status === 'complete' && !isRunning}
               title={isRunning ? '中断执行' : '重跑这个对话'}

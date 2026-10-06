@@ -2,6 +2,219 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==================================================================
+   主题色板：两套值，一套变量名。
+
+   `:root` 是深色（**必须与之前 Tailwind 内建值逐字节相同**，否则就是全局视觉
+   回归）；`[data-theme='light']` 是暖白/纸感。切换只改 <html data-theme>，
+   见 src/lib/theme.js 与 public/theme-boot.js。
+
+   变量的值是**空格分隔的 RGB 三通道**，不是 hex —— 因为 tailwind.config.js
+   里要写成 `rgb(var(--c-x) / <alpha-value>)` 才能让 `/10` `/40` 这些透明度
+   修饰符继续工作（全仓库 51 处）。
+
+   加档位时注意角色：同一个色档不要既当「文字」又当「实心背景」，浅色下这两者
+   需要往相反方向调。踩过的两个坑见 tailwind.config.js 的注释。
+   ================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* 表面 / 描边。深色下 900 最深（画布、内嵌卡片），800 面板，700 抬起一层 */
+  --c-ink-400: 58 69 96; /* #3a4560 */
+  --c-ink-500: 42 51 70; /* #2a3346 */
+  --c-ink-600: 30 37 54; /* #1e2536 */
+  --c-ink-700: 22 27 40; /* #161b28 */
+  --c-ink-800: 17 21 31; /* #11151f */
+  --c-ink-900: 11 14 20; /* #0b0e14 */
+
+  /* 前景文字色阶（借 Tailwind 内建的 slate 名） */
+  --c-slate-100: 241 245 249; /* #f1f5f9 */
+  --c-slate-200: 226 232 240; /* #e2e8f0 */
+  --c-slate-300: 203 213 225; /* #cbd5e1 */
+  --c-slate-400: 148 163 184; /* #94a3b8 */
+  --c-slate-500: 100 116 139; /* #64748b */
+  --c-slate-600: 71 85 105; /* #475569 */
+  --c-slate-700: 51 65 85; /* #334155 */
+
+  /* 强调色 */
+  --c-emerald-200: 167 243 208;
+  --c-emerald-300: 110 231 183;
+  --c-emerald-400: 52 211 153;
+  --c-emerald-500: 16 185 129;
+  --c-emerald-600: 5 150 105;
+  --c-emerald-700: 4 120 87;
+  --c-emerald-900: 6 78 59;
+  --c-emerald-950: 2 44 34;
+
+  --c-rose-200: 254 205 211;
+  --c-rose-300: 253 164 175;
+  --c-rose-400: 251 113 133;
+  --c-rose-500: 244 63 94;
+  --c-rose-600: 225 29 72;
+  --c-rose-700: 190 18 60;
+  --c-rose-900: 136 19 55;
+
+  --c-sky-300: 125 211 252;
+  --c-sky-400: 56 189 248;
+  --c-sky-500: 14 165 233;
+
+  --c-violet-300: 196 181 253;
+  --c-violet-500: 139 92 246;
+  --c-violet-600: 124 58 237;
+
+  --c-amber-50: 255 251 235;
+  --c-amber-200: 253 230 138;
+  --c-amber-300: 252 211 77;
+  --c-amber-400: 251 191 36;
+  --c-amber-500: 245 158 11;
+
+  --c-teal-300: 94 234 212;
+  --c-teal-500: 20 184 166;
+
+  --c-lime-300: 190 242 100;
+  --c-lime-500: 132 204 22;
+
+  --c-fuchsia-300: 240 171 252;
+  --c-fuchsia-500: 217 70 239;
+
+  --c-indigo-300: 165 180 252;
+  --c-indigo-500: 99 102 241;
+
+  --c-pink-300: 249 168 212;
+  --c-pink-500: 236 72 153;
+
+  --c-orange-300: 253 186 116;
+  --c-orange-500: 249 115 22;
+
+  --c-cyan-300: 103 232 249;
+  --c-cyan-500: 6 182 212;
+
+  /* 品牌橙三档，分工见 tailwind.config.js */
+  --c-boss: 245 165 36; /* #f5a524 填充 / 描边 / 淡底 */
+  --c-boss-dark: 196 127 19; /* #c47f13 填充的 hover */
+  --c-boss-strong: 245 165 36; /* 淡底上的文字 */
+  --c-boss-on: 11 14 20; /* 实心填充上的文字 */
+  --c-boss-dim: 138 91 18; /* #8a5b12 渐变用的暗端 */
+
+  /* 启动 / 退出特效专用（.fx-*）。这些不参与 Tailwind，直接写在下面 */
+  --c-fx-title: 232 236 244; /* #e8ecf4 */
+  --c-fx-dim: 107 118 136; /* #6b7688 */
+  --c-fx-done: 143 155 176; /* #8f9bb0 */
+  --c-fx-foot: 74 83 100; /* #4a5364 */
+  --fx-boot-bg: radial-gradient(110% 80% at 50% 40%, #141b2b 0%, #0c1017 48%, #07090d 100%);
+  --fx-ring-cut: #0b0e14;
+  --fx-grid-line: rgba(245, 165, 36, 0.07);
+  --fx-scan: rgba(245, 165, 36, 0.1);
+  --fx-exit-scrim: rgba(7, 9, 13, 0.93);
+  --fx-crt-line: rgba(255, 255, 255, 0.03);
+  --fx-panel-border: rgba(245, 165, 36, 0.22);
+  --fx-panel-bg: linear-gradient(180deg, #11151f, #0b0e14);
+  --fx-panel-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.72),
+    inset 0 0 60px rgba(245, 165, 36, 0.05);
+  --fx-bar-bg: #2a3346;
+
+  /* 登录页背景网格（.login-grid）。深色下是提亮的白线，浅色下得压暗成墨线 */
+  --login-grid-line: rgba(255, 255, 255, 0.025);
+}
+
+/* 暖白 / 纸感。表面的相对明暗关系和深色**反着来**，但角色一一对应：
+   深色下 900 是「最凹」（画布、输入框内嵌面），浅色下它是最暗的米色；
+   700 是「最抬」（卡片），浅色下它是最亮的那一层。
+
+   选择器写成 `html[data-theme=...]`（0,1,1）而不是裸 `[data-theme=...]`（0,1,0）：
+   后者与 `:root` 特异性相同，能生效纯粹靠「写在后面」这个隐式的源序约定，
+   以后谁把这两块挪一下顺序就会静默失效。 */
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --c-ink-400: 216 210 198; /* #d8d2c6 强描边 / 可见的圆点 */
+  --c-ink-500: 232 228 219; /* #e8e4db 描边 / 分隔 / chip 底 */
+  --c-ink-600: 238 233 220; /* #eee9dc hover 面 / 非激活开关 / ghost 按钮的底。
+                               比 hover 用的 ink-500 亮一档，两者拉得开；
+                               也要保证顶栏那一排 .btn-ghost 在浅色下「有个面」，
+                               不然只剩文字浮在面板上。 */
+  --c-ink-700: 255 254 251; /* #fffefb 卡片（最亮的一层） */
+  --c-ink-800: 250 248 242; /* #faf8f2 面板：顶栏 / 侧栏 / 对话面板 / 弹窗 */
+  --c-ink-900: 242 239 232; /* #f2efe8 画布 / 内嵌面 */
+
+  /* 文字色阶整体翻过来：深色下 200 是正文，浅色下 200 是近黑。
+
+     600/700 这两档按「在奶油底上仍要看得见」定值，不是照着 Tailwind 的浅档搬：
+     它们除了当提示性文字，还当**事件时间轴的左侧色条**和状态圆点用
+     （src/lib/meta.js 的 EVENT_META / COLUMNS）。按 Tailwind 原值搬过来
+     （#a8a29e / #d6d3d1）色条只有 2.4:1 和 1.3:1，后者几乎等于没有。 */
+  --c-slate-100: 12 10 9; /* #0c0a09 标题、hover 到最亮 */
+  --c-slate-200: 28 25 23; /* #1c1917 正文 */
+  --c-slate-300: 68 64 60; /* #44403c 次级正文 */
+  --c-slate-400: 87 83 78; /* #57534e 次要 */
+  --c-slate-500: 120 113 108; /* #78716c 弱化 / 圆点 */
+  --c-slate-600: 138 130 122; /* #8a827a 最弱的文字，也是色条的常用档 */
+  --c-slate-700: 168 162 158; /* #a8a29e 色条里最淡的一档 */
+
+  /* 强调色：`-300/-400` 这些「淡底上的文字」压深，`-500/-600` 实心档保持。
+     淡底（bg-sky-500/10 之类）靠 alpha 自己变浅，不需要单独改。 */
+  --c-emerald-200: 6 95 70; /* #065f46 */
+  --c-emerald-300: 4 120 87; /* #047857 */
+  --c-emerald-400: 4 120 87; /* #047857 */
+
+  /* 900/950 这一对**只**被当淡底用（`bg-emerald-900/40` 的成败提示条、
+     `bg-emerald-900/50` 的「当前」chip）。深色下它们是深绿，靠 alpha 在深底上
+     做出淡淡的绿；浅色下必须**反过来取浅色**，否则 0.4 的深绿压在奶油底上
+     会糊成一块脏绿。同理 rose-900。 */
+  --c-emerald-900: 110 231 183; /* #6ee7b7 */
+  --c-emerald-950: 167 243 208; /* #a7f3d0 */
+
+  --c-rose-200: 159 18 57; /* #9f1239 */
+  --c-rose-300: 190 18 60; /* #be123c */
+  --c-rose-400: 190 18 60; /* #be123c */
+  --c-rose-900: 253 164 175; /* #fda4af 同上，只作淡底 */
+
+  --c-sky-300: 3 105 161; /* #0369a1 */
+  --c-sky-400: 2 132 199; /* #0284c7 */
+
+  --c-violet-300: 109 40 217; /* #6d28d9 */
+
+  --c-amber-50: 120 53 15; /* #78350f */
+  --c-amber-200: 146 64 14; /* #92400e */
+  --c-amber-300: 180 83 9; /* #b45309 */
+  --c-amber-400: 180 83 9; /* #b45309 */
+
+  --c-teal-300: 15 118 110; /* #0f766e */
+  --c-lime-300: 77 124 15; /* #4d7c0f */
+  --c-fuchsia-300: 162 28 175; /* #a21caf */
+  --c-indigo-300: 67 56 202; /* #4338ca */
+  --c-pink-300: 190 24 93; /* #be185d */
+  --c-orange-300: 194 65 12; /* #c2410c */
+  --c-cyan-300: 14 116 144; /* #0e7490 */
+
+  --c-boss-dark: 221 143 14; /* #dd8f0e 填充 hover，比默认更深一点 */
+  --c-boss-strong: 180 83 9; /* #b45309 淡底上的文字，压深才有对比度 */
+  --c-boss-on: 61 36 5; /* #3d2405 实心橙底上的字 */
+  --c-boss-dim: 146 110 30; /* 渐变暗端 */
+
+  /* 特效换成「纸上的墨与橙」：不再是黑暗里的橙光，而是浅色纸面上的橙 */
+  --c-fx-title: 28 25 23; /* #1c1917 */
+  --c-fx-dim: 168 162 158; /* #a8a29e */
+  --c-fx-done: 120 113 108; /* #78716c */
+  --c-fx-foot: 168 162 158; /* #a8a29e */
+  --fx-boot-bg: radial-gradient(110% 80% at 50% 40%, #fffdf7 0%, #f7f3ea 48%, #efe9dd 100%);
+  --fx-ring-cut: #faf7f0;
+  --fx-grid-line: rgba(180, 83, 9, 0.1);
+  --fx-scan: rgba(245, 165, 36, 0.18);
+  --fx-exit-scrim: rgba(240, 236, 227, 0.93);
+  --fx-crt-line: rgba(0, 0, 0, 0.028);
+  --fx-panel-border: rgba(180, 83, 9, 0.24);
+  --fx-panel-bg: linear-gradient(180deg, #fffefb, #f7f3ea);
+  --fx-panel-shadow:
+    0 20px 48px rgba(120, 100, 70, 0.18),
+    inset 0 0 60px rgba(245, 165, 36, 0.06);
+  --fx-bar-bg: #e8e4db;
+
+  --login-grid-line: rgba(28, 25, 23, 0.028);
+}
+
 @layer base {
   html,
   body,
@@ -29,12 +242,15 @@
            focus:outline-none focus-visible:ring-2 focus-visible:ring-boss/60 disabled:opacity-40
            disabled:cursor-not-allowed;
   }
+  /* 实心品牌底上的字用 boss-on，不是 ink-900：ink-900 在浅色下是**画布米色**，
+     压在橙底上只有 2:1 对比度。原因见 tailwind.config.js 的品牌橙三档说明。 */
   .btn-primary {
-    @apply btn bg-boss text-ink-900 hover:bg-boss-dark;
+    @apply btn bg-boss text-boss-on hover:bg-boss-dark;
   }
   .btn-ghost {
-    @apply btn bg-ink-600 text-slate-300 hover:bg-ink-500 hover:text-white;
+    @apply btn bg-ink-600 text-slate-300 hover:bg-ink-500 hover:text-slate-100;
   }
+  /* 这两个是彩色实心底，两个主题下都保持白字 —— 别跟着主题翻 */
   .btn-success {
     @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
   }
@@ -65,7 +281,16 @@
   }
 }
 
-/* 细滚动条，跟深色主题统一 */
+/* 登录页背景网格。颜色必须走变量 —— 原来它是组件里的内联 style，
+   写死的 rgba(255,255,255,…) 在浅色主题下会彻底看不见。 */
+.login-grid {
+  background-image:
+    linear-gradient(var(--login-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--login-grid-line) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+/* 细滚动条，跟着主题走 */
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;
@@ -74,19 +299,20 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2a3346;
+  background: rgb(var(--c-ink-500));
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a4560;
+  background: rgb(var(--c-ink-400));
   background-clip: content-box;
 }
 
 /* ==================================================================
    启动 / 退出特效（LifecycleFx.jsx）
    命名前缀 fx-，纯 CSS，不依赖 Tailwind 的 JIT 扫描。
+   颜色走 CSS 变量，深/浅两套值在上面 :root / [data-theme='light'] 里。
    ================================================================== */
 
 /* ---------- 共用：旋转六边形环 ---------- */
@@ -101,7 +327,12 @@
   position: absolute;
   inset: 0;
   clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
-  background: linear-gradient(140deg, #f5a524, #8a5b12 55%, rgba(138, 91, 18, 0) 92%);
+  background: linear-gradient(
+    140deg,
+    rgb(var(--c-boss)),
+    rgb(var(--c-boss-dim)) 55%,
+    rgb(var(--c-boss-dim) / 0) 92%
+  );
 }
 
 /* 内挖一层背景色，把实心六边形掏成环 */
@@ -110,7 +341,7 @@
   position: absolute;
   inset: 2px;
   clip-path: inherit;
-  background: #0b0e14;
+  background: var(--fx-ring-cut);
 }
 
 .fx-ring-hex-a {
@@ -120,7 +351,7 @@
 .fx-ring-hex-b {
   inset: 15px;
   opacity: 0.5;
-  background: linear-gradient(320deg, #f5a524, rgba(138, 91, 18, 0) 75%);
+  background: linear-gradient(320deg, rgb(var(--c-boss)), rgb(var(--c-boss-dim) / 0) 75%);
   animation: fx-spin 5.5s linear infinite reverse;
 }
 
@@ -132,8 +363,8 @@
   height: 9px;
   margin: -4.5px 0 0 -4.5px;
   border-radius: 50%;
-  background: #f5a524;
-  box-shadow: 0 0 14px 3px rgba(245, 165, 36, 0.7);
+  background: rgb(var(--c-boss));
+  box-shadow: 0 0 14px 3px rgb(var(--c-boss) / 0.7);
   animation: fx-pulse 1.5s ease-in-out infinite;
 }
 
@@ -164,7 +395,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: radial-gradient(110% 80% at 50% 40%, #141b2b 0%, #0c1017 48%, #07090d 100%);
+  background: var(--fx-boot-bg);
 }
 
 .fx-boot-grid {
@@ -174,8 +405,8 @@
   bottom: 0;
   height: 42%;
   background-image:
-    linear-gradient(rgba(245, 165, 36, 0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(245, 165, 36, 0.07) 1px, transparent 1px);
+    linear-gradient(var(--fx-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--fx-grid-line) 1px, transparent 1px);
   background-size: 34px 34px;
   transform: perspective(420px) rotateX(60deg);
   transform-origin: 50% 100%;
@@ -197,7 +428,7 @@
   left: 0;
   right: 0;
   height: 120px;
-  background: linear-gradient(180deg, transparent, rgba(245, 165, 36, 0.1), transparent);
+  background: linear-gradient(180deg, transparent, var(--fx-scan), transparent);
   animation: fx-scan 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
@@ -236,7 +467,7 @@
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.16em;
-  color: #e8ecf4;
+  color: rgb(var(--c-fx-title));
 }
 
 .fx-boot-sub {
@@ -244,7 +475,7 @@
   font-family: Consolas, 'Cascadia Mono', monospace;
   font-size: 9.5px;
   letter-spacing: 0.3em;
-  color: rgba(245, 165, 36, 0.6);
+  color: rgb(var(--c-boss-strong) / 0.75);
 }
 
 .fx-bootbar {
@@ -254,7 +485,7 @@
   margin-top: 4px;
   overflow: hidden;
   border-radius: 2px;
-  background: #2a3346;
+  background: var(--fx-bar-bg);
 }
 
 .fx-bootbar span {
@@ -262,7 +493,7 @@
   top: 0;
   bottom: 0;
   width: 42%;
-  background: linear-gradient(90deg, transparent, #f5a524, transparent);
+  background: linear-gradient(90deg, transparent, rgb(var(--c-boss)), transparent);
   animation: fx-sweep 1.15s linear infinite;
 }
 
@@ -295,7 +526,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(7, 9, 13, 0.93);
+  background: var(--fx-exit-scrim);
   backdrop-filter: blur(3px);
   animation: fx-fade-in 0.22s ease-out both;
 }
@@ -335,23 +566,17 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.03) 0 1px,
-    transparent 1px 3px
-  );
+  background: repeating-linear-gradient(180deg, var(--fx-crt-line) 0 1px, transparent 1px 3px);
 }
 
 .fx-exit-panel {
   position: relative;
   width: 392px;
   padding: 20px 22px 16px;
-  border: 1px solid rgba(245, 165, 36, 0.22);
+  border: 1px solid var(--fx-panel-border);
   border-radius: 12px;
-  background: linear-gradient(180deg, #11151f, #0b0e14);
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.72),
-    inset 0 0 60px rgba(245, 165, 36, 0.05);
+  background: var(--fx-panel-bg);
+  box-shadow: var(--fx-panel-shadow);
   animation: fx-rise 0.3s ease-out both;
 }
 
@@ -360,15 +585,15 @@
   align-items: center;
   gap: 9px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #1e2536;
+  border-bottom: 1px solid rgb(var(--c-ink-600));
 }
 
 .fx-exit-led {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #f5a524;
-  box-shadow: 0 0 10px 2px rgba(245, 165, 36, 0.7);
+  background: rgb(var(--c-boss));
+  box-shadow: 0 0 10px 2px rgb(var(--c-boss) / 0.7);
   animation: fx-pulse 1.1s ease-in-out infinite;
 }
 
@@ -376,7 +601,7 @@
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
-  color: #e8ecf4;
+  color: rgb(var(--c-fx-title));
 }
 
 .fx-exit-code {
@@ -384,7 +609,7 @@
   font-family: Consolas, 'Cascadia Mono', monospace;
   font-size: 9px;
   letter-spacing: 0.22em;
-  color: rgba(245, 165, 36, 0.55);
+  color: rgb(var(--c-boss-strong) / 0.7);
 }
 
 .fx-exit-log {
@@ -400,16 +625,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #6b7688;
+  color: rgb(var(--c-fx-dim));
   transition: color 0.25s ease, opacity 0.25s ease;
 }
 
 .fx-exit-log li.done {
-  color: #8f9bb0;
+  color: rgb(var(--c-fx-done));
 }
 
 .fx-exit-log li.now {
-  color: #f5a524;
+  color: rgb(var(--c-boss-strong));
 }
 
 .fx-exit-mark {
@@ -424,14 +649,14 @@
   margin-top: 14px;
   overflow: hidden;
   border-radius: 2px;
-  background: #2a3346;
+  background: var(--fx-bar-bg);
 }
 
 .fx-exit-bar span {
   position: absolute;
   inset: 0 auto 0 0;
-  background: linear-gradient(90deg, #8a5b12, #f5a524);
-  box-shadow: 0 0 10px rgba(245, 165, 36, 0.75);
+  background: linear-gradient(90deg, rgb(var(--c-boss-dim)), rgb(var(--c-boss)));
+  box-shadow: 0 0 10px rgb(var(--c-boss) / 0.75);
   transition: width 0.4s cubic-bezier(0.25, 0.9, 0.3, 1);
 }
 
@@ -442,5 +667,5 @@
   font-family: Consolas, 'Cascadia Mono', monospace;
   font-size: 9px;
   letter-spacing: 0.16em;
-  color: #4a5364;
+  color: rgb(var(--c-fx-foot));
 }

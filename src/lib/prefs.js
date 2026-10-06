@@ -16,7 +16,13 @@ const UI_KEY = 'chaos.ui'
 /** 内存副本。localStorage 读不到时就是它撑着，本次会话内也不会因为写失败而丢状态 */
 let cache = null
 
-const DEFAULTS = { sidebarOpen: true, chatOpen: true, selectedTaskId: null }
+/* `theme` 是「用户的选择」而不是解析后的结果，取值 'light' | 'dark' | 'system'。
+   解析（system -> 具体值）在 src/lib/theme.js。注意这个字段同时被 public/theme-boot.js
+   直接读取（那边复刻了 key 名和取值校验），改这里要同步改那边。 */
+const DEFAULTS = { sidebarOpen: true, chatOpen: true, selectedTaskId: null, theme: 'system' }
+
+/** 与 src/lib/theme.js 的 THEME_MODES、public/theme-boot.js 的校验保持一致 */
+const VALID_THEMES = ['light', 'dark', 'system']
 
 function read() {
   if (cache) return cache
@@ -38,6 +44,7 @@ export function loadUiPrefs() {
     sidebarOpen: p.sidebarOpen !== false,
     chatOpen: p.chatOpen !== false,
     selectedTaskId: typeof p.selectedTaskId === 'string' && p.selectedTaskId ? p.selectedTaskId : null,
+    theme: VALID_THEMES.includes(p.theme) ? p.theme : 'system',
   }
 }
 

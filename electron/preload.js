@@ -30,14 +30,19 @@ contextBridge.exposeInMainWorld('chaos', {
     ipcRenderer.on('menu:check-update', handler)
     return () => ipcRenderer.removeListener('menu:check-update', handler)
   },
-  /**
-   * 主进程准备退出：渲染进程收到后播放退场动画。
-   * 主进程只等固定时长（EXIT_ANIM_MS）就继续退出，不依赖渲染进程回报，
-   * 所以即使界面卡死也不会导致退不掉。
-   */
   onAppQuit: (cb) => {
     const handler = () => cb()
     ipcRenderer.on('app:quitting', handler)
     return () => ipcRenderer.removeListener('app:quitting', handler)
   },
+  /**
+   * 把用户选的主题告诉主进程（'light' | 'dark' | 'system'）。
+   *
+   * 这是**唯一**一条渲染进程 → 主进程的通道，存在的理由很具体：冷启动的闪屏是个
+   * 独立窗口，在渲染进程起来之前就创建了，读不到 localStorage 里的偏好，只能由
+   * 主进程落盘后再读（见 main.js 的 theme.json / resolveTheme）。
+   *
+   * 只写一个偏好，不传任何业务数据；主进程侧会校验取值。
+   */
+  setTheme: (mode) => ipcRenderer.invoke('theme:set', mode),
 })

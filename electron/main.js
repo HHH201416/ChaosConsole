@@ -20,7 +20,18 @@ const os = require('os')
 const dm = require('../server/download-mirror.js')
 const CONFIG = require('../server/config.js')
 const { spawn } = require('child_process')
-const { app, BrowserWindow, Menu, shell, dialog, session, screen, net: electronNet } = require('electron')
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  shell,
+  dialog,
+  session,
+  screen,
+  nativeTheme,
+  ipcMain,
+  net: electronNet,
+} = require('electron')
 
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
@@ -746,6 +757,16 @@ function createSplash() {
     splashWindow = null
   })
 
+  // 主题要在**首帧之前**贴上去，否则会先闪一下深色。所以挂的是 dom-ready 而不是
+  // did-finish-load：前者在 DOM 解析完就触发，早于 ready-to-show（ready-to-show
+  // 意味着「已经渲染出一帧了」，那时再改就来不及了）。
+  //
+  // 闪屏不经过 Vite 打包、也没有 preload，读不到 localStorage，所以主题只能由主进程
+  // 从 theme.json 读出来再贴上去。splash.html 里刻意没有 <script>，见该文件头部注释。
+  splashWindow.webContents.once('dom-ready', () => {
+    applyThemeToWindow(splashWindow, resolveTheme())
+  })
+
   // 页脚的版本号在 HTML 里是个占位符，这里填成真实版本
   splashWindow.webContents.once('did-finish-load', () => {
     splashWindow?.webContents
@@ -892,6 +913,100 @@ function preferredWindowSize() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 主题偏好（渲染进程 → 主进程的单向同步，供冷启动闪屏用）
+ * ------------------------------------------------------------------ */
+
+const THEME_FILE = path.join(app.getPath('userData'), 'theme.json')
+const THEME_MODES = ['light', 'dark', 'system']
+
+/**
+ * 用户选的主题，'light' | 'dark' | 'system'。
+ *
+ * 为什么主进程要单独存一份：冷启动的闪屏是个**独立窗口**，在渲染进程起来之前就
+ * 创建好了，读不到 localStorage 里的偏好（见 createSplash）。界面每次改主题都通过
+ * preload 的 setTheme() 同步过来。
+ *
+ * 读不到 / 写坏了都退回 'system' —— 一个偏好文件不该让启动挂掉。
+ */
+function readThemePref() {
+  try {
+    const mode = JSON.parse(fs.readFileSync(THEME_FILE, 'utf8')).theme
+    return THEME_MODES.includes(mode) ? mode : 'system'
+  } catch (_) {
+    return 'system' // 第一次启动、文件损坏、或用户从没选过
+  }
+}
+
+/**
+ * 把偏好解析成具体主题。
+ *
+ * 刻意**不**设 `nativeTheme.themeSource`：一旦设了，渲染进程里的
+ * `matchMedia('(prefers-color-scheme: light)')` 会跟着变，用户选「跟随系统」
+ * 就永远跟不到真实的系统色了。这里只读 `shouldUseDarkColors`。
+ */
+function resolveTheme() {
+  const mode = readThemePref()
+  if (mode === 'light' || mode === 'dark') return mode
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
+/** 持久化用户选的主题。写失败只记一行日志 —— 不影响本次会话，只是下次冷启动
+ *  的闪屏会退回按系统偏好猜。 */
+function writeThemePref(mode) {
+  try {
+    fs.writeFileSync(THEME_FILE, JSON.stringify({ theme: mode }))
+  } catch (err) {
+    console.warn('[electron] 主题偏好写盘失败:', err.message)
+  }
+}
+
+/**
+ * 把主题同步给 Chromium 的原生部件。
+ *
+ * 不设 `themeSource` 的话会出现割裂：界面上有原生 `<select>`（权限模式、模型选择、
+ * 事件过滤），它们的弹出列表跟的是**系统**而不是应用；系统深色 + 应用浅色时，
+ * 弹出来一个深色列表压在浅色界面上。原生标题栏、右键菜单同理。
+ *
+ * 设了也不会让渲染进程的 `matchMedia('(prefers-color-scheme)')` 失真 —— 三档语义
+ * 是一一对应的：mode='system' 时 themeSource 也是 'system'，matchMedia 读到的仍是
+ * 真实系统值；而 mode 是显式档位时，渲染进程的 resolve() 本来就短路返回该档位、
+ * 根本不查 matchMedia。两边永远一致，前提是这里和 prefs 一起改。
+ */
+function applyNativeTheme() {
+  nativeTheme.themeSource = readThemePref()
+}
+
+/** 主窗口的底色。窗口显示前那一小段（以及缩放时的空白）露的就是它，所以要跟主题。 */
+function windowBackground() {
+  return nativeTheme.shouldUseDarkColors ? '#0b0e14' : '#f2efe8'
+}
+
+/**
+ * 渲染进程改主题时同步过来（preload 的 setTheme）。
+ * 取值在这里校验一遍 —— 渲染进程传来的东西一律当不可信输入。
+ */
+ipcMain.handle('theme:set', (_event, mode) => {
+  const safe = THEME_MODES.includes(mode) ? mode : 'system'
+  writeThemePref(safe)
+  applyNativeTheme()
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackground())
+  return safe
+})
+
+/** 把主题贴到某个窗口的 <html data-theme> 上。走 executeJavaScript，不受页面 CSP 限制。 */
+function applyThemeToWindow(win, theme) {
+  if (!win || win.isDestroyed()) return
+  win.webContents
+    .executeJavaScript(
+      `(() => { document.documentElement.dataset.theme = ${JSON.stringify(theme)}; return true })()`,
+      true,
+    )
+    .catch(() => {
+      /* 窗口还没加载完 / 已被关掉，忽略 */
+    })
+}
+
+/* ------------------------------------------------------------------ *
  * 窗口尺寸 / 位置的跨重启记忆
  * ------------------------------------------------------------------ */
 
@@ -996,7 +1111,7 @@ async function createWindow() {
     minWidth: 900,
     minHeight: 560,
     show: false,
-    backgroundColor: '#0b0e14',
+    backgroundColor: windowBackground(),
     title: 'AI Agent开发控制台',
     autoHideMenuBar: false,
     webPreferences: {
@@ -1070,6 +1185,8 @@ async function createWindow() {
  * ------------------------------------------------------------------ */
 
 app.whenReady().then(async () => {
+  // 必须在 createSplash 之前：闪屏窗口也是 Chromium，它的原生部件同样要看 themeSource
+  applyNativeTheme()
   createSplash()
   pushBootStep('初始化运行时环境', 6)
 

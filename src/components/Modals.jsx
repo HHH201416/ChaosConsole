@@ -16,7 +16,7 @@ function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4">
-          <h3 className="text-base font-semibold text-white">{title}</h3>
+          <h3 className="text-base font-semibold text-slate-100">{title}</h3>
           {subtitle && <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>}
         </div>
         {children}
@@ -311,7 +311,7 @@ export function NewTaskModal({ onClose }) {
                 onClick={() => toggleTag(t)}
                 className={`rounded px-2 py-1 font-mono text-[11px] transition-colors ${
                   form.tags.includes(t)
-                    ? 'bg-boss/20 text-boss ring-1 ring-boss/50'
+                    ? 'bg-boss/20 text-boss-strong ring-1 ring-boss/50'
                     : 'bg-ink-600 text-slate-400 hover:bg-ink-500'
                 }`}
               >
@@ -511,7 +511,7 @@ function McpRow({ server, onToggle, busy }) {
             <span className="text-[12.5px] font-medium text-slate-200">{server.label}</span>
             <span className="font-mono text-[10px] text-slate-600">{server.id}</span>
             {server.category === 'needs-key' && (
-              <span className="rounded bg-boss/15 px-1.5 py-[1px] text-[9.5px] text-boss">需密钥</span>
+              <span className="rounded bg-boss/15 px-1.5 py-[1px] text-[9.5px] text-boss-strong">需密钥</span>
             )}
           </div>
           <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">{server.desc}</p>
@@ -631,7 +631,7 @@ export function McpModal({ onClose }) {
             key={t.key}
             onClick={() => setTab(t.key)}
             className={`-mb-px border-b-2 px-3 py-2 text-[12px] transition-colors ${
-              tab === t.key ? 'border-boss text-white' : 'border-transparent text-slate-500 hover:text-slate-300'
+              tab === t.key ? 'border-boss text-slate-100' : 'border-transparent text-slate-500 hover:text-slate-300'
             }`}
           >
             {t.label}
@@ -725,6 +725,65 @@ function DownloadMirrorField() {
   )
 }
 
+/**
+ * 外观：深色 / 浅色 / 跟随系统。
+ *
+ * 「跟随系统」是首次启动的默认值，也是唯一能一直跟着 Windows 走的档位；显式选了
+ * 深或浅之后就固定住，系统再变也不跟。顶栏那个按钮只做深/浅翻转，三态收在这里。
+ *
+ * 用三个 <button> 而不是 <select>：分段控件一眼能看出「现在在哪一档」，而且
+ * scripts/e2e-check.js 会数页面上的 select 个数（`selectCount >= 2`），
+ * 多一个原生 select 会动到那条断言的语义。
+ */
+function AppearanceField() {
+  const theme = useStore((s) => s.theme)
+  const resolvedTheme = useStore((s) => s.resolvedTheme)
+  const setTheme = useStore((s) => s.setTheme)
+
+  const OPTIONS = [
+    { key: 'light', label: '浅色', glyph: '☀' },
+    { key: 'dark', label: '深色', glyph: '☾' },
+    { key: 'system', label: '跟随系统', glyph: '⌾' },
+  ]
+
+  return (
+    <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-medium text-slate-200">外观</span>
+        <span className="font-mono text-[10px] text-slate-500">
+          {theme === 'system' ? `跟随系统 · 当前${resolvedTheme === 'light' ? '浅色' : '深色'}` : '已固定'}
+        </span>
+      </div>
+
+      <div className="mt-2 flex gap-1.5">
+        {OPTIONS.map((o) => {
+          const active = theme === o.key
+          return (
+            <button
+              key={o.key}
+              onClick={() => setTheme(o.key)}
+              className={`flex-1 rounded-md border px-2 py-1.5 text-[11.5px] transition-colors ${
+                active
+                  ? 'border-boss/50 bg-boss/15 text-boss-strong'
+                  : 'border-ink-500 bg-ink-800 text-slate-400 hover:bg-ink-600 hover:text-slate-200'
+              }`}
+            >
+              <span className="mr-1">{o.glyph}</span>
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <p className="mt-2 text-[10.5px] leading-relaxed text-slate-500">
+        默认<b className="text-slate-400">跟随系统</b>，也就是跟着 Windows 的深色/浅色设置走。
+        选「浅色」或「深色」之后就固定住，系统再变也不跟。顶栏那个 ☀ / ☾ 按钮可以随时在两者之间一键翻转。
+        选择记在本机，重开还在。
+      </p>
+    </div>
+  )
+}
+
 export function SettingsModal({ onClose }) {
   const system = useStore((s) => s.system)
   const setPermissionMode = useStore((s) => s.setPermissionMode)
@@ -746,6 +805,9 @@ export function SettingsModal({ onClose }) {
   return (
     <Shell title="运行设置" subtitle="这些选项决定 Agent 如何被拉起执行" onClose={onClose}>
       <div className="space-y-4 text-[12px]">
+        {/* 外观 */}
+        <AppearanceField />
+
         {/* 执行器状态 */}
         <div className="space-y-2">
           {(system.executors || []).map((e) => (
@@ -814,7 +876,7 @@ export function SettingsModal({ onClose }) {
               <span className="block text-[12px] font-medium text-slate-200">DevEco 自动放行</span>
               <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
                 DevEco Code 没有 acceptEdits 这种中间档，只有「全自动放行」。
-                <b className="text-boss"> 默认关闭</b>，此时它会驳回未经批准的敏感操作，
+                <b className="text-boss-strong"> 默认关闭</b>，此时它会驳回未经批准的敏感操作，
                 表现为任务跑不动（事件里会看到「权限被拦截」）。
                 打开后它才能自主读写文件、执行命令 —— 这等于让它不经确认地在你的机器上干活。
               </span>

@@ -17,14 +17,15 @@
 1. [功能一览](#功能一览)
 2. [快速开始（开发）](#快速开始开发)
 3. [项目结构](#项目结构)
-4. [工作原理](#工作原理)
-5. [执行器：Claude 与 DevEco](#执行器claude-与-deveco)
-6. [MCP 服务器](#mcp-服务器)
-7. [打包成 exe](#打包成-exe)
-8. [**版本发布完整流程（重点）**](#版本发布完整流程重点)
-9. [自动更新是怎么工作的](#自动更新是怎么工作的)
-10. [权限模式与安全](#权限模式与安全)
-11. [常见问题](#常见问题)
+4. [深色 / 浅色主题](#深色--浅色主题)
+5. [工作原理](#工作原理)
+6. [执行器：Claude 与 DevEco](#执行器claude-与-deveco)
+7. [MCP 服务器](#mcp-服务器)
+8. [打包成 exe](#打包成-exe)
+9. [**版本发布完整流程（重点）**](#版本发布完整流程重点)
+10. [自动更新是怎么工作的](#自动更新是怎么工作的)
+11. [权限模式与安全](#权限模式与安全)
+12. [常见问题](#常见问题)
 
 ---
 
@@ -46,6 +47,7 @@
 | **任务中换岗** | 运行中也能换人：失败/超时自动换岗重试、按阶段自动交接给下一个岗位、Agent 自己请求交接、你随时手动换岗。交接会带上任务背景与最近进展，**不是从头重来**（见 [换岗与阶段流水线](#换岗与阶段流水线)） |
 | **真实更新** | 对接 GitHub Releases，`latest.yml` 自动生成并上传 |
 | **下载加速镜像** | **默认启用**：升级与版本回退的安装包走第三方镜像前缀（实测 0.1MB/s → 5MB/s），下载后强制 sha512 校验，不符就丢弃不装；设置里只显示状态，改/关用环境变量 |
+| **深色 / 浅色主题** | 顶栏一个按钮一键切换（☀ / ☾），也可以在「运行设置 → 外观」里选**浅色 / 深色 / 跟随系统**三态；默认跟随 Windows，选择记在本机。启动闪屏与开机动画一并跟随（见 [深色 / 浅色主题](#深色--浅色主题)） |
 | **首次启动 0 任务** | 不预置任何示例任务，看板干净地从零开始 |
 
 ---
@@ -113,12 +115,16 @@ CHAOS_AUTH_CODE=你的新授权码 npm run dev:server
 ChaosConsole/
 ├── package.json            # 依赖 + electron-builder 打包配置（版本号在这里）
 ├── vite.config.js          # 前端构建 + /api 与 /ws 的开发代理
-├── tailwind.config.js      # 深色主题色板
-├── index.html              # 渲染进程入口
+├── tailwind.config.js      # 深/浅双主题色板（接 CSS 变量，见「深色 / 浅色主题」）
+├── index.html              # 渲染进程入口（含防白闪的主题引导脚本）
+│
+├── public/
+│   └── theme-boot.js       # 首帧前设好 data-theme。必须是同源外部脚本，不能内联（CSP）
 │
 ├── electron/
 │   ├── main.js             # 主进程：起后端、开窗口、接 electron-updater
-│   └── preload.js          # contextBridge，只暴露只读元信息
+│   ├── splash.html         # 冷启动闪屏（独立窗口，主题由主进程从 theme.json 贴上去）
+│   └── preload.js          # contextBridge，只暴露只读元信息 + setTheme
 │
 ├── server/                 # 后端（跑在 Electron 主进程里）
 │   ├── index.js            # Express 路由 + WebSocket 广播 + 静态托管
@@ -135,9 +141,12 @@ ChaosConsole/
 ├── src/                    # 前端
 │   ├── App.jsx             # 布局与路由（登录页 / 控制台）
 │   ├── store.js            # Zustand + WebSocket 客户端
+│   ├── index.css           # 两套主题变量（:root 深色 / html[data-theme=light] 浅色）+ .fx-* 特效
 │   ├── lib/api.js          # REST 客户端
 │   ├── lib/meta.js         # 列定义、颜色、时间格式化
-│   └── components/         # Login / TopBar / AgentSidebar / Board / TaskCard / ChatPanel / Modals
+│   ├── lib/theme.js        # 主题三态的解析与应用（system → light/dark）
+│   ├── lib/prefs.js        # 界面偏好的本地持久化（含 theme）
+│   └── components/         # Login / TopBar / AgentSidebar / Board / TaskCard / ChatPanel / Modals / LifecycleFx
 │
 ├── scripts/
 │   ├── make-icon.js        # 零依赖生成多尺寸 build/icon.ico（手写 PNG 编码器 + ICO 封装）
@@ -148,6 +157,42 @@ ChaosConsole/
 ├── build/                  # 打包资源（icon.ico 由 npm run icon 生成）
 └── release/                # 打包输出（exe、latest.yml、blockmap）
 ```
+
+---
+
+## 深色 / 浅色主题
+
+7.0.0 起界面有深、浅两套主题。默认**跟随 Windows** 的深色/浅色设置；顶栏 `☀ / ☾` 一键翻转，「运行设置 → 外观」里可选浅色 / 深色 / 跟随系统三态。选择存在 `localStorage` 的 `chaos.ui`（字段 `theme`）。
+
+### 怎么实现的：色板接 CSS 变量，不是到处加 `dark:`
+
+组件里那 300 多处 `bg-ink-900` / `text-slate-400` / `text-sky-300` **一行都没改**。`tailwind.config.js` 把这些色档映射成 `rgb(var(--c-xxx) / <alpha-value>)`，两套取值写在 `src/index.css`：
+
+```
+:root                  { --c-ink-900: 11 14 20;  }   ← 深色（= 改造前的 Tailwind 内建值）
+html[data-theme=light] { --c-ink-900: 242 239 232; }  ← 浅色（暖白 / 纸感）
+```
+
+切换只改 `<html data-theme>` 一个属性，其余全是 CSS 的事。
+
+### 改这块之前必须知道的四件事
+
+1. **`/ <alpha-value>` 不能丢。** 全仓库有 51 处 `bg-sky-500/10`、`border-ink-500/70` 这类透明度用法。写成 `rgb(var(--x))` 会让它们全部失效，肉眼是「淡底胶囊全变成实心色块」。变量存的必须是**空格分隔的三通道**（`226 232 240`），不是 hex。
+2. **深色的取值必须与 Tailwind 内建值逐字节相同。** 这些变量接管了内建色板，值写错一点就是全局视觉回归。
+3. **同一个色档不要同时当「文字」和「实心背景」** —— 浅色下这两者要往相反方向调。已经踩过两次，都留了注释：
+   - `slate-600/700` 既当弱化文字又当事件时间轴的色条，所以浅色取值是照「奶油底上看得见」定的，**不是**照搬 Tailwind 的浅档；
+   - 品牌橙拆成三档：`boss`（填充/描边/淡底）、`boss-strong`（**淡底上的文字**，浅色下压深）、`boss-on`（**实心橙底上的文字**，两个主题下都是深色）。混用会让按钮或胶囊在浅色下变成 2:1 对比度。
+4. **`text-white` 不能统一覆盖。** `.btn-success` / `.btn-danger` 是彩色实心底上的白字，浅色下也必须保持白；标题和 hover 态的白字则必须变深，那些地方用的是已被主题化的 `text-slate-100`。
+
+### 防白闪：`public/theme-boot.js`
+
+打包后主进程注入的 CSP 是 `script-src 'self'`、**不含 `unsafe-inline`**（见 `electron/main.js` 的 `applyCsp()`），内联脚本会被拦掉。所以首帧前设主题这件事交给 `public/theme-boot.js` —— 一个同源外部脚本，在 `index.html` 的 `<head>` 里**同步**加载（阻塞解析 = 首帧就是对的）。它里面的解析逻辑与 `src/lib/theme.js` 是重复实现（`public/` 下的文件不走打包、import 不到 `src/`），**改一边要同步改另一边**。
+
+### 冷启动闪屏为什么走 `theme.json`
+
+闪屏（`electron/splash.html`）是个独立窗口，在渲染进程起来之前就创建了，读不到 `localStorage`。所以界面每次改主题会通过 preload 的 `setTheme()` 把**用户的选择**同步给主进程，落盘到 `userData/theme.json`；下次冷启动主进程读它决定闪屏配色。主进程还会把同一个值设给 `nativeTheme.themeSource`，让原生 `<select>` 弹层、标题栏这些也跟着走。
+
+**别设 `nativeTheme.themeSource` 之外又让渲染层自己猜** —— 两边必须永远改同一个值，否则 `matchMedia('(prefers-color-scheme)')` 会和界面对不上。
 
 ---
 

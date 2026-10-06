@@ -38,7 +38,7 @@ function AgentRow({ agent, taskCount, selected, onClick }) {
 
       <span
         className={`shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[11px] ${
-          taskCount > 0 ? 'bg-boss/15 text-boss' : 'bg-ink-600 text-slate-600'
+          taskCount > 0 ? 'bg-boss/15 text-boss-strong' : 'bg-ink-600 text-slate-600'
         }`}
         title={`名下未完成任务数：${taskCount}`}
       >
@@ -117,7 +117,7 @@ function AgentDetail({ agent, onClose }) {
           </span>
           <div className="flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold text-white">{agent.functionLabel}</h3>
+              <h3 className="text-base font-semibold text-slate-100">{agent.functionLabel}</h3>
               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${roleColor(agent.role)}`}>
                 {agent.role}
               </span>
@@ -235,7 +235,7 @@ export default function AgentSidebar({ onNewAgent }) {
 
   const newAgentBtn = (
     <button
-      className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:bg-ink-600 hover:text-white"
+      className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:bg-ink-600 hover:text-slate-100"
       onClick={onNewAgent}
       title="新增一个岗位"
     >

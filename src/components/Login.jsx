@@ -21,14 +21,9 @@ export default function Login() {
       {/* 背景光晕 */}
       <div className="pointer-events-none absolute -left-40 -top-40 h-[28rem] w-[28rem] rounded-full bg-boss/10 blur-[100px]" />
       <div className="pointer-events-none absolute -bottom-52 -right-32 h-[32rem] w-[32rem] rounded-full bg-sky-500/10 blur-[110px]" />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.35]"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)',
-          backgroundSize: '44px 44px',
-        }}
-      />
+      {/* 网格线颜色在 .login-grid 里（src/index.css），走主题变量 ——
+          原来写死成 rgba(255,255,255,…) 的内联 style，浅色主题下什么也看不见 */}
+      <div className="login-grid pointer-events-none absolute inset-0 opacity-[0.35]" />
 
       <form
         onSubmit={submit}
@@ -36,7 +31,7 @@ export default function Login() {
       >
         <div className="mb-7 text-center">
           <div className="mb-3 text-5xl">🕴️</div>
-          <h1 className="text-2xl font-bold tracking-wide text-white">AI Agent开发控制台</h1>
+          <h1 className="text-2xl font-bold tracking-wide text-slate-100">AI Agent开发控制台</h1>
           <p className="mt-1.5 font-mono text-[11px] uppercase tracking-[0.25em] text-slate-500">
             ChaosConsole
           </p>

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, setToken, loadToken } from './lib/api'
 import { loadUiPrefs, saveUiPrefs } from './lib/prefs'
+import { applyTheme, resolveTheme, watchSystemTheme } from './lib/theme'
 
 /* ------------------------------------------------------------------ *
  * WebSocket：单例连接 + 断线重连
@@ -37,6 +38,18 @@ function closeSocket() {
    上次的样子」，不该被登录动作重置。登录页也碰不到这几个字段（TopBar/ChatPanel 都在
    登录后才渲染），所以早读没有副作用。 */
 const initialPrefs = loadUiPrefs()
+
+/* 系统主题监听的退订函数。放在模块作用域而不是 zustand state 里 —— 它是个副作用
+   句柄，不是界面状态，塞进 state 会让 devtools 里多出一个不可序列化的字段。 */
+let unwatchTheme = () => {}
+
+/** 按当前选择重建系统主题监听：'system' 时跟着系统变，显式档位时摘掉。 */
+function rewatchTheme() {
+  unwatchTheme()
+  unwatchTheme = watchSystemTheme(useStore.getState().theme, (resolved) => {
+    useStore.setState({ resolvedTheme: resolved })
+  })
+}
 
 export const useStore = create((set, get) => ({
   /* ---------------- 状态 ---------------- */
@@ -78,6 +91,14 @@ export const useStore = create((set, get) => ({
   sidebarOpen: initialPrefs.sidebarOpen,
   chatOpen: initialPrefs.chatOpen,
 
+  /* 主题。存的是**用户的选择**（可能是 'system'），不是解析后的结果 ——
+     要跟主进程同步的是「选择」，因为下次冷启动的 splash 窗口也要按它渲染。
+     DOM 上的 data-theme 在首帧前就由 public/theme-boot.js 设好了，这里只是
+     在 React 侧保持同一个状态、并在「跟随系统」时跟着系统变。 */
+  theme: initialPrefs.theme,
+  /* 当前**生效**的主题（light | dark）。切换按钮的图标要按它画。 */
+  resolvedTheme: resolveTheme(initialPrefs.theme),
+
   /* ---------------- 提示条 ---------------- */
   toast(text, kind = 'info') {
     const id = Math.random().toString(36).slice(2)
@@ -95,6 +116,23 @@ export const useStore = create((set, get) => ({
     const next = !get().chatOpen
     set({ chatOpen: next })
     saveUiPrefs({ chatOpen: next })
+  },
+
+  /* ---------------- 主题 ---------------- */
+
+  setTheme(mode) {
+    const resolved = applyTheme(mode)
+    set({ theme: mode, resolvedTheme: resolved })
+    saveUiPrefs({ theme: mode })
+    // 告诉主进程，供下次冷启动的 splash 窗口使用（它读不到 localStorage）。
+    // 失败不影响界面 —— splash 会退回按系统偏好猜。
+    window.chaos?.setTheme?.(mode).catch(() => {})
+    rewatchTheme()
+  },
+
+  /** 顶栏那个按钮：在深/浅之间直接翻。system 模式下从「当前生效的那个」翻面。 */
+  toggleTheme() {
+    get().setTheme(get().resolvedTheme === 'light' ? 'dark' : 'light')
   },
 
   /* ---------------- 登录 ---------------- */
@@ -828,5 +866,10 @@ function handleServerMessage(msg) {
       break
   }
 }
+
+/* 模块加载时就挂上系统主题监听 —— 「跟随系统」是默认值，而且用户可能在应用运行
+   期间改 Windows 的深浅色。DOM 上那份由 public/theme-boot.js 设过初值了，
+   这里只让 React 侧的 resolvedTheme 跟上。 */
+rewatchTheme()
 
 export { connectSocket, closeSocket }

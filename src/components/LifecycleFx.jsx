@@ -24,9 +24,147 @@ const SHUTDOWN_STEPS = [
   { at: 980, text: '关闭 HTTP / WebSocket 服务' },
 ]
 
-export function BootScreen() {
+/* ---------------- 启动屏（正在接管控制台） ---------------- */
+
+/** 启动屏总时长。计时从主窗口**真正显示出来**那一刻开始（见下面 onAppShown 的注释） */
+const BOOT_MS = 5000
+
+/**
+ * 数据还没就绪时，进度条最多走到这里。
+ *
+ * 这是这块屏唯一一条诚实的底线：那 5 秒的时间轴是编排出来的（后端本地起，
+ * 快到给不出真实进度），所以它能一路走到 92% 假装在忙；但**只要 bootstrap 还没
+ * 回来，它就绝不打到 100%**。真话只有一句：「还没好」。
+ */
+const BOOT_HOLD_PCT = 92
+
+/** 启动步骤。时间轴是固定的，最后一步要等数据真的到了才收尾 */
+const BOOT_STEPS = [
+  { at: 0, text: '应用启动' },
+  { at: 900, text: '读取本地配置' },
+  { at: 1800, text: '连接本地服务' },
+  { at: 2900, text: '恢复岗位与任务' },
+  { at: 3900, text: '校验运行环境' },
+]
+
+/* 一次应用启动只播一遍。用 sessionStorage 而不是 localStorage：按 F5 重载
+   不是「启动」，而且两道自检脚本会大量 reload 并按固定毫秒数断言 —— 每次重播
+   5 秒会把它们全部拖垮。窗口关掉 sessionStorage 自然就没了。 */
+const BOOTED_KEY = 'chaos.booted'
+
+/**
+ * 这次要不要跳过启动屏。两个出口：
+ *   1. 自检脚本带 CHAOS_SKIP_BOOT=1 启动（主进程经 preload 暴露成 skipBoot）；
+ *   2. 本次会话已经播过了（页面重载）。
+ * 刻意导出给 App 用 —— 在 App 的 useState 初值里就判断掉，跳过时连一帧都不渲染，
+ * 不然会闪一下。
+ */
+export function shouldSkipBoot() {
+  if (window.chaos?.skipBoot === true) return true
+  try {
+    return sessionStorage.getItem(BOOTED_KEY) === '1'
+  } catch (_) {
+    return false // 隐私模式下 sessionStorage 会直接抛
+  }
+}
+
+function markBooted() {
+  try {
+    sessionStorage.setItem(BOOTED_KEY, '1')
+  } catch (_) {
+    /* 存不进去也不影响本次会话 */
+  }
+}
+
+/**
+ * 接管控制台的过场。等界面「能用了」再交出去。
+ *
+ * @param ready  数据是否已经就绪（bootstrap 是否回来了）
+ * @param onDone 播完之后调一次，由 App 把这块屏摘掉
+ */
+export function BootScreen({ ready, onDone }) {
+  const [startedAt, setStartedAt] = useState(null)
+  const [step, setStep] = useState(0)
+  const [pct, setPct] = useState(0)
+  const [allDone, setAllDone] = useState(false)
+  const [closing, setClosing] = useState(false)
+  /* 时间轴跑完了、数据却还没到 —— 这时候才解释「为什么卡着」 */
+  const [waitingBackend, setWaitingBackend] = useState(false)
+
+  // ready / onDone 每帧都可能是新引用，用 ref 读，免得把计时器反复重建
+  const readyRef = useRef(ready)
+  const onDoneRef = useRef(onDone)
+  readyRef.current = ready
+  onDoneRef.current = onDone
+  const finishedRef = useRef(false)
+
+  /* 起跑线：主窗口显示出来的那一刻。
+     主窗口是 show:false 建的，冷启动闪屏期间它已经在渲染了，只是没人看得见 ——
+     从挂载时间开始算的话，5 秒里有大半是播给一个隐藏窗口看的。 */
+  useEffect(() => {
+    if (startedAt != null) return undefined
+    let fired = false
+    const start = () => {
+      if (fired) return
+      fired = true
+      markBooted()
+      setStartedAt(Date.now())
+    }
+    const bridge = window.chaos
+    let off = null
+    let fallback
+    if (bridge?.onAppShown) {
+      off = bridge.onAppShown(start)
+      /* 挂完监听再主动问一次「显示了没」。app:shown 一辈子只发一次，页面重载后
+         是收不到的 —— 只挂监听的话时间轴永远不启动，界面就卡在这儿了。
+         事件和这次查询谁先到都行，start 里有 fired 守卫。 */
+      bridge.isAppShown?.().then((shown) => {
+        if (shown) start()
+      })
+      /* 最后的兜底，给得很宽，只防「IPC 通了但通知就是不来」。
+         ⚠️ 别调短 —— 主窗口要等冷启动闪屏那 5 秒才 show，兜底比它短就会抢在
+         前面触发，这 5 秒等于白算（第一版写 1.5 秒就是这么翻车的）。 */
+      fallback = setTimeout(start, 10000)
+    } else {
+      // 没有 Electron 桥（在浏览器里单独跑前端）：没有「窗口显示」这回事，立刻开始
+      fallback = setTimeout(start, 0)
+    }
+    return () => {
+      off?.()
+      clearTimeout(fallback)
+    }
+  }, [startedAt])
+
+  // 时间轴
+  useEffect(() => {
+    if (startedAt == null) return undefined
+    const tick = () => {
+      const elapsed = Date.now() - startedAt
+      const t = Math.min(1, elapsed / BOOT_MS)
+      let i = 0
+      while (i + 1 < BOOT_STEPS.length && elapsed >= BOOT_STEPS[i + 1].at) i++
+      setStep(i)
+
+      const done = t >= 1 && readyRef.current
+      setAllDone(done)
+      setWaitingBackend(t >= 1 && !readyRef.current)
+      // 数据没到就顶在 92%，绝不打满
+      const cap = readyRef.current ? 1 : BOOT_HOLD_PCT / 100
+      setPct(Math.round(Math.min(t, cap) * 100))
+
+      if (done && !finishedRef.current) {
+        finishedRef.current = true
+        setClosing(true)
+        setTimeout(() => onDoneRef.current?.(), 320) // 等淡出播完再摘
+      }
+    }
+    tick()
+    const timer = setInterval(tick, 60)
+    return () => clearInterval(timer)
+  }, [startedAt])
+
   return (
-    <div className="fx-boot">
+    <div className={`fx-boot${closing ? ' fx-boot-closing' : ''}`}>
       <div className="fx-boot-grid" />
       <div className="fx-boot-scan" />
       <div className="fx-boot-core">
@@ -37,9 +175,27 @@ export function BootScreen() {
         </div>
         <div className="fx-boot-title">正在接管控制台</div>
         <div className="fx-boot-sub">INITIALIZING RUNTIME</div>
+
+        <ul className="fx-boot-log">
+          {BOOT_STEPS.map((s, i) => {
+            const cls = allDone || i < step ? 'done' : i === step ? 'now' : ''
+            return (
+              <li key={s.text} className={cls}>
+                <span className="fx-boot-mark">
+                  {allDone || i < step ? '✓' : i === step ? '▸' : '·'}
+                </span>
+                {s.text}
+                {/* 卡在最后一步时把原因说清楚，别让人对着一个不动的进度条猜 */}
+                {i === step && waitingBackend ? '（等待后端响应）' : ''}
+              </li>
+            )
+          })}
+        </ul>
+
         <div className="fx-bootbar">
-          <span />
+          <span className="fx-bootbar-fill" style={{ width: `${pct}%` }} />
         </div>
+        <div className="fx-boot-pct">{pct}%</div>
       </div>
     </div>
   )

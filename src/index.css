@@ -114,6 +114,7 @@
     0 24px 60px rgba(0, 0, 0, 0.72),
     inset 0 0 60px rgba(245, 165, 36, 0.05);
   --fx-bar-bg: #2a3346;
+  --fx-bar-tick: rgba(7, 9, 13, 0.85);
 
   /* 登录页背景网格（.login-grid）。深色下是提亮的白线，浅色下得压暗成墨线 */
   --login-grid-line: rgba(255, 255, 255, 0.025);
@@ -211,6 +212,7 @@ html[data-theme='light'] {
     0 20px 48px rgba(120, 100, 70, 0.18),
     inset 0 0 60px rgba(245, 165, 36, 0.06);
   --fx-bar-bg: #e8e4db;
+  --fx-bar-tick: rgba(242, 239, 232, 0.9);
 
   --login-grid-line: rgba(28, 25, 23, 0.028);
 }
@@ -478,32 +480,47 @@ html[data-theme='light'] {
   color: rgb(var(--c-boss-strong) / 0.75);
 }
 
+/* 启动屏的进度条。这里是**确定性**的：宽度由 JS 按时间轴推进。
+   （以前是个来回扫的装饰条，不反映任何真实进度。） */
 .fx-bootbar {
   position: relative;
-  width: 190px;
-  height: 2px;
-  margin-top: 4px;
+  width: 268px;
+  height: 3px;
+  margin-top: 3px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--fx-bar-bg);
 }
 
-.fx-bootbar span {
+.fx-bootbar-fill {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 42%;
-  background: linear-gradient(90deg, transparent, rgb(var(--c-boss)), transparent);
-  animation: fx-sweep 1.15s linear infinite;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, rgb(var(--c-boss-dim)), rgb(var(--c-boss)));
+  box-shadow: 0 0 10px rgb(var(--c-boss) / 0.75);
+  transition: width 0.35s cubic-bezier(0.25, 0.9, 0.3, 1);
 }
 
-@keyframes fx-sweep {
-  from {
-    left: -42%;
-  }
-  to {
-    left: 100%;
-  }
+/* 每 10px 压一道暗线，读起来像刻度尺而不是一根实心条（与闪屏的进度条同一手法） */
+.fx-bootbar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0 9px,
+    var(--fx-bar-tick) 9px 10px
+  );
+}
+
+.fx-boot-pct {
+  margin-top: -6px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  /* 用 fx-done 而不是 fx-foot：后者是给页脚那种装饰性小字用的，
+     放在深色底上这个数字几乎看不见（第一版就是这么翻车的） */
+  color: rgb(var(--c-fx-done));
 }
 
 @keyframes fx-rise {
@@ -514,6 +531,23 @@ html[data-theme='light'] {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* 播完淡出（而不是硬切到工作台）。时长与 LifecycleFx 里那个 320ms 的
+   setTimeout 对齐 —— 那边等这颗动画播完才把启动屏摘掉。 */
+.fx-boot-closing {
+  animation: fx-boot-out 0.32s ease-in both;
+}
+
+@keyframes fx-boot-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.015);
   }
 }
 
@@ -612,7 +646,10 @@ html[data-theme='light'] {
   color: rgb(var(--c-boss-strong) / 0.7);
 }
 
-.fx-exit-log {
+/* 退出日志与启动步骤共用一套外观：一行一条、左边一个标记、当前那条点亮成品牌橙。
+   两处刻意长得一样 —— 开机和关机是同一台机器的两端。 */
+.fx-exit-log,
+.fx-boot-log {
   margin: 14px 0 0;
   padding: 0;
   list-style: none;
@@ -621,7 +658,8 @@ html[data-theme='light'] {
   line-height: 1.95;
 }
 
-.fx-exit-log li {
+.fx-exit-log li,
+.fx-boot-log li {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -629,18 +667,28 @@ html[data-theme='light'] {
   transition: color 0.25s ease, opacity 0.25s ease;
 }
 
-.fx-exit-log li.done {
+.fx-exit-log li.done,
+.fx-boot-log li.done {
   color: rgb(var(--c-fx-done));
 }
 
-.fx-exit-log li.now {
+.fx-exit-log li.now,
+.fx-boot-log li.now {
   color: rgb(var(--c-boss-strong));
 }
 
-.fx-exit-mark {
+.fx-exit-mark,
+.fx-boot-mark {
   width: 12px;
   text-align: center;
   color: inherit;
+}
+
+/* 启动步骤：定宽 + 左对齐，读起来像一块仪表读数；整体仍在屏幕正中 */
+.fx-boot-log {
+  width: 268px;
+  margin-top: 16px;
+  text-align: left;
 }
 
 .fx-exit-bar {

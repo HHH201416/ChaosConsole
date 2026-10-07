@@ -14,7 +14,7 @@ import {
   InstallUpdateModal,
   HandoffModal,
 } from './components/Modals'
-import { BootScreen, ShutdownOverlay } from './components/LifecycleFx'
+import { BootScreen, ShutdownOverlay, shouldSkipBoot } from './components/LifecycleFx'
 
 function Toasts() {
   const toasts = useStore((s) => s.toasts)
@@ -45,6 +45,11 @@ export default function App() {
   const [modal, setModal] = useState(null)
   const [ready, setReady] = useState(false)
 
+  /* 启动屏（正在接管控制台）是否已经播完。一次应用启动播一遍 —— 判断放在
+     useState 的初值里，要跳过的话连一帧都不渲染，不然会闪一下。
+     5 秒的计时从主窗口真正显示出来那刻才起算，见 LifecycleFx 的 onAppShown。 */
+  const [booted, setBooted] = useState(() => shouldSkipBoot())
+
   // 启动时用已保存的 token 自动登录（后端重启过的话 token 会失效，会退回登录页）
   useEffect(() => {
     const token = loadToken()
@@ -67,10 +72,10 @@ export default function App() {
     }
   }, [])
 
-  if (!ready) {
+  if (!booted) {
     return (
       <>
-        <BootScreen />
+        <BootScreen ready={ready} onDone={() => setBooted(true)} />
         <ShutdownOverlay />
       </>
     )

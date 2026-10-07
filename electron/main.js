@@ -950,6 +950,10 @@ function resolveTheme() {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
 }
 
+/* 主窗口是否已经显示过。`app:shown` 只发一次，页面重载后收不到，所以渲染进程
+   还可以主动问这个（见 preload 的 isAppShown）。 */
+let mainWindowShown = false
+
 /** 持久化用户选的主题。写失败只记一行日志 —— 不影响本次会话，只是下次冷启动
  *  的闪屏会退回按系统偏好猜。 */
 function writeThemePref(mode) {
@@ -985,6 +989,8 @@ function windowBackground() {
  * 渲染进程改主题时同步过来（preload 的 setTheme）。
  * 取值在这里校验一遍 —— 渲染进程传来的东西一律当不可信输入。
  */
+ipcMain.handle('app:is-shown', () => mainWindowShown)
+
 ipcMain.handle('theme:set', (_event, mode) => {
   const safe = THEME_MODES.includes(mode) ? mode : 'system'
   writeThemePref(safe)
@@ -1119,6 +1125,10 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
+      // 给自检脚本的逃生口：启动屏有 5 秒强制等待，而 e2e-check / responsive-check
+      // 都是「reload 之后按固定毫秒数断言」的，多这 5 秒会把它们全部打断。
+      // preload 读到这个参数后暴露成 window.chaos.skipBoot。用法见 README 的自检一节。
+      additionalArguments: process.env.CHAOS_SKIP_BOOT ? ['--chaos-skip-boot'] : [],
     },
   })
 
@@ -1140,7 +1150,13 @@ async function createWindow() {
     if (saved?.maximized && !mainWindow?.isMaximized()) mainWindow?.maximize()
     mainWindow?.show()
     mainWindow?.focus()
-    closeSplash()
+    mainWindowShown = true
+    // 等闪屏真的淡出关掉，再通知启动屏开始计时。两个原因：
+    //   1. 闪屏期间主窗口已经在渲染了，那时计时等于把 5 秒播给一个看不见的窗口；
+    //   2. closeSplash() 本身还要 320ms 淡出 + 关闭，show() 之后立刻发的话，
+    //      这 300 多毫秒用户看到的还是闪屏，5 秒会缩水成 4 秒多。
+    await closeSplash()
+    mainWindow?.webContents.send('app:shown')
   })
 
   // 第一次「关闭」请求先拦下来播退场动画；动画播完后 closeState 不再是 running，

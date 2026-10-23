@@ -26,6 +26,8 @@ import {
 } from './components/Modals'
 import { BootScreen, ShutdownOverlay, shouldSkipBoot } from './components/LifecycleFx'
 import { QuickOverlay } from './components/ChaosDock'
+import NavRail from './components/NavRail'
+import { HomePage, ExpertsPage, SkillsPage, AutomationsPage } from './components/ChaosPages'
 
 /* ------------------------------------------------------------------ *
  * 8.0.2：老板键遮罩 —— 一键把整个界面伪装成「编译日志终端」。
@@ -199,6 +201,7 @@ export default function App() {
   const modal = useStore((s) => s.uiModal)
   const setModal = useStore((s) => s.openModal)
   const system = useStore((s) => s.system)
+  const mainView = useStore((s) => s.mainView)
   const [ready, setReady] = useState(false)
   const importRef = useRef(null)
 
@@ -419,9 +422,19 @@ export default function App() {
       />
       <DailyQuoteBanner />
       <div className="flex min-h-0 flex-1">
-        <AgentSidebar onNewAgent={() => setModal('agent')} />
-        <Board />
-        <ChatPanel />
+        {/* 9.0.0：WorkBuddy 式左侧导航栏，切换主工作区页面 */}
+        <NavRail />
+        {mainView === 'home' && <HomePage />}
+        {mainView === 'experts' && <ExpertsPage />}
+        {mainView === 'skills' && <SkillsPage />}
+        {mainView === 'automations' && <AutomationsPage />}
+        {mainView === 'chat' && (
+          <>
+            <AgentSidebar onNewAgent={() => setModal('agent')} />
+            <Board />
+            <ChatPanel />
+          </>
+        )}
       </div>
 
       <BulkBar />

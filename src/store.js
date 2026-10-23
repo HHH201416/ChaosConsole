@@ -156,6 +156,10 @@ export const useStore = create((set, get) => ({
   /* 8.0.0：全局弹窗（设置/统计/诊断/备份/工具链等），任何组件都能打开 */
   uiModal: null,
 
+  /* 9.0.0：主工作区当前页面 —— WorkBuddy 式左侧导航栏切换。
+     chat = 对话工作台（岗位栏+看板+聊天），其余为独立功能页 */
+  mainView: 'chat',
+
   /* 8.0.0：Watt Toolkit 提示 */
   wattPromptOpen: false,
 
@@ -304,6 +308,8 @@ export const useStore = create((set, get) => ({
 
   /* ---------------- 任务详情 ---------------- */
   async selectTask(taskId) {
+    // 9.0.0：选对话 = 回到对话页（工作台/专家页点对话条目时自动跳转）
+    if (get().mainView !== 'chat') set({ mainView: 'chat' })
     if (!taskId) {
       // detailLoading 也要一起关掉：光靠下面那个慢响应守卫不够，它只在「真的有请求
       // 在飞」时才收尾，没有在途请求时（比如启动恢复后立刻开新对话）会永远停在
@@ -436,6 +442,17 @@ export const useStore = create((set, get) => ({
 
   openModal(name) {
     set({ uiModal: name || null })
+  },
+
+  /** 9.0.0：切换主工作区页面（WorkBuddy 式导航栏） */
+  setMainView(view) {
+    set({ mainView: view || 'chat' })
+  },
+
+  /** 9.0.0：技能页选中的指令模板，ChatPanel 消费后清空 */
+  skillDraft: null,
+  setSkillDraft(text) {
+    set({ skillDraft: text || null })
   },
 
   closeModal() {

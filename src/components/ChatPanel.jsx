@@ -364,6 +364,16 @@ export default function ChatPanel() {
     Drafts.save(key, draft)
   }, [draft, task?.id])
 
+  // 9.0.0：技能页 / 专家页选中的模板 → 填进输入框（消费后清空 store 字段）
+  const skillDraft = useStore((s) => s.skillDraft)
+  const setSkillDraft = useStore((s) => s.setSkillDraft)
+  useEffect(() => {
+    if (!skillDraft) return
+    setDraft(skillDraft)
+    setSkillDraft(null)
+    inputRef.current?.focus()
+  }, [skillDraft, setSkillDraft])
+
   // 8.0.2：时光机快照 —— 消息一变就记一个本地快照（最近 20 个）
   useEffect(() => {
     if (!task?.id || !messages.length) return

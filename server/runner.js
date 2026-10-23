@@ -961,24 +961,75 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
       .slice(-CHAOS_HISTORY_TURNS)
       .map((m) => ({ role: m.role, content: clip(m.content, CHAOS_HISTORY_CLIP) }))
 
-    // 人设走 system 消息（不走拼进正文的那份，避免首轮重复注入）
+    // 人设走 system 消息（不走拼进正文的那份，避免首轮重复注入）。
+    // 8.0.2：叠上「专家包」人格 + 长期记忆 + 主动检索知识库（都是纯本地）。
     const systemText = String(agent.system_prompt || agent.systemPrompt || '').trim()
+    const expert = chaosLlm.expertById(String(store.getSetting('chaosExpert', 'default') || 'default'))
+    const memoryText = chaosLlm.memoryPrompt()
+    const systemParts = []
+    if (systemText) systemParts.push(systemText)
+    if (expert && expert.prompt) systemParts.push(`【专家模式：${expert.label}】\n${expert.prompt}`)
+    if (memoryText) {
+      systemParts.push(
+        '【用户长期记忆】（用户明确让你记住的偏好与事实，回答时主动遵循）\n' + memoryText,
+      )
+    }
+
+    // 8.0.2：混沌主动检索知识库 —— 每个回合都拿「任务 + 本轮输入」去查一次，
+    // 命中的文档片段作为参考资料注入，并在事件流里明说命中了几条。
+    let kbHits = 0
+    try {
+      const kbContext = knowledge.contextFor(`${task.title || ''} ${prompt}`.trim().slice(0, 600))
+      if (kbContext) {
+        systemParts.push(kbContext)
+        kbHits = (kbContext.match(/【/g) || []).length
+        store.addEvent(taskId, {
+          type: 'status',
+          name: '知识库命中',
+          content: `本轮自动检索到 ${kbHits} 条相关资料，已注入上下文（全本地检索）。`,
+        })
+      }
+    } catch (_) {
+      /* 知识库出问题不拦截对话 */
+    }
+
     const messages = []
-    if (systemText) messages.push({ role: 'system', content: systemText })
+    if (systemParts.length) messages.push({ role: 'system', content: systemParts.join('\n\n') })
     messages.push(...history, { role: 'user', content: prompt })
 
     store.addEvent(taskId, {
       type: 'status',
       name: '混沌思考中',
-      content: `本地推理 ${model}（免费 · 数据不出本机）`,
+      content: `本地推理 ${model}（免费 · 数据不出本机）${expert && expert.prompt ? ` · ${expert.emoji} ${expert.label}` : ''}`,
     })
 
-    const { text, evalCount } = await chaosLlm.chat({
+    const started = Date.now()
+    let { text, evalCount, evalDuration, doneReason } = await chaosLlm.chat({
       model,
       messages,
       signal: controller.signal,
       onDelta: () => {},
     })
+
+    // 8.0.2：长回答被截断（done_reason=length）时自动续写一次，接上而不是烂尾
+    if (doneReason === 'length' && !controller.signal.aborted) {
+      store.addEvent(taskId, {
+        type: 'status',
+        name: '自动续写',
+        content: '回答在长度上限被截断，混沌正在自动接着写……',
+      })
+      const contMessages = [...messages, { role: 'assistant', content: String(text || '') }, { role: 'user', content: '继续。从断掉的地方无缝接着写，不要重复已有内容，写完自然收尾。' }]
+      try {
+        const cont = await chaosLlm.chat({ model, messages: contMessages, signal: controller.signal, onDelta: () => {} })
+        if (cont.text) {
+          text = `${String(text || '').trimEnd()}\n${cont.text.trimStart()}`
+          evalCount += cont.evalCount
+          evalDuration += cont.evalDuration
+        }
+      } catch (_) {
+        /* 续写失败就保留已有部分，不影响主回答 */
+      }
+    }
 
     const fullText = String(text || '').trim()
     if (!fullText) {
@@ -998,11 +1049,29 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
 
     const bits = [model]
     if (evalCount) bits.push(`${evalCount} tokens`)
+    if (evalDuration && evalCount) {
+      const speed = Math.round((evalCount / evalDuration) * 1000)
+      if (speed > 0) bits.push(`${speed} tokens/s`)
+    }
+    bits.push(`耗时 ${Math.round((Date.now() - started) / 100) / 10}s`)
     bits.push('本地推理 · 免费')
     store.addEvent(taskId, {
       type: 'success',
       name: '运行结束',
       content: bits.join(' · '),
+    })
+
+    // 8.0.2：把本回合统计单独记成一条事件 —— 对话页的「统计徽章」从这里读
+    store.addEvent(taskId, {
+      type: 'status',
+      name: 'chaos:stats',
+      content: JSON.stringify({
+        chars: fullText.length,
+        tokens: evalCount || 0,
+        speed: evalDuration && evalCount ? Math.round((evalCount / evalDuration) * 1000) : 0,
+        ms: Date.now() - started,
+        model,
+      }),
     })
 
     return {

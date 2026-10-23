@@ -463,6 +463,23 @@ function addMessage(taskId, role, content) {
   return msg
 }
 
+/**
+ * 8.0.2：把消息裁剪到只剩前 keepCount 条（按 id 升序保留）。
+ * 时光机回滚 / 重新生成共用。返回删除的条数；任务不存在返回 -1。
+ */
+function trimMessages(taskId, keepCount) {
+  if (!getTask(taskId)) return -1
+  const keep = Math.max(0, Number(keepCount) || 0)
+  const info = db.run(
+    'DELETE FROM messages WHERE task_id = ? AND id NOT IN ' +
+      '(SELECT id FROM messages WHERE task_id = ? ORDER BY id ASC LIMIT ?)',
+    [taskId, taskId, keep],
+  )
+  const removed = Number(info?.changes) || 0
+  if (removed > 0) bus.emit('task:updated', { id: taskId })
+  return removed
+}
+
 function listEvents(taskId) {
   return db.all('SELECT * FROM events WHERE task_id = ? ORDER BY id ASC', [taskId]).map(mapEvent)
 }
@@ -694,6 +711,7 @@ module.exports = {
   validateTaskRelations,
   listMessages,
   addMessage,
+  trimMessages,
   listEvents,
   addEvent,
   clearTaskHistory,

@@ -110,6 +110,12 @@ export const useStore = create((set, get) => ({
   language: initialPrefs.language,
   accent: initialPrefs.accent,
 
+  /* 8.0.2：纸质阅读模式 / 禅模式 / 新对话默认执行器与模型（混沌优先） */
+  paperMode: initialPrefs.paperMode,
+  zenMode: initialPrefs.zenMode,
+  draftExecutor: initialPrefs.draftExecutor,
+  draftModel: initialPrefs.draftModel,
+
   /* 8.0.0：批量选择 */
   selectedTaskIds: [],
 
@@ -126,6 +132,13 @@ export const useStore = create((set, get) => ({
   toolchain: null,
   toolchainJob: null,
   toolchainLogs: [],
+
+  /* 8.0.2：混沌增强（专家/记忆/自动化/速答/擂台/老板键…） */
+  bossMode: false, // 老板键遮罩，不持久化（重启后不该还是伪装状态）
+  quickOpen: false, // 应用内速答浮层
+  chaosMemory: [],
+  chaosAutomations: [],
+  dailyQuote: null, // { text, at }
 
   /* 混沌 · 本地大模型 */
   chaosStatus: null,
@@ -163,6 +176,22 @@ export const useStore = create((set, get) => ({
     const next = !get().chatOpen
     set({ chatOpen: next })
     saveUiPrefs({ chatOpen: next })
+  },
+
+  /* 8.0.2：纸质阅读模式 / 禅模式（持久化）；新对话默认执行器/模型 */
+  togglePaperMode() {
+    const next = !get().paperMode
+    set({ paperMode: next })
+    saveUiPrefs({ paperMode: next })
+  },
+  toggleZenMode() {
+    const next = !get().zenMode
+    set({ zenMode: next })
+    saveUiPrefs({ zenMode: next })
+  },
+  setDraftExecutor(executor, model = '') {
+    set({ draftExecutor: executor, draftModel: model })
+    saveUiPrefs({ draftExecutor: executor, draftModel: model })
   },
 
   /* ---------------- 主题 ---------------- */
@@ -507,12 +536,15 @@ export const useStore = create((set, get) => ({
     if (!content) return
 
     const conversationId = get().selectedTaskId
+    // 8.0.2：新对话还没有任务时，用选择器里选好的默认执行器/模型（混沌优先）
+    const draftExecutor = get().draftExecutor
+    const draftModel = get().draftModel
     try {
       const res = await api.chat({
         conversationId: conversationId || undefined,
         text: content,
-        model: model !== undefined ? model : undefined,
-        executor: executor !== undefined ? executor : undefined,
+        model: model !== undefined ? model : conversationId ? undefined : draftModel || undefined,
+        executor: executor !== undefined ? executor : conversationId ? undefined : draftExecutor || undefined,
         agentId: agentId || undefined,
       })
       // 新对话：后端会把自动派单的结果带回来，立刻选中它
@@ -1010,6 +1042,203 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /* ---- 8.0.2：混沌增强 ---- */
+
+  toggleBossMode() {
+    set({ bossMode: !get().bossMode })
+  },
+
+  toggleQuick(v) {
+    set({ quickOpen: v === undefined ? !get().quickOpen : Boolean(v) })
+  },
+
+  async loadChaosMemory() {
+    try {
+      const res = await api.chaosMemory()
+      set({ chaosMemory: Array.isArray(res.data) ? res.data : [] })
+    } catch (_) {
+      /* 静默：记忆不是关键路径 */
+    }
+  },
+
+  async saveChaosMemory(items) {
+    try {
+      const list = await api.chaosMemorySet(items)
+      set({ chaosMemory: list.data || [] })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  addChaosMemory(text) {
+    const clean = String(text || '').replace(/^记住[:：]?\s*/, '').trim()
+    if (!clean) return
+    const items = [{ text: clean }, ...get().chaosMemory].slice(0, 100)
+    get().saveChaosMemory(items)
+    get().toast('混沌已记住（本地保存，可在 🧠 面板管理）', 'success')
+  },
+
+  async setChaosExpert(id) {
+    try {
+      await api.chaosExpert(id)
+      await get().refreshSystem()
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async loadChaosAutomations() {
+    try {
+      const res = await api.chaosAutomations()
+      set({ chaosAutomations: Array.isArray(res.data) ? res.data : [] })
+    } catch (_) {
+      /* 静默 */
+    }
+  },
+
+  async upsertChaosAutomation(a) {
+    try {
+      const res = await api.chaosAutomationUpsert(a)
+      if (!res.ok) throw new Error(res.error || '保存失败')
+      await get().loadChaosAutomations()
+      get().toast('自动化已保存（到点自动用混沌执行）', 'success')
+      return true
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return false
+    }
+  },
+
+  async deleteChaosAutomation(id) {
+    try {
+      await api.chaosAutomationDelete(id)
+      await get().loadChaosAutomations()
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 速答（不进任务队列、不留记录）。返回文本或抛错。 */
+  async chaosQuick(prompt) {
+    const res = await api.chaosQuick(prompt)
+    if (!res.ok) throw new Error(res.error || '速答失败')
+    return res.data
+  },
+
+  async chaosRewrite(text) {
+    const res = await api.chaosRewrite(text)
+    if (!res.ok) throw new Error(res.error || '魔法棒失败')
+    return res.data
+  },
+
+  async chaosArena(text, models) {
+    const res = await api.chaosArena(text, models)
+    if (!res.ok) throw new Error(res.error || '擂台失败')
+    return res.data
+  },
+
+  /** 重新生成最后一条回答 */
+  async regenerateTask(taskId) {
+    const id = taskId || get().selectedTaskId
+    if (!id) return
+    try {
+      const res = await api.regenerateTask(id)
+      if (!res.ok) throw new Error(res.error || '无法重新生成')
+      await get().selectTask(id)
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 对话分支：岔出一条新对话并选中 */
+  async branchTask(taskId) {
+    const id = taskId || get().selectedTaskId
+    if (!id) return
+    try {
+      const res = await api.branchTask(id)
+      if (!res.ok) throw new Error(res.error || '分支失败')
+      await get().refreshConversations()
+      await get().selectTask(res.taskId)
+      get().toast('已岔出新分支，原对话不受影响', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 时光机回滚：把对话裁剪回只剩 keep 条消息 */
+  async rollbackTask(taskId, keep) {
+    const id = taskId || get().selectedTaskId
+    if (!id) return
+    try {
+      const res = await api.rollbackTask(id, keep)
+      if (!res.ok) throw new Error(res.error || '回滚失败')
+      await get().selectTask(id)
+      get().toast(`已回滚（移除 ${res.data?.removed ?? '?'} 条消息）`, 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 每日一句：本地混沌生成，一天只取一次 */
+  async fetchDailyQuote() {    const today = new Date().toISOString().slice(0, 10)
+    try {
+      const raw = localStorage.getItem('chaos.dailyQuote')
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && saved.day === today) {
+        set({ dailyQuote: saved.quote })
+        return
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    const system = get().system
+    const chaos = system?.chaos
+    if (!chaos || !chaos.serverUp) return
+    try {
+      const res = await api.chaosQuick(
+        '用一两句温暖有力的话，给正在工作的人一句今日建议。要求：不超过 40 个字，不要标题、不要引号、不要解释。',
+      )
+      if (res.ok && res.data?.text) {
+        const quote = { text: res.data.text.trim().slice(0, 120), at: Date.now() }
+        set({ dailyQuote: quote })
+        try {
+          localStorage.setItem('chaos.dailyQuote', JSON.stringify({ day: today, quote }))
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    } catch (_) {
+      /* 混沌没就绪就安静跳过，绝不打断启动 */
+    }
+  },
+
+  /* ---- 8.0.2：Token 额度（每日 3000 万免费 + 兑换码换永久） ---- */
+
+  async redeemChaosCode(code) {
+    try {
+      const res = await api.chaosRedeem(code)
+      if (!res.ok) throw new Error(res.error || '兑换失败')
+      get().toast('兑换成功！已解锁永久 Token 🎉', 'success')
+      await get().loadChaosStatus()
+      await get().refreshSystem()
+      return true
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return false
+    }
+  },
+
+  async generateRedeemCode() {
+    try {
+      const res = await api.chaosRedeemGenerate()
+      if (!res.ok) throw new Error(res.error || '生成失败')
+      return res.data?.code || ''
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return ''
+    }
+  },
+
   /* ---- 混沌 · 本地大模型 ---- */
   async loadChaosStatus() {
     try {
@@ -1378,6 +1607,16 @@ function handleServerMessage(msg) {
       useStore.setState({ chaosLogs: logs })
       break
     }
+
+    case 'chaos:changed':
+      // 8.0.2：记忆/自动化被别处（比如自动化自己开跑了新对话）改动时保持同步
+      useStore.getState().loadChaosMemory()
+      useStore.getState().loadChaosAutomations()
+      if (payload?.reason === 'automation-fired') {
+        useStore.getState().refreshConversations()
+        useStore.getState().toast(`定时自动化「${payload.name || ''}」已自动开跑`, 'info')
+      }
+      break
 
     case 'kb:changed':
       // 知识库数据由 KnowledgeModal 自行拉取，这里只刷新系统摘要里的计数

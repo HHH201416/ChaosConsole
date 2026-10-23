@@ -156,6 +156,7 @@ app.get('/api/system', requireAuth, (_req, res) => {
       kb: knowledge.summary(),
       kbInjectEnabled: store.getSetting('kbInjectEnabled', '1') === '1',
       chaos: chaosLlm.summary(),
+      chaosExpert: store.getSetting('chaosExpert', 'default'),
       chaosGuideDone: store.getSetting('chaosGuideDone', '0') === '1',
     },
   })
@@ -797,6 +798,117 @@ app.post('/api/chaos/guide-done', requireAuth, (_req, res) => {
   res.json({ ok: true })
 })
 
+/* ---- 8.0.2：混沌轻量能力（速答 / 魔法棒 / 擂台 / 专家 / 记忆 / 自动化） ---- */
+
+app.get('/api/chaos/experts', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: chaosLlm.EXPERTS })
+})
+
+app.post('/api/chaos/expert', requireAuth, (req, res) => {
+  const id = String(req.body?.id || 'default')
+  if (!chaosLlm.expertById(id)) return res.status(400).json({ ok: false, error: '未知的专家包' })
+  store.setSetting('chaosExpert', id)
+  res.json({ ok: true, data: { id } })
+})
+
+/** 速答：一问一答，不进任务队列、不留对话记录（全局速答浮层 / 每日一句用） */
+app.post('/api/chaos/quick', requireAuth, async (req, res) => {
+  const prompt = String(req.body?.prompt || '').trim()
+  if (!prompt) return res.status(400).json({ ok: false, error: '内容为空' })
+  const expert = chaosLlm.expertById(String(store.getSetting('chaosExpert', 'default') || 'default'))
+  try {
+    const r = await chaosLlm.quickAnswer({
+      prompt,
+      model: String(req.body?.model || '') || undefined,
+      system: expert && expert.prompt ? expert.prompt : '',
+    })
+    res.json({ ok: true, data: r })
+  } catch (err) {
+    res.status(502).json({ ok: false, error: String(err?.message || err) })
+  }
+})
+
+/** 提示词魔法棒：口语草稿 → 结构化提示词（本地改写，失败兜底返回原文） */
+app.post('/api/chaos/rewrite', requireAuth, async (req, res) => {
+  const r = await chaosLlm.rewritePrompt({ text: req.body?.text })
+  if (!r.ok) return res.status(502).json(r)
+  res.json(r)
+})
+
+/** 多模型擂台：同一个问题发给两个已装混沌模型并排比拼 */
+app.post('/api/chaos/arena', requireAuth, async (req, res) => {
+  const r = await chaosLlm.arena({ text: req.body?.text, models: req.body?.models })
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+/* ---- 8.0.2：混沌长期记忆 ---- */
+
+app.get('/api/chaos/memory', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: chaosLlm.listMemory() })
+})
+
+app.put('/api/chaos/memory', requireAuth, (req, res) => {
+  res.json({ ok: true, data: chaosLlm.setMemory(req.body?.items) })
+})
+
+/* ---- 8.0.2：混沌定时自动化 ---- */
+
+app.get('/api/chaos/automations', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: chaosLlm.listAutomations() })
+})
+
+app.post('/api/chaos/automations', requireAuth, (req, res) => {
+  const r = chaosLlm.upsertAutomation(req.body || {})
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.delete('/api/chaos/automations/:id', requireAuth, (req, res) => {
+  const r = chaosLlm.deleteAutomation(req.params.id)
+  if (!r.ok) return res.status(404).json(r)
+  res.json(r)
+})
+
+/* ---- 8.0.2：混沌 Token 额度（每日 3000 万免费 + 兑换码换永久） ---- */
+
+const quota = require('./chaos-quota')
+
+app.get('/api/chaos/quota', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: quota.publicUsage() })
+})
+
+app.post('/api/chaos/redeem', requireAuth, (req, res) => {
+  const r = quota.redeem(req.body?.code)
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.post('/api/chaos/redeem/generate', requireAuth, (req, res) => {
+  const code = quota.generateCode({ note: req.body?.note })
+  res.json({ ok: true, data: { code } })
+})
+
+/* ---- 8.0.2：对话重新生成 / 分支 / 时光机回滚 ---- */
+
+app.post('/api/tasks/:id/regenerate', requireAuth, (req, res) => {
+  const r = queue.regenerateTask(req.params.id)
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.post('/api/tasks/:id/branch', requireAuth, (req, res) => {
+  const r = chat.branchConversation(req.params.id)
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.post('/api/tasks/:id/rollback', requireAuth, (req, res) => {
+  const removed = store.trimMessages(req.params.id, req.body?.keep)
+  if (removed < 0) return res.status(404).json({ ok: false, error: '对话不存在' })
+  res.json({ ok: true, data: { removed } })
+})
+
 /* ---- 8.0.0：全局搜索 ---- */
 
 function escapeLike(text) {
@@ -1245,6 +1357,7 @@ const BRIDGED = [
   'kb:changed',
   'chaos:job',
   'chaos:log',
+  'chaos:changed',
 ]
 for (const evt of BRIDGED) {
   store.bus.on(evt, (payload) => broadcast(evt, payload))
@@ -1320,6 +1433,9 @@ async function start() {
 
   // 后台预热 deveco 模型列表：这个命令要起一个 node 进程，放在请求路径上会拖慢首屏
   executors.warmup()
+
+  // 8.0.2：把启用的混沌定时自动化重新排上（服务重启不丢日程）
+  chaosLlm.scheduleAllAutomations()
 
   queue.recoverOnStartup()
 

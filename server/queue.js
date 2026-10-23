@@ -1026,9 +1026,48 @@ function dispatch() {
   }
 }
 
+/**
+ * 8.0.2：重新生成最后一条回答（对话页 🔁）。
+ * 从尾部删掉最后一条 assistant 回合（连同其后插入的 system 提示行），
+ * 然后带「重新作答」指令续跑 —— 不新增用户消息，历史保持干净。
+ */
+function regenerateTask(taskId) {
+  const task = store.getTask(taskId)
+  if (!task) return { ok: false, error: '任务不存在' }
+  if (runner.isRunning(taskId) || retryTimers.has(taskId) || pendingHandoff.has(taskId)) {
+    return { ok: false, error: '正在执行中，等这个回合结束后再重新生成' }
+  }
+
+  const msgs = store.listMessages(taskId)
+  let i = msgs.length
+  while (i > 0 && msgs[i - 1].role !== 'user') i -= 1
+  if (i === 0 || i === msgs.length) return { ok: false, error: '没有可重新生成的回答' }
+
+  store.trimMessages(taskId, i)
+
+  let agentId = task.agentId
+  if (!agentId || !store.getAgent(agentId)) {
+    const agent = pickIdleAgent(task)
+    if (!agent) return { ok: false, error: '没有空闲员工' }
+    agentId = agent.id
+    store.updateTask(taskId, { agentId })
+  }
+
+  store.updateTask(taskId, { status: 'in_progress', runState: 'queued' })
+  setImmediate(() => {
+    runTurn(taskId, {
+      extraInstruction: '（重新生成上一条回答：换一个更清晰、更有用的思路重新作答，不要重复旧内容。）',
+    }).catch((err) => {
+      console.error('[queue] 重新生成失败:', err.message)
+    })
+  })
+  return { ok: true }
+}
+
 module.exports = {
   startTask,
   sendInput,
+  regenerateTask,
   cancelTask,
   forgetTask,
   markDone,

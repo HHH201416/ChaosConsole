@@ -2,14 +2,53 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { COLUMN_MAP, RUN_STATE_META, EVENT_META, formatTime, relativeTime, roleColor, stageLabel } from '../lib/meta'
 import { useT } from '../lib/useT'
+import { matchSkill } from '../lib/skills'
+import ChaosDock, { Pins, Snaps, Drafts, TTS } from './ChaosDock'
 
 /* ------------------------------------------------------------------ *
  * 单条消息
  * ------------------------------------------------------------------ */
 
-function Bubble({ message, agent, executorLabel }) {
+/** 拆出 <think>…</think> 思考过程（思辨模型的标志性输出） */
+function splitThink(content) {
+  const text = String(content || '')
+  const parts = []
+  const re = /<think>([\s\S]*?)(<\/think>|$)/g
+  let last = 0
+  let m
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push({ think: false, text: text.slice(last, m.index) })
+    parts.push({ think: true, text: m[1] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push({ think: false, text: text.slice(last) })
+  return parts.filter((p) => p.text.trim())
+}
+
+function ThinkBlock({ text }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mb-1.5 rounded-lg border border-violet-500/25 bg-violet-500/5">
+      <button
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-[10.5px] text-violet-300"
+        onClick={() => setOpen((v) => !v)}
+      >
+        🧠 思考过程（点开看推理草稿）
+        <span className="ml-auto">{open ? '收起' : '展开'}</span>
+      </button>
+      {open && (
+        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words border-t border-violet-500/20 px-2 py-1.5 font-mono text-[10.5px] leading-snug text-violet-200/70">
+          {text.trim()}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function Bubble({ message, agent, executorLabel, taskId }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
+  const [pinned, setPinned] = useState(() => (taskId ? Pins.has(taskId, message.id) : false))
 
   if (isSystem) {
     return (
@@ -36,8 +75,12 @@ function Bubble({ message, agent, executorLabel }) {
 
   // Agent 回复：只显示「是干什么的」，不显示姓名
   const fnLabel = agent?.functionLabel || 'Agent'
+  const sections = splitThink(message.content)
+  const visible = sections.filter((p) => !p.think).map((p) => p.text).join('\n')
+  const chars = message.content?.length || 0
+
   return (
-    <div className="flex justify-start">
+    <div className="group flex justify-start">
       <div className="max-w-[92%]">
         <div className="mb-1 flex items-center gap-1.5 pl-1">
           <span className={`rounded px-1.5 py-[1px] text-[10px] font-medium ${roleColor(agent?.role)}`}>
@@ -46,11 +89,44 @@ function Bubble({ message, agent, executorLabel }) {
           {executorLabel && (
             <span className="font-mono text-[10px] text-slate-600">{executorLabel}</span>
           )}
+          <span className="ml-1 hidden items-center gap-1 group-hover:flex">
+            <button
+              className={`text-[10px] ${pinned ? 'text-boss-strong' : 'text-slate-600 hover:text-slate-300'}`}
+              title={pinned ? '取消钉住' : '钉住这条回答'}
+              onClick={() => {
+                if (!taskId) return
+                setPinned(Pins.toggle(taskId, message))
+              }}
+            >
+              📌
+            </button>
+            <button
+              className="text-[10px] text-slate-600 hover:text-slate-300"
+              title="朗读 / 停止（本地语音）"
+              onClick={() => TTS.toggle(visible || message.content)}
+            >
+              🔊
+            </button>
+            <button
+              className="text-[10px] text-slate-600 hover:text-slate-300"
+              title="复制全文"
+              onClick={() => navigator.clipboard?.writeText(message.content)}
+            >
+              📋
+            </button>
+          </span>
         </div>
         <div className="rounded-xl rounded-bl-sm bg-ink-600/70 px-3 py-2 text-[12.5px] leading-relaxed text-slate-200">
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
-          <div className="mt-1 font-mono text-[10px] text-slate-500">
-            {formatTime(message.createdAt).slice(11)}
+          {sections.map((p, i) =>
+            p.think ? <ThinkBlock key={i} text={p.text} /> : (
+              <div key={i} className="whitespace-pre-wrap break-words">
+                {p.text}
+              </div>
+            ),
+          )}
+          <div className="mt-1 flex items-center gap-2 font-mono text-[10px] text-slate-500">
+            <span>{formatTime(message.createdAt).slice(11)}</span>
+            <span>· {chars} 字</span>
           </div>
         </div>
       </div>
@@ -116,14 +192,35 @@ function HistoryList({ conversations, currentId, onPick, onClose }) {
 }
 
 /* ------------------------------------------------------------------ *
- * 模型选择器
+ * 模型选择器（8.0.2：混沌置顶默认，新对话也能选）
  * ------------------------------------------------------------------ */
 
-function ModelPicker({ task, agent, executors, onChange, disabled }) {
-  const currentExecutor = task?.executor || agent?.executor || 'claude'
-  const list = executors.find((e) => e.id === currentExecutor)
+function ModelPicker({ task, agent, executors, onChange, disabled, chaosUp }) {
+  const draftExecutor = useStore((s) => s.draftExecutor)
+  const draftModel = useStore((s) => s.draftModel)
+  const setDraftExecutor = useStore((s) => s.setDraftExecutor)
+  const hasTask = Boolean(task || agent)
+
+  // 混沌排最前（可置默认），其余执行器按原顺序跟在后面
+  const ordered = useMemo(() => {
+    const chaos = executors.filter((e) => e.id === 'chaos')
+    const rest = executors.filter((e) => e.id !== 'chaos')
+    return [...chaos, ...rest]
+  }, [executors])
+
+  const currentExecutor = hasTask
+    ? task?.executor || agent?.executor || 'claude'
+    : draftExecutor || (chaosUp ? 'chaos' : 'claude')
+  const list = ordered.find((e) => e.id === currentExecutor)
   const models = list?.models || []
-  const currentModel = task?.model || agent?.model || models[0]?.id || ''
+  const currentModel = hasTask
+    ? task?.model || agent?.model || models[0]?.id || ''
+    : draftModel || models[0]?.id || ''
+
+  const change = (patch) => {
+    if (hasTask) onChange(patch)
+    else setDraftExecutor(patch.executor, patch.model || '')
+  }
 
   return (
     /* min-w-0 一路给到 select：窄面板（288px）时这一行只差 1px 就放不下，
@@ -132,12 +229,13 @@ function ModelPicker({ task, agent, executors, onChange, disabled }) {
       <select
         value={currentExecutor}
         disabled={disabled}
-        onChange={(e) => onChange({ executor: e.target.value, model: '' })}
+        onChange={(e) => change({ executor: e.target.value, model: '' })}
         className="min-w-0 rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
-        title="用哪个 CLI 干活"
+        title="用哪个引擎干活（混沌 = 本地免费模型）"
       >
-        {executors.map((e) => (
+        {ordered.map((e) => (
           <option key={e.id} value={e.id} disabled={!e.available}>
+            {e.id === 'chaos' ? '🌀 ' : ''}
             {e.label}
             {e.available ? '' : '（未安装）'}
           </option>
@@ -147,18 +245,40 @@ function ModelPicker({ task, agent, executors, onChange, disabled }) {
       <select
         value={currentModel}
         disabled={disabled || !models.length}
-        onChange={(e) => onChange({ model: e.target.value })}
+        onChange={(e) => change({ model: e.target.value })}
         className="min-w-0 rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 focus:border-boss focus:outline-none"
         title="这次对话用哪个模型"
       >
         {models.length === 0 && <option value="">无可用模型</option>}
         {models.map((m) => (
           <option key={m.id} value={m.id}>
+            {m.id === 'chaos' ? '🌀 ' : ''}
             {m.label || m.id}
+            {m.installed ? '' : '（未下载）'}
           </option>
         ))}
       </select>
     </div>
+  )
+}
+
+/** ⚡🧠：快思 / 慢想一键切换（在已装的模型里来回切普通档与思辨档） */
+function ThinkToggle({ task, onChange, disabled }) {
+  const chaosStatus = useStore((s) => s.chaosStatus)
+  const installed = (chaosStatus?.catalog || []).filter((m) => m.installed)
+  const thinking = installed.find((m) => m.id.startsWith('deepseek-r1'))
+  const normal = installed.find((m) => m.id.startsWith('qwen2.5'))
+  if (!task?.id || !thinking) return null
+  const isThink = String(task.model || '').startsWith('deepseek-r1')
+  return (
+    <button
+      disabled={disabled}
+      onClick={() => onChange({ model: isThink ? normal?.id || thinking.id : thinking.id })}
+      className="shrink-0 rounded border border-ink-500 bg-ink-700 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-300 hover:border-ink-400 disabled:opacity-50"
+      title={isThink ? '当前是「慢想」思辨模式，点此切回快速回答' : '切到「慢想」：思辨模型先推理再回答（更慢但更深）'}
+    >
+      {isThink ? '🧠 慢想' : '⚡ 快思'}
+    </button>
   )
 }
 
@@ -173,6 +293,8 @@ const EXAMPLES = [
   '给登录接口写一组边界测试',
 ]
 
+const MEMORY_RE = /^\s*记住[:：]\s*/i
+
 export default function ChatPanel() {
   const t = useT()
   const detail = useStore((s) => s.detail)
@@ -181,16 +303,26 @@ export default function ChatPanel() {
   const selectedTaskId = useStore((s) => s.selectedTaskId)
   const system = useStore((s) => s.system)
   const chatOpen = useStore((s) => s.chatOpen)
+  const paperMode = useStore((s) => s.paperMode)
+  const zenMode = useStore((s) => s.zenMode)
+  const toggleZenMode = useStore((s) => s.toggleZenMode)
+  const chaosStatus = useStore((s) => s.chaosStatus)
+  const addChaosMemory = useStore((s) => s.addChaosMemory)
+  const regenerateTask = useStore((s) => s.regenerateTask)
   const { sendChat, selectTask, newConversation, setConversationModel, startTask, cancelTask, openHandoff } =
     useStore()
 
   const [draft, setDraft] = useState('')
   const [showHistory, setShowHistory] = useState(false)
   const [showEvents, setShowEvents] = useState(false)
+  const [voiceOn, setVoiceOn] = useState(false)
   const endRef = useRef(null)
   const inputRef = useRef(null)
+  const voiceRef = useRef(null)
+  const loadDraftFor = useRef(null)
 
   const executors = system?.executors || []
+  const chaosUp = Boolean(system?.chaos?.serverUp)
   const messages = detail?.messages || []
   const events = detail?.events || []
   const task = detail?.task
@@ -221,9 +353,33 @@ export default function ChatPanel() {
     if (!chatOpen) setShowHistory(false)
   }, [chatOpen])
 
+  // 8.0.2：草稿自动保存（按对话隔离；换对话 / 重启都不丢）
+  useEffect(() => {
+    const key = task?.id || null
+    if (loadDraftFor.current !== key) {
+      loadDraftFor.current = key
+      setDraft(Drafts.load(key))
+      return
+    }
+    Drafts.save(key, draft)
+  }, [draft, task?.id])
+
+  // 8.0.2：时光机快照 —— 消息一变就记一个本地快照（最近 20 个）
+  useEffect(() => {
+    if (!task?.id || !messages.length) return
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+    Snaps.push(task.id, messages.length, lastUser ? lastUser.content.slice(0, 60) : task.title)
+  }, [messages.length, task?.id])
+
   const submit = () => {
     const text = draft.trim()
     if (!text) return
+    // 8.0.2：长期记忆 —— 「记住：xxx」不发给模型，直接沉淀进本地记忆
+    if (MEMORY_RE.test(text)) {
+      addChaosMemory(text)
+      setDraft('')
+      return
+    }
     // 执行中也允许发送：后端会把它排队，等当前回合结束再用同一个会话续跑
     // （queue.sendInput）—— 上面「执行中 · 可继续补充指令」的提示和这个按钮
     // 一直是这么承诺的，之前这里却被 isRunning 直接挡掉了，按了没有任何反应。
@@ -236,16 +392,51 @@ export default function ChatPanel() {
     setConversationModel(selectedTaskId, patch)
   }
 
-  return (
-    /* 宽度分三档：<1024 288px / ≥1024 320px / ≥1500 480px（desk 档 = 原来的样子）。
-       折叠时这三个类一个都不能少：shrink-0 的 flex item，min-width:auto 会取 min-content
-       （里面的 textarea 约 180px），只写 w-0 根本收不到 0；overflow-hidden 才会把
-       自动最小尺寸置 0，min-w-0 是再兜一层。折叠不用 transform（会裁掉子元素的 fixed 定位）。 */
+  // 8.0.2：语音输入（Web Speech Recognition；不可用时按钮不出现）
+  const voiceSupported =
+    typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  const toggleVoice = () => {
+    if (voiceOn) {
+      voiceRef.current?.stop?.()
+      setVoiceOn(false)
+      return
+    }
+    const Rec = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Rec) return
+    const rec = new Rec()
+    rec.lang = 'zh-CN'
+    rec.continuous = true
+    rec.interimResults = false
+    rec.onresult = (e) => {
+      let add = ''
+      for (let i = e.resultIndex; i < e.results.length; i += 1) {
+        if (e.results[i].isFinal) add += e.results[i][0].transcript
+      }
+      if (add) setDraft((cur) => `${cur}${cur && !cur.endsWith(' ') ? ' ' : ''}${add}`)
+    }
+    rec.onend = () => setVoiceOn(false)
+    rec.onerror = () => setVoiceOn(false)
+    voiceRef.current = rec
+    rec.start()
+    setVoiceOn(true)
+  }
+
+  // 斜杠技能菜单：草稿以 / 开头时给过滤列表
+  const slash = matchSkill(draft)
+  const pickSkill = (s) => {
+    setDraft(s.template.replace('{text}', draft.replace(/^\s*\/[^\s]*/, '').trim() || '（在这里填内容）'))
+    inputRef.current?.focus()
+  }
+
+  const panel = (
     <aside
       className={`relative flex shrink-0 flex-col bg-ink-800 transition-[width] duration-200 ${
-        chatOpen
-          ? 'w-[18rem] border-l border-ink-600 lg:w-[20rem] desk:w-[30rem]'
-          : 'w-0 min-w-0 overflow-hidden'
+        zenMode
+          ? 'h-full w-full max-w-4xl border border-ink-500 shadow-2xl'
+          : chatOpen
+            ? 'w-[18rem] border-l border-ink-600 lg:w-[20rem] desk:w-[30rem]'
+            : 'w-0 min-w-0 overflow-hidden'
       }`}
     >
       {showHistory && (
@@ -294,6 +485,11 @@ export default function ChatPanel() {
         >
           {t('chat.newConversation')}
         </button>
+        {zenMode && (
+          <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" onClick={toggleZenMode}>
+            退出禅模式
+          </button>
+        )}
       </div>
 
       {/* 元信息条 */}
@@ -324,6 +520,14 @@ export default function ChatPanel() {
           <div className="ml-auto flex gap-1">
             <button
               className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
+              onClick={() => regenerateTask(task.id)}
+              disabled={isRunning}
+              title="重新生成最后一条回答（🔁 换个思路再答一次）"
+            >
+              🔁
+            </button>
+            <button
+              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => setShowEvents((v) => !v)}
               title="查看事件列表（工具调用明细）"
             >
@@ -349,7 +553,11 @@ export default function ChatPanel() {
       )}
 
       {/* 消息流 */}
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div
+        className={`min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 ${
+          paperMode ? 'bg-[#f4ecd8] [--paper:on]' : ''
+        }`}
+      >
         {!task && !detailLoading && (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <div className="mb-3 text-4xl opacity-25">💬</div>
@@ -376,7 +584,13 @@ export default function ChatPanel() {
         {task &&
           !showEvents &&
           messages.map((m) => (
-            <Bubble key={m.id} message={m} agent={agent} executorLabel={m.role === 'assistant' ? executorLabel : ''} />
+            <Bubble
+              key={m.id}
+              message={m}
+              agent={agent}
+              executorLabel={m.role === 'assistant' ? executorLabel : ''}
+              taskId={task.id}
+            />
           ))}
 
         {task && showEvents && (
@@ -418,26 +632,85 @@ export default function ChatPanel() {
 
       {/* 输入区 */}
       <div className="shrink-0 border-t border-ink-600 p-3">
+        {/* 8.0.2：Token 用尽的友好提醒（每日 3000 万免费 + 兑换码出路） */}
+        {(() => {
+          const q = chaosStatus?.quota
+          if (!q || q.unlimited || Number(q.remaining) > 0) return null
+          return (
+            <div className="mb-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10.5px] leading-relaxed text-amber-200">
+              今日 Token 已用完，混沌暂时不能回答（每天自动重发 3000 万）。可打开顶栏 🌀 面板用兑换码升级「永久 Token」。
+            </div>
+          )
+        })()}
+        <ChaosDock
+          task={task}
+          messages={messages}
+          events={events}
+          draft={draft}
+          setDraft={setDraft}
+          inputRef={inputRef}
+        />
+
+        {/* 斜杠技能过滤菜单 */}
+        {slash && (
+          <div className="mb-1.5 overflow-hidden rounded-xl border border-ink-500 bg-ink-800 shadow-xl">
+            {slash.candidates.map((s) => (
+              <button
+                key={s.cmd}
+                onClick={() => pickSkill(s)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-ink-700"
+              >
+                <span className="text-[13px]">{s.icon}</span>
+                <span className="font-mono text-[11px] text-boss-strong">{s.cmd}</span>
+                <span className="text-[11px] text-slate-300">{s.label}</span>
+              </button>
+            ))}
+            <div className="border-t border-ink-600 px-3 py-1 text-[10px] text-slate-600">
+              点选技能填入模板；按 Esc 忽略。也可到 ⚡ 技能库查看全部。
+            </div>
+          </div>
+        )}
+
         <div className="mb-2 flex items-center justify-between">
-          <ModelPicker
-            task={task}
-            agent={agent}
-            executors={executors}
-            onChange={onModelChange}
-            disabled={!task || isRunning}
-          />
+          <div className="flex min-w-0 items-center gap-1.5">
+            <ModelPicker
+              task={task}
+              agent={agent}
+              executors={executors}
+              onChange={onModelChange}
+              disabled={isRunning}
+              chaosUp={chaosUp}
+            />
+            <ThinkToggle task={task} onChange={onModelChange} disabled={isRunning} />
+          </div>
           <span className="shrink-0 whitespace-nowrap pl-1.5 text-[10px] text-slate-600">
             {isRunning ? t('chat.executionHint') : task ? t('chat.continue') : t('chat.autoAssign')}
           </span>
         </div>
 
         <div className="flex items-end gap-2">
+          {voiceSupported && (
+            <button
+              onClick={toggleVoice}
+              title="语音输入（说完自动转文字填进输入框）"
+              className={`shrink-0 rounded-lg border px-2 py-1.5 text-[14px] leading-none ${
+                voiceOn ? 'animate-pulse border-rose-400/60 bg-rose-500/15' : 'border-ink-500 bg-ink-700/60 hover:border-ink-400'
+              }`}
+            >
+              🎙
+            </button>
+          )}
           <textarea
             ref={inputRef}
             rows={2}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === 'Escape' && slash) {
+                e.preventDefault()
+                setDraft('')
+                return
+              }
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault()
                 submit()
@@ -453,4 +726,10 @@ export default function ChatPanel() {
       </div>
     </aside>
   )
+
+  // 禅模式：面板浮成全屏（遮住看板），其余照旧
+  if (zenMode) {
+    return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6">{panel}</div>
+  }
+  return panel
 }

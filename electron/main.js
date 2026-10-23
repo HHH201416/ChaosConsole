@@ -57,6 +57,8 @@ let splashStartedAt = 0
 let tray = null
 let isQuitting = false
 let registeredShortcut = ''
+// 8.0.2：全局速答小窗（Ctrl+Alt+Space 随时唤起，问完即走）
+let quickWindow = null
 
 try {
   app.setAppUserModelId('com.chaosconsole.boss')
@@ -1200,6 +1202,10 @@ function syncTray() {
         { label: t('hide'), click: () => mainWindow?.hide() },
         { type: 'separator' },
         {
+          label: '⚡ 速答 (Ctrl+Alt+Space)',
+          click: () => toggleQuickWindow(),
+        },
+        {
           label: t('newTask'),
           click: () => {
             showWindow()
@@ -1260,6 +1266,65 @@ function syncGlobalShortcut() {
     else mainWindow?.webContents.send('desktop:notice', { kind: 'error', text: t('shortcutFailed') })
   } catch (err) {
     console.error('[electron] 全局快捷键注册失败:', err.message)
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 8.0.2：全局速答小窗
+ *
+ * WorkBuddy 式「全局唤起」：任何应用里按 Ctrl+Alt+Space，屏幕上方弹出
+ * 一个小窗，一句话问混沌（本地免费推理），问完即走。实现上直接复用
+ * 渲染层的界面（?quick=1 走独立速答页），不需要单独的 HTML。
+ * ------------------------------------------------------------------ */
+
+const QUICK_SHORTCUT = 'CommandOrControl+Alt+Space'
+
+async function toggleQuickWindow() {
+  if (quickWindow && !quickWindow.isDestroyed()) {
+    if (quickWindow.isVisible()) {
+      quickWindow.hide()
+      return
+    }
+    quickWindow.show()
+    quickWindow.focus()
+    return
+  }
+  try {
+    const base = await resolveTarget()
+    const target = `${base}${base.includes('?') ? '&' : '?'}quick=1`
+    quickWindow = new BrowserWindow({
+      width: 560,
+      height: 430,
+      show: false,
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      fullscreenable: false,
+      backgroundColor: windowBackground(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        spellcheck: false,
+      },
+    })
+    quickWindow.setAlwaysOnTop(true, 'screen-saver')
+    quickWindow.once('ready-to-show', () => {
+      quickWindow?.show()
+      quickWindow?.focus()
+    })
+    quickWindow.on('closed', () => {
+      quickWindow = null
+    })
+    // 点别处就收起来（blur），像系统级唤起条一样
+    quickWindow.on('blur', () => {
+      if (quickWindow && !quickWindow.webContents.isDevToolsOpened()) quickWindow.hide()
+    })
+    await quickWindow.loadURL(target)
+  } catch (err) {
+    console.error('[electron] 速答窗口打开失败:', err.message)
+    quickWindow = null
   }
 }
 
@@ -1576,6 +1641,12 @@ app.whenReady().then(async () => {
   syncTray()
   syncGlobalShortcut()
   setupNotifications()
+  // 8.0.2：全局速答热键（独立于用户可配置的显隐热键，固定 Ctrl+Alt+Space）
+  try {
+    globalShortcut.register(QUICK_SHORTCUT, toggleQuickWindow)
+  } catch (err) {
+    console.error('[electron] 速答热键注册失败:', err.message)
+  }
   storeModule.bus.on('settings:updated', ({ key }) => {
     if (key === 'trayEnabled' || key === 'uiLanguage' || key === 'closeToTray') syncTray()
     if (key === 'globalShortcut') syncGlobalShortcut()

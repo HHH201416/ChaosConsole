@@ -4,6 +4,95 @@ import { api } from '../lib/api'
 import { useT } from '../lib/useT'
 
 /**
+ * 8.0.2：Token 额度卡片。
+ * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
+ * 兑换码可兑换「永久 Token」（不再限量）。本机可自产兑换码。
+ */
+function TokenCard() {
+  const status = useStore((s) => s.chaosStatus)
+  const redeemChaosCode = useStore((s) => s.redeemChaosCode)
+  const generateRedeemCode = useStore((s) => s.generateRedeemCode)
+  const loadChaosStatus = useStore((s) => s.loadChaosStatus)
+  const [code, setCode] = useState('')
+  const [showGen, setShowGen] = useState(false)
+  const [generated, setGenerated] = useState('')
+
+  const q = status?.quota
+  if (!q) return null
+  const pct = q.unlimited ? 100 : Math.min(100, Math.round(((q.remaining || 0) / q.dailyFree) * 100))
+
+  return (
+    <div className="mt-4 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12.5px] font-medium text-slate-200">🎟️ Token 额度</span>
+        {q.unlimited ? (
+          <span className="chip bg-emerald-500/15 text-emerald-300">永久 Token · 不限量</span>
+        ) : (
+          <>
+            <span className="chip">今日剩余 {Number(q.remaining).toLocaleString()}</span>
+            <span className="chip">每日赠送 {Number(q.dailyFree).toLocaleString()}</span>
+            <span className="chip">已用 {Number(q.usedToday).toLocaleString()}</span>
+          </>
+        )}
+      </div>
+      {!q.unlimited && (
+        <div className="progress-track mt-2 !w-full">
+          <span className="progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
+        每天 0 点自动重发 3000 万 token。用兑换码可升级为「永久 Token」，永不限量。
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && code.trim()) {
+              if (redeemChaosCode(code.trim())) setCode('')
+            }
+          }}
+          placeholder="输入兑换码（形如 CHAOS-XXXX-XXXX-XXXX）"
+          className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
+        />
+        <button
+          className="btn-primary shrink-0 px-2 py-1 text-[11px]"
+          disabled={!code.trim()}
+          onClick={async () => {
+            if (await redeemChaosCode(code.trim())) setCode('')
+          }}
+        >
+          兑换
+        </button>
+        <button className="btn-ghost shrink-0 text-[11px]" onClick={() => setShowGen((v) => !v)}>
+          {showGen ? '收起' : '生成兑换码'}
+        </button>
+      </div>
+      {showGen && (
+        <div className="mt-2 rounded-lg border border-dashed border-ink-500 p-2">
+          <p className="text-[10px] leading-relaxed text-slate-500">
+            这是本机自用版：自己给自己发电换个合理。生成的码只在本机有效。
+          </p>
+          <button
+            className="btn-ghost mt-1.5 text-[11px]"
+            onClick={async () => {
+              const c = await generateRedeemCode()
+              setGenerated(c)
+              loadChaosStatus()
+            }}
+          >
+            生成一个永久兑换码
+          </button>
+          {generated && (
+            <p className="mt-1 break-all font-mono text-[11.5px] text-emerald-300">{generated}</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * 「混沌」本地大模型面板 —— 两用：
  *
  *   1. 新用户第一次打开应用时的推荐引导（App 检测 chaosGuideDone 后自动弹出）；
@@ -147,6 +236,9 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
               )}
             </div>
           </div>
+
+          {/* 8.0.2：Token 额度（每日 3000 万免费 + 兑换码换永久） */}
+          <TokenCard />
 
           {/* 模型列表 */}
           {engineInstalled && (

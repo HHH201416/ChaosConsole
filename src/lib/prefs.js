@@ -29,6 +29,11 @@ const DEFAULTS = {
   accent: 'amber',
   wattDismissed: false,
   wattSnoozedUntil: 0,
+  // 8.0.2：混沌对话增强（纸质阅读模式 / 禅模式 / 新对话默认执行器与模型）
+  paperMode: false,
+  zenMode: false,
+  draftExecutor: '',
+  draftModel: '',
 }
 
 /** 与 src/lib/theme.js 的 THEME_MODES、public/theme-boot.js 的校验保持一致 */
@@ -61,6 +66,10 @@ export function loadUiPrefs() {
     accent: VALID_ACCENTS.includes(p.accent) ? p.accent : 'amber',
     wattDismissed: p.wattDismissed === true,
     wattSnoozedUntil: Number(p.wattSnoozedUntil) || 0,
+    paperMode: p.paperMode === true,
+    zenMode: p.zenMode === true,
+    draftExecutor: typeof p.draftExecutor === 'string' ? p.draftExecutor : '',
+    draftModel: typeof p.draftModel === 'string' ? p.draftModel : '',
   }
 }
 

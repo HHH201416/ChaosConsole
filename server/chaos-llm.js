@@ -28,6 +28,28 @@ const { spawn } = require('child_process')
 
 const store = require('./store')
 const CONFIG = require('./config')
+const quota = require('./chaos-quota')
+
+/** 额度闸门：余额用尽就拒绝生成（提示每天的免费额度和兑换码出路） */
+function quotaGate() {
+  if (quota.canUse()) return
+  const u = quota.publicUsage()
+  const err = new Error(
+    `今日 Token 已用完（${u.usedToday}/${u.dailyFree}）。` +
+      '每天会自动重发 3000 万；或用兑换码兑换永久 Token（混沌面板 → Token 额度）。',
+  )
+  err.code = 'CHAOS_QUOTA_EXHAUSTED'
+  throw err
+}
+
+/** 记账：优先用服务端统计的真实 token，拿不到按 字数/2 估 */
+function quotaBill(result, fallbackText = '') {
+  try {
+    quota.consume(result?.evalCount, (result?.text || fallbackText || '').length)
+  } catch (_) {
+    /* 记账失败不影响回答 */
+  }
+}
 
 /* ------------------------------------------------------------------ *
  * 模型目录（全部是免费开源权重，对外统一「混沌」品牌）
@@ -43,6 +65,80 @@ const CATALOG = [
 
 /** 引导安装时默认拉取的模型：体积小、机器要求低、中文好 */
 const DEFAULT_PULL = 'qwen2.5:1.5b'
+
+/* ------------------------------------------------------------------ *
+ * 8.0.2：专家包（WorkBuddy 式「专家」，WorkBuddy 里叫 Expert ——
+ * 这里全部用提示词工程实现，不花钱、不联网、随开随用）
+ * ------------------------------------------------------------------ */
+
+const EXPERTS = [
+  {
+    id: 'default',
+    label: '默认 · 平衡',
+    emoji: '🌀',
+    prompt: '',
+  },
+  {
+    id: 'scholar',
+    label: '严谨学者',
+    emoji: '🎓',
+    prompt:
+      '你是一位严谨的学者。回答讲究结构：先给结论，再列论据（标注可信度），最后给参考方向。' +
+      '不确定的内容明确说「不确定」，绝不编造事实与数据。',
+  },
+  {
+    id: 'sharp',
+    label: '毒舌队友',
+    emoji: '🌶️',
+    prompt:
+      '你是一位嘴上不饶人但极度靠谱的资深队友。先用一句话尖锐指出对方思路里最大的问题，' +
+      '再给出真正可执行的建议。毒舌但不人身攻击，永远对事不对人。',
+  },
+  {
+    id: 'poet',
+    label: '诗意灵魂',
+    emoji: '🌙',
+    prompt:
+      '你是一位诗人气质的回答者。用凝练、有画面感的语言回答问题，' +
+      '先给一段富有意象的短句，再用平实的语言把事情讲清楚。禁止无意义的辞藻堆砌。',
+  },
+  {
+    id: 'geek',
+    label: '极客工程师',
+    emoji: '🛠️',
+    prompt:
+      '你是一位务实的资深工程师。回答默认给可直接运行的代码/命令片段，' +
+      '注释解释关键步骤；主动指出边界情况、性能与安全坑。少谈概念，多给能跑的东西。',
+  },
+  {
+    id: 'socrates',
+    label: '苏格拉底导师',
+    emoji: '🏛️',
+    prompt:
+      '你是一位苏格拉底式的导师。不直接给答案，而是用 2~4 个递进的提问引导对方自己想明白；' +
+      '对方明确表示「直接告诉我」时才给完整答案。',
+  },
+  {
+    id: 'biz',
+    label: '商业顾问',
+    emoji: '📈',
+    prompt:
+      '你是一位一针见血的独立商业顾问。用「机会 / 风险 / 下一步」三段式回答，' +
+      '每个判断都给出可验证的依据或反例。警惕幸存者偏差，主动提便宜的验证方法。',
+  },
+  {
+    id: 'muse',
+    label: '灵感缪斯',
+    emoji: '✨',
+    prompt:
+      '你是一位脑洞大开的创意搭档。每次回答先给 3 个「市面上没人这么做」的方案（越野越好），' +
+      '再挑一个最可行的展开成可落地的一小步。',
+  },
+]
+
+function expertById(id) {
+  return EXPERTS.find((e) => e.id === id) || null
+}
 
 const BASE_DEFAULT = 'http://127.0.0.1:11434'
 
@@ -186,10 +282,11 @@ function summary() {
 
 /**
  * 调 /api/chat 流式生成。onDelta(deltaText) 逐段回调。
- * 返回 { text, evalCount }；失败 throw（消息里带服务端原因）。
+ * 返回 { text, evalCount, evalDuration, doneReason }；失败 throw（消息里带服务端原因）。
  * signal 用于取消；支持 stopIntent 的超时/换岗中断。
  */
 async function chat({ model, messages, signal, onDelta } = {}) {
+  quotaGate()
   const res = await fetch(`${baseUrl()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -212,6 +309,8 @@ async function chat({ model, messages, signal, onDelta } = {}) {
   let buffer = ''
   let text = ''
   let evalCount = 0
+  let evalDuration = 0
+  let doneReason = ''
 
   while (true) {
     const { done, value } = await reader.read()
@@ -242,12 +341,105 @@ async function chat({ model, messages, signal, onDelta } = {}) {
       }
       if (payload.done) {
         evalCount = Number(payload.eval_count) || 0
+        evalDuration = Number(payload.eval_duration) || 0
+        doneReason = String(payload.done_reason || '')
         // done 帧之后不会再有内容
-        return { text, evalCount }
+        const out = { text, evalCount, evalDuration, doneReason }
+        quotaBill(out)
+        return out
       }
     }
   }
-  return { text, evalCount }
+  const out = { text, evalCount, evalDuration, doneReason }
+  quotaBill(out)
+  return out
+}
+
+/* ------------------------------------------------------------------ *
+ * 8.0.2：一次性问答 / 魔法棒 / 擂台
+ *
+ * 都是非流式的「一问一答」，给速答浮层、每日一句、提示词改写、
+ * 多模型对比这些轻量场景用 —— 不进任务队列、不留对话记录。
+ * ------------------------------------------------------------------ */
+
+/** 单轮非流式问答：给速答 / 每日一句 / 魔法棒用。失败 throw。 */
+async function quickAnswer({ prompt, model, system = '', timeoutMs = 120 * 1000 } = {}) {
+  quotaGate()
+  const s = snapshot()
+  const useModel = model || s.models[0]?.id || DEFAULT_PULL
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const messages = []
+    if (system) messages.push({ role: 'system', content: system })
+    messages.push({ role: 'user', content: String(prompt || '') })
+    const res = await fetch(`${baseUrl()}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: useModel, messages, stream: false }),
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`混沌推理服务返回错误（HTTP ${res.status}）`)
+    const body = await res.json()
+    const text = String(body?.message?.content || '').trim()
+    if (!text) throw new Error('混沌返回了空回复')
+    const r = {
+      text,
+      model: useModel,
+      evalCount: Number(body?.eval_count) || 0,
+      evalDuration: Number(body?.eval_duration) || 0,
+    }
+    quotaBill(r)
+    return r
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 提示词魔法棒：把一句口语草稿用混沌自己改写成结构化提示词。
+ * 全程本地，改写失败时返回 ok:false + 原文兜底（不打断用户输入）。
+ */
+async function rewritePrompt({ text, model } = {}) {
+  const raw = String(text || '').trim()
+  if (!raw) return { ok: false, error: '内容为空' }
+  const system =
+    '你是提示词改写器。把用户的口语化请求改写成一段结构清晰、上下文充分的高质量提示词。' +
+    '要求：只输出改写后的提示词本身，不要任何解释、前后缀或代码块标记；' +
+    '保留用户的原始意图与关键信息；补充合理的角色设定、输出格式与约束；用中文。'
+  try {
+    const r = await quickAnswer({ prompt: raw, model, system, timeoutMs: 90 * 1000 })
+    const clean = r.text.replace(/^```[a-z]*\n?|```$/g, '').trim()
+    if (!clean) return { ok: false, error: '改写结果为空' }
+    return { ok: true, data: { text: clean, model: r.model } }
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) }
+  }
+}
+
+/**
+ * 多模型擂台：同一个问题分别发给两个已安装的混沌模型，并排比拼。
+ * 两个模型并行跑，互不阻塞；返回 [{model, text, ms, tokens, speed}]。
+ */
+async function arena({ text, models } = {}) {
+  const prompt = String(text || '').trim()
+  if (!prompt) return { ok: false, error: '内容为空' }
+  const list = (Array.isArray(models) ? models : []).filter((m) => typeof m === 'string' && m.trim()).slice(0, 2)
+  if (list.length !== new Set(list).size) return { ok: false, error: '两个模型不能相同' }
+
+  const run = async (model) => {
+    const started = Date.now()
+    try {
+      const r = await quickAnswer({ prompt, model, timeoutMs: 180 * 1000 })
+      const ms = Date.now() - started
+      const speed = r.evalDuration ? Math.round((r.evalCount / r.evalDuration) * 1000) : 0
+      return { model, ok: true, text: r.text, ms, tokens: r.evalCount, speed }
+    } catch (err) {
+      return { model, ok: false, text: '', ms: Date.now() - started, error: String(err?.message || err) }
+    }
+  }
+  const results = await Promise.all(list.map(run))
+  return { ok: true, data: results }
 }
 
 /* ------------------------------------------------------------------ *
@@ -585,6 +777,8 @@ function cancelJob(jobId) {
 function status() {
   return {
     ...summary(),
+    experts: EXPERTS,
+    quota: quota.publicUsage(),
     supported: canDownload() || !process.versions.electron,
     activeJob: publicJob(activeJob),
     history: history.slice(0, 10),
@@ -596,9 +790,154 @@ async function statusAsync() {
   return status()
 }
 
+/* ------------------------------------------------------------------ *
+ * 8.0.2：定时自动化（WorkBuddy 式 automations，全本地）
+ *
+ * 存储走 settings 表的一个 JSON 键（chaosAutomations），不新开表：
+ *   [{ id, name, time: 'HH:MM', enabled, prompt, lastRunAt }]
+ * 触发时用 chaos 执行器开一个新对话（= 新任务），复用 chat.send 的
+ * 自动派单，于是自动化产物天然出现在看板/对话列表里。
+ * ------------------------------------------------------------------ */
+
+const AUTOMATIONS_KEY = 'chaosAutomations'
+const automationTimers = new Map() // id -> timer（cancelAutomation 用）
+
+function listAutomations() {
+  return safeParseAutomations()
+}
+
+function safeParseAutomations() {
+  try {
+    const arr = JSON.parse(store.getSetting(AUTOMATIONS_KEY, '[]'))
+    return Array.isArray(arr) ? arr.filter((a) => a && a.id) : []
+  } catch (_) {
+    return []
+  }
+}
+
+function saveAutomations(list) {
+  store.setSetting(AUTOMATIONS_KEY, JSON.stringify(list))
+  store.bus.emit('chaos:changed', { reason: 'automations' })
+}
+
+function upsertAutomation(a) {
+  const name = String(a?.name || '').trim()
+  const time = String(a?.time || '').trim()
+  const prompt = String(a?.prompt || '').trim()
+  if (!name) return { ok: false, error: '请填写自动化名称' }
+  if (!/^\d{2}:\d{2}$/.test(time)) return { ok: false, error: '时间格式要形如 09:30' }
+  if (!prompt) return { ok: false, error: '请填写要自动执行的提示词' }
+
+  const list = safeParseAutomations()
+  const id = a.id && list.some((x) => x.id === a.id) ? a.id : crypto.randomUUID()
+  const item = {
+    id,
+    name,
+    time,
+    prompt,
+    enabled: a.enabled !== false,
+    lastRunAt: list.find((x) => x.id === id)?.lastRunAt || 0,
+  }
+  const idx = list.findIndex((x) => x.id === id)
+  if (idx >= 0) list[idx] = item
+  else list.push(item)
+  saveAutomations(list)
+  scheduleAutomation(item)
+  return { ok: true, data: item }
+}
+
+function deleteAutomation(id) {
+  const list = safeParseAutomations()
+  const next = list.filter((a) => a.id !== id)
+  if (next.length === list.length) return { ok: false, error: '自动化不存在' }
+  const t = automationTimers.get(id)
+  if (t) {
+    clearTimeout(t)
+    automationTimers.delete(id)
+  }
+  saveAutomations(next)
+  return { ok: true }
+}
+
+/** 距下一个 HH:MM 还有多少毫秒（今天已过就排明天） */
+function msUntil(time) {
+  const [h, m] = String(time).split(':').map(Number)
+  const now = new Date()
+  const target = new Date(now)
+  target.setHours(h || 0, m || 0, 0, 0)
+  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1)
+  return target.getTime() - now.getTime()
+}
+
+function scheduleAutomation(a) {
+  const t = automationTimers.get(a.id)
+  if (t) clearTimeout(t)
+  if (!a.enabled) return
+  const timer = setTimeout(() => {
+    automationTimers.delete(a.id)
+    runAutomation(a).catch(() => {})
+    // 跑完重新排明天同一时间（读最新配置，便于中途被编辑）
+    const fresh = safeParseAutomations().find((x) => x.id === a.id)
+    if (fresh && fresh.enabled) scheduleAutomation(fresh)
+  }, msUntil(a.time))
+  automationTimers.set(a.id, timer)
+}
+
+async function runAutomation(a) {
+  const chat = require('./chat')
+  store.setSetting('chaosAutomationsLast', JSON.stringify({ id: a.id, at: Date.now() }))
+  const res = chat.send({
+    text: `【定时自动化 · ${a.name}】\n${a.prompt}`,
+    executor: 'chaos',
+    model: '',
+  })
+  store.bus.emit('chaos:changed', { reason: 'automation-fired', name: a.name, ok: res.ok })
+  return res
+}
+
+/** 启动时把所有启用的自动化重新排上（服务重启不丢） */
+function scheduleAllAutomations() {
+  for (const a of safeParseAutomations()) scheduleAutomation(a)
+}
+
+/* ------------------------------------------------------------------ *
+ * 8.0.2：长期记忆（WorkBuddy 式画像，全本地）
+ * 存 settings.chaosMemory，一个 JSON 数组：[{ id, text, at }]
+ * ------------------------------------------------------------------ */
+
+const MEMORY_KEY = 'chaosMemory'
+
+function listMemory() {
+  try {
+    const arr = JSON.parse(store.getSetting(MEMORY_KEY, '[]'))
+    return Array.isArray(arr) ? arr.filter((m) => m && m.text) : []
+  } catch (_) {
+    return []
+  }
+}
+
+function setMemory(items) {
+  const list = (Array.isArray(items) ? items : [])
+    .map((m) => ({ id: (m && m.id) || crypto.randomUUID(), text: String((m && m.text) || '').trim(), at: Number(m && m.at) || Date.now() }))
+    .filter((m) => m.text)
+    .slice(0, 100)
+  store.setSetting(MEMORY_KEY, JSON.stringify(list))
+  store.bus.emit('chaos:changed', { reason: 'memory' })
+  return list
+}
+
+/** 注入混沌 system 的记忆文本（没有记忆返回空串） */
+function memoryPrompt() {
+  const list = listMemory()
+  if (!list.length) return ''
+  return list.map((m) => `- ${m.text}`).join('\n')
+}
+
 module.exports = {
   CATALOG,
   DEFAULT_PULL,
+  EXPERTS,
+  expertById,
   baseUrl,
   ollamaBin,
   probe,
@@ -607,6 +946,16 @@ module.exports = {
   summary,
   catalogFor,
   chat,
+  quickAnswer,
+  rewritePrompt,
+  arena,
+  listAutomations,
+  upsertAutomation,
+  deleteAutomation,
+  scheduleAllAutomations,
+  listMemory,
+  setMemory,
+  memoryPrompt,
   setDesktopHost,
   startInstall,
   startPull,

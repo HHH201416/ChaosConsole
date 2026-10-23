@@ -64,6 +64,7 @@ async function request(method, path, body) {
 
 const get = (p) => request('GET', p)
 const post = (p, b) => request('POST', p, b ?? {})
+const put = (p, b) => request('PUT', p, b ?? {})
 const patch = (p, b) => request('PATCH', p, b ?? {})
 const del = (p) => request('DELETE', p)
 
@@ -169,4 +170,22 @@ export const api = {
   chaosPull: (model) => post('/api/chaos/pull', { model }),
   chaosCancel: (jobId) => post('/api/chaos/cancel', { jobId }),
   chaosGuideDone: () => post('/api/chaos/guide-done'),
+  // 8.0.2：混沌轻量能力
+  chaosQuick: (prompt, model) => post('/api/chaos/quick', { prompt, model }),
+  chaosRewrite: (text) => post('/api/chaos/rewrite', { text }),
+  chaosArena: (text, models) => post('/api/chaos/arena', { text, models }),
+  chaosExpert: (id) => post('/api/chaos/expert', { id }),
+  chaosMemory: () => get('/api/chaos/memory'),
+  chaosMemorySet: (items) => put('/api/chaos/memory', { items }),
+  chaosAutomations: () => get('/api/chaos/automations'),
+  chaosAutomationUpsert: (a) => post('/api/chaos/automations', a),
+  chaosAutomationDelete: (id) => del(`/api/chaos/automations/${id}`),
+  // 8.0.2：Token 额度（每日 3000 万免费 + 兑换码换永久）
+  chaosQuota: () => get('/api/chaos/quota'),
+  chaosRedeem: (code) => post('/api/chaos/redeem', { code }),
+  chaosRedeemGenerate: () => post('/api/chaos/redeem/generate', {}),
+  // 8.0.2：对话重新生成 / 分支 / 时光机
+  regenerateTask: (id) => post(`/api/tasks/${id}/regenerate`),
+  branchTask: (id) => post(`/api/tasks/${id}/branch`),
+  rollbackTask: (id, keep) => post(`/api/tasks/${id}/rollback`, { keep }),
 }

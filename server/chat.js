@@ -18,6 +18,7 @@ const store = require('./store')
 const queue = require('./queue')
 const runner = require('./runner')
 const executors = require('./executors')
+const chaosLlm = require('./chaos-llm')
 const CONFIG = require('./config')
 
 /**
@@ -67,21 +68,34 @@ function send({ conversationId, text, cwd, executor, model, agentId }) {
   const target = agentId ? store.getAgent(agentId) : routeAgent(content)
   if (!target) return { ok: false, error: '还没有任何员工，请先招聘' }
 
+  // 8.0.2：混沌优先 —— 没显式指定执行器、且本机混沌可用时，新对话默认走混沌
+  // （完全免费、数据不出本机）。用户在对话页选择器里点了别的执行器时不干扰。
+  let useExecutor = executor || ''
+  let useModel = model || ''
+  if (!useExecutor) {
+    const chaos = chaosLlm.snapshot()
+    const installed = (chaos.models || []).map((m) => m.id)
+    if (chaos.up && installed.length) {
+      useExecutor = 'chaos'
+      if (!useModel) useModel = installed.includes(chaosLlm.DEFAULT_PULL) ? chaosLlm.DEFAULT_PULL : installed[0]
+    }
+  }
+
   const task = store.createTask({
     title: summarizeTitle(content),
     description: content,
     tags: [],
     cwd: cwd || CONFIG.DEFAULT_CWD,
     agentId: target.id,
-    executor: executor || '',
-    model: model || '',
+    executor: useExecutor,
+    model: useModel,
   })
 
   store.addMessage(task.id, 'user', content)
   store.addEvent(task.id, {
     type: 'status',
     name: '自动派单',
-    content: `已把这条请求分配给「${target.functionLabel}」（${target.executor}）`,
+    content: `已把这条请求分配给「${target.functionLabel}」（${useExecutor || target.executor}）`,
   })
 
   queue.startTask(task.id)
@@ -114,9 +128,39 @@ function listConversations() {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+/**
+ * 8.0.2：对话分支（岔路）—— 从当前对话复制出一条新对话（含全部历史消息），
+ * 不自动执行。用户可以在岔路上继续追问，探索不同的答案，原对话不动。
+ */
+function branchConversation(conversationId) {
+  const src = store.getTask(conversationId)
+  if (!src) return { ok: false, error: '对话不存在' }
+  const task = store.createTask({
+    title: `${src.title}（分支）`,
+    description: src.description,
+    tags: src.tags || [],
+    cwd: src.cwd,
+    agentId: src.agentId,
+    executor: src.executor,
+    model: src.model,
+  })
+  for (const m of store.listMessages(conversationId)) {
+    if (m.role === 'user' || m.role === 'assistant') {
+      store.addMessage(task.id, m.role, m.content)
+    }
+  }
+  store.addEvent(task.id, {
+    type: 'status',
+    name: '分支',
+    content: `从「${src.title}」岔出的新分支，可以放心试不同方向。`,
+  })
+  return { ok: true, taskId: task.id }
+}
+
 module.exports = {
   send,
   routeAgent,
   listConversations,
   summarizeTitle,
+  branchConversation,
 }

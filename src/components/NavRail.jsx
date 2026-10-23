@@ -8,6 +8,7 @@ import { useStore } from '../store'
 const NAV_ITEMS = [
   { id: 'home', icon: '🏠', label: '工作台' },
   { id: 'chat', icon: '💬', label: '对话' },
+  { id: 'board', icon: '📋', label: '任务看板' },
   { id: 'experts', icon: '🎭', label: '专家中心' },
   { id: 'skills', icon: '⚡', label: '技能' },
   { id: 'automations', icon: '⏰', label: '自动化' },

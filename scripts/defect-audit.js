@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.0\.0"/, '版本为 9.0.0')
+must('package.json', /"version": "9\.1\.0"/, '版本为 9.1.0')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')

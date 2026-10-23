@@ -135,63 +135,6 @@ function Bubble({ message, agent, executorLabel, taskId }) {
 }
 
 /* ------------------------------------------------------------------ *
- * 对话历史列表
- * ------------------------------------------------------------------ */
-
-function HistoryList({ conversations, currentId, onPick, onClose }) {
-  return (
-    <div className="absolute inset-x-0 top-0 z-20 flex h-full flex-col border-r border-ink-600 bg-ink-800/98 backdrop-blur">
-      <div className="flex shrink-0 items-center justify-between border-b border-ink-600 px-4 py-3">
-        <div>
-          <div className="text-[13px] font-semibold text-slate-100">历史对话</div>
-          <div className="text-[10px] text-slate-500">共 {conversations.length} 条 · 点任意一条继续</div>
-        </div>
-        <button className="btn-ghost" onClick={onClose}>
-          收起
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-2">
-        {conversations.length === 0 && (
-          <p className="px-2 py-8 text-center text-xs text-slate-600">
-            还没有任何对话。
-            <br />
-            在下方输入框里说一句话，就会自动开一个。
-          </p>
-        )}
-        {conversations.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => onPick(c.id)}
-            className={`mb-1 w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-              c.id === currentId
-                ? 'border-boss/50 bg-ink-600'
-                : 'border-transparent hover:border-ink-500 hover:bg-ink-700'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <span className="truncate text-[12.5px] font-medium text-slate-200">{c.title}</span>
-              {c.running && <span className="h-1.5 w-1.5 shrink-0 animate-pulseDot rounded-full bg-sky-400" />}
-            </div>
-            <div className="mt-0.5 flex items-center gap-2 text-[10px] text-slate-500">
-              {c.functionLabel && (
-                <span className="rounded bg-ink-500 px-1.5 py-[1px] text-slate-300">{c.functionLabel}</span>
-              )}
-              <span className="font-mono">{c.executor}</span>
-              <span>·</span>
-              <span>{c.messageCount} 条</span>
-              <span className="ml-auto">{relativeTime(c.updatedAt)}</span>
-            </div>
-            {c.lastMessage && (
-              <div className="mt-1 truncate text-[10.5px] text-slate-600">{c.lastMessage}</div>
-            )}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------ *
  * 模型选择器（8.0.2：混沌置顶默认，新对话也能选）
  * ------------------------------------------------------------------ */
 
@@ -299,10 +242,7 @@ export default function ChatPanel() {
   const t = useT()
   const detail = useStore((s) => s.detail)
   const detailLoading = useStore((s) => s.detailLoading)
-  const conversations = useStore((s) => s.conversations)
-  const selectedTaskId = useStore((s) => s.selectedTaskId)
   const system = useStore((s) => s.system)
-  const chatOpen = useStore((s) => s.chatOpen)
   const paperMode = useStore((s) => s.paperMode)
   const zenMode = useStore((s) => s.zenMode)
   const toggleZenMode = useStore((s) => s.toggleZenMode)
@@ -313,7 +253,6 @@ export default function ChatPanel() {
     useStore()
 
   const [draft, setDraft] = useState('')
-  const [showHistory, setShowHistory] = useState(false)
   const [showEvents, setShowEvents] = useState(false)
   const [voiceOn, setVoiceOn] = useState(false)
   const endRef = useRef(null)
@@ -347,11 +286,6 @@ export default function ChatPanel() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages.length, events.length])
-
-  // 折叠时把历史浮层一并收掉，否则它（absolute inset-x-0）会挂在一个 0 宽的面板里
-  useEffect(() => {
-    if (!chatOpen) setShowHistory(false)
-  }, [chatOpen])
 
   // 8.0.2：草稿自动保存（按对话隔离；换对话 / 重启都不丢）
   useEffect(() => {
@@ -441,26 +375,10 @@ export default function ChatPanel() {
 
   const panel = (
     <aside
-      className={`relative flex shrink-0 flex-col bg-ink-800 transition-[width] duration-200 ${
-        zenMode
-          ? 'h-full w-full max-w-4xl border border-ink-500 shadow-2xl'
-          : chatOpen
-            ? 'w-[18rem] border-l border-ink-600 lg:w-[20rem] desk:w-[30rem]'
-            : 'w-0 min-w-0 overflow-hidden'
+      className={`relative flex min-w-0 flex-1 flex-col bg-ink-800 ${
+        zenMode ? 'h-full w-full max-w-4xl border border-ink-500 shadow-2xl' : 'border-l border-ink-600'
       }`}
     >
-      {showHistory && (
-        <HistoryList
-          conversations={conversations}
-          currentId={selectedTaskId}
-          onPick={(id) => {
-            selectTask(id)
-            setShowHistory(false)
-          }}
-          onClose={() => setShowHistory(false)}
-        />
-      )}
-
       {/* 头部 */}
       <div className="flex shrink-0 items-center gap-2 border-b border-ink-600 px-4 py-3">
         <div className="min-w-0 flex-1">
@@ -478,13 +396,6 @@ export default function ChatPanel() {
           </div>
         </div>
 
-        <button
-          className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
-          onClick={() => setShowHistory((v) => !v)}
-          title="查看历史对话"
-        >
-          {t('chat.history')} {conversations.length > 0 ? `(${conversations.length})` : ''}
-        </button>
         <button
           className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
           onClick={() => {
@@ -562,12 +473,13 @@ export default function ChatPanel() {
         </div>
       )}
 
-      {/* 消息流 */}
+      {/* 消息流（9.1.0：居中阅读列，全宽下更好读） */}
       <div
         className={`min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 ${
           paperMode ? 'bg-[#f4ecd8] [--paper:on]' : ''
         }`}
       >
+        <div className="mx-auto w-full max-w-3xl">
         {!task && !detailLoading && (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <div className="mb-3 text-4xl opacity-25">💬</div>
@@ -638,10 +550,12 @@ export default function ChatPanel() {
         )}
 
         <div ref={endRef} />
+        </div>
       </div>
 
-      {/* 输入区 */}
+      {/* 输入区（9.1.0：与消息列同宽居中） */}
       <div className="shrink-0 border-t border-ink-600 p-3">
+        <div className="mx-auto w-full max-w-3xl">
         {/* 8.0.2：Token 用尽的友好提醒（每日 3000 万免费 + 兑换码出路） */}
         {(() => {
           const q = chaosStatus?.quota
@@ -732,6 +646,7 @@ export default function ChatPanel() {
           <button className="btn-primary h-9 px-3 text-[12px]" disabled={!draft.trim()} onClick={submit}>
             {t('chat.send')}
           </button>
+        </div>
         </div>
       </div>
     </aside>

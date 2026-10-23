@@ -3,9 +3,8 @@ import { useStore } from './store'
 import { loadToken } from './lib/api'
 import Login from './components/Login'
 import TopBar from './components/TopBar'
-import AgentSidebar from './components/AgentSidebar'
+import ChatWorkspace from './components/ChatWorkspace'
 import Board from './components/Board'
-import ChatPanel from './components/ChatPanel'
 import CommandPalette from './components/CommandPalette'
 import ShortcutHelp from './components/ShortcutHelp'
 import ToolchainModal from './components/ToolchainModal'
@@ -428,13 +427,9 @@ export default function App() {
         {mainView === 'experts' && <ExpertsPage />}
         {mainView === 'skills' && <SkillsPage />}
         {mainView === 'automations' && <AutomationsPage />}
-        {mainView === 'chat' && (
-          <>
-            <AgentSidebar onNewAgent={() => setModal('agent')} />
-            <Board />
-            <ChatPanel />
-          </>
-        )}
+        {/* 9.1.0：任务看板独立成页；对话页 = 会话列表 + 全宽聊天主区 */}
+        {mainView === 'board' && <Board />}
+        {mainView === 'chat' && <ChatWorkspace onNewAgent={() => setModal('agent')} />}
       </div>
 
       <BulkBar />

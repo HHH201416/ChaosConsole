@@ -237,13 +237,6 @@ export default function TopBar({
         <button className="btn-ghost" onClick={logout} title={t('topbar.logout')}>
           {t('topbar.logout')}
         </button>
-
-        <PaneToggle
-          onClick={toggleChat}
-          active={chatOpen}
-          title={chatOpen ? t('topbar.collapseChat') : t('topbar.expandChat')}
-          glyph="▤"
-        />
       </div>
     </header>
   )

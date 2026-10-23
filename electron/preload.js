@@ -35,6 +35,18 @@ contextBridge.exposeInMainWorld('chaos', {
     ipcRenderer.on('app:quitting', handler)
     return () => ipcRenderer.removeListener('app:quitting', handler)
   },
+  /** 8.0.0：点系统通知时聚焦到对应任务 */
+  onFocusTask: (cb) => {
+    const handler = (_event, taskId) => cb(taskId)
+    ipcRenderer.on('task:focus', handler)
+    return () => ipcRenderer.removeListener('task:focus', handler)
+  },
+  /** 8.0.0：主进程的轻提示（全局快捷键注册失败等） */
+  onDesktopNotice: (cb) => {
+    const handler = (_event, payload) => cb(payload)
+    ipcRenderer.on('desktop:notice', handler)
+    return () => ipcRenderer.removeListener('desktop:notice', handler)
+  },
   /**
    * 主窗口**真正显示出来**的那一刻（冷启动闪屏淡出之后）。启动屏用它对齐
    * 那 5 秒的起始点。

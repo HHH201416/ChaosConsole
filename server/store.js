@@ -91,9 +91,31 @@ function mapTask(row) {
     // 最近一次交接
     handoffNote: row.handoff_note || '',
     handoffAt: row.handoff_at || 0,
+    // 8.0.0：父子任务 / 依赖 / 完成时间。blockedBy 由 decorateTask 现算，不落库。
+    parentId: row.parent_id || null,
+    dependsOn: safeParseArray(row.depends_on),
+    completedAt: row.completed_at || 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
+}
+
+/** 给任务补上「被哪些未完成依赖挡住」和「有没有被挡住」 */
+function decorateTask(task, statusById) {
+  if (!task) return null
+  const byId = statusById || null
+  const blockedBy = (task.dependsOn || []).filter((id) => {
+    // 这里不能用 getTask()：它也会走 decorateTask，历史数据里一旦有环就会无限递归。
+    // 直接读原始行拿 status。
+    const st = byId ? byId.get(id) : mapTask(db.get('SELECT * FROM tasks WHERE id = ?', [id]))?.status
+    return st !== 'complete'
+  })
+  return { ...task, blockedBy, blocked: blockedBy.length > 0 }
+}
+
+function decorateTasks(tasks) {
+  const statusById = new Map(tasks.map((t) => [t.id, t.status]))
+  return tasks.map((t) => decorateTask(t, statusById))
 }
 
 function mapMessage(row) {
@@ -227,20 +249,67 @@ function listTasks(filter = {}) {
     params.push(filter.agentId)
   }
   sql += ' ORDER BY created_at DESC, rowid DESC'
-  return db.all(sql, params).map(mapTask)
+  return decorateTasks(db.all(sql, params).map(mapTask))
 }
 
 function getTask(id) {
-  return mapTask(db.get('SELECT * FROM tasks WHERE id = ?', [id]))
+  return decorateTask(mapTask(db.get('SELECT * FROM tasks WHERE id = ?', [id])))
 }
 
-function createTask({ title, description, tags, cwd, agentId, status, executor, model, pipeline }) {
+/** 校验父子/依赖关系；返回错误文案，没问题返回 null */
+function validateTaskRelations({ id = null, parentId = null, dependsOn = [] }) {
+  const tasks = listTasks()
+  const ids = new Set(tasks.map((t) => t.id))
+  const selfId = id || '__new_task__'
+
+  if (parentId) {
+    if (parentId === id) return '任务不能以自己为父任务'
+    if (!ids.has(parentId)) return '父任务不存在'
+    let cur = parentId
+    const seen = new Set()
+    while (cur) {
+      if (cur === id) return '父子关系不能成环'
+      if (seen.has(cur)) break
+      seen.add(cur)
+      cur = getTask(cur)?.parentId || null
+    }
+  }
+
+  const deps = Array.isArray(dependsOn) ? [...new Set(dependsOn.filter((x) => typeof x === 'string'))] : []
+  if (deps.length > 20) return '依赖任务最多 20 个'
+  for (const dep of deps) {
+    if (dep === id) return '任务不能依赖自己'
+    if (!ids.has(dep)) return `依赖的任务不存在：${dep}`
+  }
+
+  // 依赖图成环检查（只关心包含当前任务的环）
+  const graph = new Map(tasks.map((t) => [t.id, t.dependsOn || []]))
+  graph.set(selfId, deps)
+  const visiting = new Set()
+  const visited = new Set()
+  const dfs = (node) => {
+    if (visiting.has(node)) return true
+    if (visited.has(node)) return false
+    visiting.add(node)
+    for (const dep of graph.get(node) || []) {
+      if (dfs(dep)) return true
+    }
+    visiting.delete(node)
+    visited.add(node)
+    return false
+  }
+  if (dfs(selfId)) return '任务依赖关系不能成环'
+  return null
+}
+
+function createTask({ title, description, tags, cwd, agentId, status, executor, model, pipeline, parentId, dependsOn }) {
   const id = uid('task')
   const ts = now()
+  const deps = Array.isArray(dependsOn) ? [...new Set(dependsOn.filter((x) => typeof x === 'string'))] : []
   db.run(
     `INSERT INTO tasks (id, title, description, status, run_state, agent_id, tags, cwd, result, error,
-                        executor, model, pipeline, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, '', '', ?, ?, ?, ?, ?)`,
+                        executor, model, pipeline, parent_id, depends_on, completed_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, '', '', ?, ?, ?, ?, ?, 0, ?, ?)`,
     [
       id,
       String(title || '未命名任务').trim(),
@@ -253,6 +322,8 @@ function createTask({ title, description, tags, cwd, agentId, status, executor, 
       model || '',
       // 任务级流水线覆盖。空 = 跟随岗位/执行器默认（见 pipeline.resolve）
       JSON.stringify(Array.isArray(pipeline) ? pipeline : []),
+      parentId || null,
+      JSON.stringify(deps),
       ts,
       ts,
     ],
@@ -288,15 +359,28 @@ function updateTask(id, patch) {
       patch.nextRetryAt !== undefined ? Number(patch.nextRetryAt) || 0 : current.nextRetryAt,
     handoffNote: patch.handoffNote !== undefined ? patch.handoffNote : current.handoffNote,
     handoffAt: patch.handoffAt !== undefined ? Number(patch.handoffAt) || 0 : current.handoffAt,
+    parentId: patch.parentId !== undefined ? patch.parentId || null : current.parentId,
+    dependsOn:
+      patch.dependsOn !== undefined
+        ? Array.isArray(patch.dependsOn)
+          ? [...new Set(patch.dependsOn.filter((x) => typeof x === 'string'))]
+          : []
+        : current.dependsOn,
+    completedAt:
+      patch.completedAt !== undefined ? Number(patch.completedAt) || 0 : current.completedAt,
   }
 
   if (!TASK_STATUSES.includes(next.status)) next.status = current.status
+  // 进入已完成时记完成时间；移出时清零（统计要按真实完成时间算）
+  if (next.status === 'complete' && current.status !== 'complete') next.completedAt = now()
+  if (next.status !== 'complete') next.completedAt = 0
 
   db.run(
     `UPDATE tasks SET title = ?, description = ?, status = ?, run_state = ?, agent_id = ?,
             tags = ?, cwd = ?, session_id = ?, result = ?, error = ?,
             executor = ?, model = ?, stage = ?, pipeline = ?, attempts = ?, auto_retry = ?,
-            next_retry_at = ?, handoff_note = ?, handoff_at = ?, updated_at = ?
+            next_retry_at = ?, handoff_note = ?, handoff_at = ?, parent_id = ?, depends_on = ?,
+            completed_at = ?, updated_at = ?
      WHERE id = ?`,
     [
       next.title,
@@ -318,6 +402,9 @@ function updateTask(id, patch) {
       next.nextRetryAt,
       next.handoffNote || '',
       next.handoffAt,
+      next.parentId,
+      JSON.stringify(next.dependsOn || []),
+      next.completedAt,
       now(),
       id,
     ],
@@ -331,6 +418,20 @@ function updateTask(id, patch) {
 function deleteTask(id) {
   const task = getTask(id)
   if (!task) return false
+
+  // 依赖清理：别让别的任务永远等一个已经不存在的任务
+  for (const other of listTasks()) {
+    if (other.id === id) continue
+    const deps = other.dependsOn || []
+    const parentId = other.parentId === id ? null : other.parentId
+    if (deps.includes(id) || parentId !== other.parentId) {
+      updateTask(other.id, {
+        dependsOn: deps.filter((d) => d !== id),
+        ...(parentId !== other.parentId ? { parentId } : {}),
+      })
+    }
+  }
+
   db.run('DELETE FROM tasks WHERE id = ?', [id])
   db.run('DELETE FROM messages WHERE task_id = ?', [id])
   db.run('DELETE FROM events WHERE task_id = ?', [id])
@@ -385,6 +486,106 @@ function clearTaskHistory(taskId) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 任务模板
+ * ------------------------------------------------------------------ */
+
+function mapTemplate(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    name: row.name,
+    title: row.title || '',
+    description: row.description || '',
+    tags: safeParseArray(row.tags),
+    cwd: row.cwd || '',
+    agentId: row.agent_id || null,
+    executor: row.executor || '',
+    model: row.model || '',
+    pipeline: safeParseArray(row.pipeline),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function listTemplates() {
+  return db.all('SELECT * FROM task_templates ORDER BY updated_at DESC, rowid DESC').map(mapTemplate)
+}
+
+function getTemplate(id) {
+  return mapTemplate(db.get('SELECT * FROM task_templates WHERE id = ?', [id]))
+}
+
+function createTemplate(payload = {}) {
+  const id = uid('tpl')
+  const ts = now()
+  db.run(
+    `INSERT INTO task_templates (id, name, title, description, tags, cwd, agent_id, executor, model, pipeline, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      String(payload.name || '未命名模板').trim(),
+      String(payload.title || ''),
+      String(payload.description || ''),
+      JSON.stringify(Array.isArray(payload.tags) ? payload.tags : []),
+      String(payload.cwd || ''),
+      payload.agentId || null,
+      String(payload.executor || ''),
+      String(payload.model || ''),
+      JSON.stringify(Array.isArray(payload.pipeline) ? payload.pipeline : []),
+      ts,
+      ts,
+    ],
+  )
+  const tpl = getTemplate(id)
+  bus.emit('template:updated', tpl)
+  return tpl
+}
+
+function updateTemplate(id, patch = {}) {
+  const current = getTemplate(id)
+  if (!current) return null
+  const pick = (key, fallback) => (patch[key] !== undefined ? patch[key] : fallback)
+  const next = {
+    name: pick('name', current.name),
+    title: pick('title', current.title),
+    description: pick('description', current.description),
+    tags: pick('tags', current.tags),
+    cwd: pick('cwd', current.cwd),
+    agentId: pick('agentId', current.agentId),
+    executor: pick('executor', current.executor),
+    model: pick('model', current.model),
+    pipeline: pick('pipeline', current.pipeline),
+  }
+  db.run(
+    `UPDATE task_templates SET name = ?, title = ?, description = ?, tags = ?, cwd = ?,
+            agent_id = ?, executor = ?, model = ?, pipeline = ?, updated_at = ? WHERE id = ?`,
+    [
+      String(next.name || '未命名模板').trim(),
+      String(next.title || ''),
+      String(next.description || ''),
+      JSON.stringify(Array.isArray(next.tags) ? next.tags : []),
+      String(next.cwd || ''),
+      next.agentId || null,
+      String(next.executor || ''),
+      String(next.model || ''),
+      JSON.stringify(Array.isArray(next.pipeline) ? next.pipeline : []),
+      now(),
+      id,
+    ],
+  )
+  const tpl = getTemplate(id)
+  bus.emit('template:updated', tpl)
+  return tpl
+}
+
+function deleteTemplate(id) {
+  if (!getTemplate(id)) return false
+  db.run('DELETE FROM task_templates WHERE id = ?', [id])
+  bus.emit('template:deleted', { id })
+  return true
+}
+
+/* ------------------------------------------------------------------ *
  * 设置
  * ------------------------------------------------------------------ */
 
@@ -398,6 +599,8 @@ function setSetting(key, value) {
     key,
     String(value),
   ])
+  // 8.0.0：主进程（托盘/快捷键/语言）与界面都要跟着设置变化
+  bus.emit('settings:updated', { key, value: String(value) })
 }
 
 /* ------------------------------------------------------------------ *
@@ -488,11 +691,17 @@ module.exports = {
   createTask,
   updateTask,
   deleteTask,
+  validateTaskRelations,
   listMessages,
   addMessage,
   listEvents,
   addEvent,
   clearTaskHistory,
+  listTemplates,
+  getTemplate,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
   getSetting,
   setSetting,
   bootstrap,

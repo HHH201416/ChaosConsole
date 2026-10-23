@@ -96,18 +96,58 @@ function agentIsBusy(agentId, exceptTaskId) {
 /** 一个关键词都没命中时，交给这个岗位兜底（见 pickIdleAgent） */
 const FALLBACK_ROLE = 'Chat'
 
-/** 挑一个空闲 Agent；没有空闲的返回 null */
-function pickIdleAgent(task) {
+const DISPATCH_STRATEGIES = ['keyword', 'least-busy', 'round-robin']
+
+/** 当前派单策略（存在 settings 里，非法值回退 keyword） */
+function dispatchStrategy() {
+  const raw = store.getSetting('dispatchStrategy', 'keyword')
+  return DISPATCH_STRATEGIES.includes(raw) ? raw : 'keyword'
+}
+
+/** 某岗位名下未完成任务数（least-busy 用） */
+function activeTaskCount(agentId) {
+  return store.listTasks().filter((t) => t.agentId === agentId && t.status !== 'complete').length
+}
+
+/**
+ * 挑一个空闲 Agent；没有空闲的返回 null。
+ *
+ * 策略：
+ *  - keyword（默认，沿用老行为）：按任务内容打分，同分取最早入职
+ *  - least-busy：先看名下未完成任务数，再看关键词得分
+ *  - round-robin：从上次派单的下一位开始轮
+ */
+function pickIdleAgent(task, strategy = dispatchStrategy()) {
   const agents = store.listAgents()
   const idle = agents.filter((a) => a.status === 'idle')
   if (!idle.length) return null
 
+  if (strategy === 'round-robin') {
+    const cursor = store.getSetting('dispatchCursor', '')
+    const order = agents.map((a) => a.id)
+    const start = cursor ? Math.max(0, order.indexOf(cursor) + 1) : 0
+    for (let i = 0; i < order.length; i++) {
+      const a = agents[(start + i) % order.length]
+      if (a.status !== 'idle') continue
+      store.setSetting('dispatchCursor', a.id)
+      return a
+    }
+    return null
+  }
+
   let best = null
   let bestScore = -1
+  let bestLoad = Infinity
   for (const a of idle) {
     const s = scoreAgent(a, task)
-    if (s > bestScore) {
+    const load = strategy === 'least-busy' ? activeTaskCount(a.id) : 0
+    const better =
+      s > bestScore ||
+      (s === bestScore && load < bestLoad) ||
+      (s === bestScore && load === bestLoad && best && a.createdAt < best.createdAt)
+    if (better) {
       bestScore = s
+      bestLoad = load
       best = a
     }
   }
@@ -120,6 +160,25 @@ function pickIdleAgent(task) {
     if (chat) return chat
   }
   return best
+}
+
+/**
+ * 对话页用：按一句话挑人。优先空闲且遵循派单策略；
+ * 全员忙碌时退回「关键词得分最高」的那位（任务会排队）。
+ */
+function pickAgentForText(text, { preferIdle = true } = {}) {
+  const haystack = String(text || '').toLowerCase()
+  const proxy = { title: haystack, description: '', tags: [] }
+  if (preferIdle) {
+    const idlePick = pickIdleAgent(proxy)
+    if (idlePick) return idlePick
+  }
+  const agents = store.listAgents()
+  if (!agents.length) return null
+  const scored = agents
+    .map((a) => ({ agent: a, score: scoreAgent(a, proxy) }))
+    .sort((x, y) => y.score - x.score || x.agent.createdAt - y.agent.createdAt)
+  return scored[0].agent
 }
 
 /* ------------------------------------------------------------------ *
@@ -718,6 +777,24 @@ function startTask(taskId, { quiet = false } = {}) {
   const task = store.getTask(taskId)
   if (!task) return { ok: false, error: '任务不存在' }
   if (runner.isRunning(taskId)) return { ok: false, error: '任务已在执行中' }
+
+  // 8.0.0：前置任务没完成就不派单。依赖完成后 dispatch 会再次尝试。
+  if (task.blockedBy && task.blockedBy.length) {
+    if (!quiet) {
+      store.addEvent(taskId, {
+        type: 'status',
+        name: '等待前置任务',
+        content: `还有 ${task.blockedBy.length} 个前置任务未完成，完成后会自动开始。`,
+      })
+    }
+    return {
+      ok: false,
+      blocked: true,
+      blockedBy: task.blockedBy,
+      error: `还有 ${task.blockedBy.length} 个前置任务未完成`,
+    }
+  }
+
   // 手动起跑优先于还在退避里的自动重试。注意只停定时器、
   // **不清 runHistory** —— 那张表是「本阶段试过谁」的记忆，清了护栏 1 就失效了。
   stopRetry(taskId)
@@ -959,6 +1036,9 @@ module.exports = {
   dispatch,
   recoverOnStartup,
   pickIdleAgent,
+  pickAgentForText,
+  dispatchStrategy,
+  DISPATCH_STRATEGIES,
   scoreAgent,
   FUNCTION_KEYWORDS,
   pendingInputs,

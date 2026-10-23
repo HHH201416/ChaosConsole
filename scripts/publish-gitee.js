@@ -1,15 +1,17 @@
 'use strict'
 
 /**
- * 把安装包发布到 Gitee 发行版，并同步更新 docs/releases.json。
+ * 把安装包发布到 Gitee 发行版，并写 `release/gitee-<tag>.json`。
  *
- * 为什么要有这个脚本：下载页从 GitHub Pages 迁到国内 —— 页面在腾讯云 EdgeOne Pages，
- * 安装包在 Gitee 发行版。Gitee 的发行版附件走 foruda.gitee.com 的国内 CDN，
+ * 为什么要有这个脚本：下载页提供两条真实线路 —— GitHub Releases 面向全球，
+ * Gitee 面向国内。Gitee 的发行版附件走 foruda.gitee.com 的国内 CDN，
  * **未登录也能直接下**（实测 HTTP 200），免费，单文件上限 100 MB。
  *
- * 为什么不复用 gen-site-data.js：那个脚本从 api.github.com 反查，本机连不上 GitHub
- * 就只能回退读本地 latest.yml。这里干脆反过来 —— 我们自己上传，上传完返回什么地址、
- * 本地算出来的校验值是什么，就直接写进 releases.json，不依赖任何接口的返回字段。
+ * 数据所有权：本脚本**不再改写** `docs/releases.json`。它只记录「这个 tag
+ * 在 Gitee 上确实存在、附件地址是什么、上传文件的校验值是多少」。
+ * 之后由 `scripts/gen-site-data.js` 合并 GitHub、Gitee、本地构建信息和旧数据，
+ * 统一生成 schema v2 的 releases.json。这样无论先发 GitHub 还是先发 Gitee，
+ * 都不会互相覆盖。
  *
  * 用法：
  *   node scripts/publish-gitee.js --tag v3.6.0 --token <GITEE_TOKEN>
@@ -36,7 +38,7 @@
  *   3. 应用侧把 generic feed 的 url 从镜像前缀换成
  *      https://<你的域名>/latest —— electron-updater 的 generic provider
  *      会用 new URL(url, base) 解析，绝对地址原样保留，所以能直接下 Gitee 的包。
- *   4. 「版本回退」列表改读同域的 releases.json（本脚本已经在维护它），
+ *   4. 「版本回退」列表改读同域的 releases.json（由 gen-site-data.js 维护），
  *      不再打 api.github.com。
  *
  * 之所以现在不动：动 updater 有把老用户更新搞挂的风险，而这一步必须先有
@@ -50,7 +52,6 @@ const crypto = require('crypto')
 
 const API = 'https://gitee.com/api/v5'
 const ROOT = path.join(__dirname, '..')
-const OUT = path.join(ROOT, 'docs', 'releases.json')
 const MB = 1048576
 
 /* ---------- 参数 ---------- */
@@ -83,15 +84,6 @@ if (!TOKEN && !DRY) {
 function toVersion(tag) {
   const m = String(tag || '').match(/\d+(?:\.\d+)*/)
   return m ? m[0] : String(tag || '').replace(/^v/i, '')
-}
-function cmpVersion(a, b) {
-  const pa = String(a).split('.').map(Number)
-  const pb = String(b).split('.').map(Number)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pb[i] || 0) - (pa[i] || 0)
-    if (d) return d
-  }
-  return 0
 }
 function fmtSize(bytes) {
   const mb = bytes / MB
@@ -196,22 +188,27 @@ function findYml(version) {
   return ''
 }
 
-/* ---------- 写 releases.json ---------- */
-function upsertRelease(entry) {
-  let data = { repo: OWNER + '/' + REPO, mirror: '', releases: [] }
-  if (fs.existsSync(OUT)) {
-    try { data = JSON.parse(fs.readFileSync(OUT, 'utf8')) } catch (_) {}
+/* ---------- 写 Gitee 本地元数据 ----------
+ * gen-site-data.js 读取这个文件，只对「确实上传过」的 tag 生成 Gitee 下载地址，
+ * 因此不会凭空臆造 URL。文件放在 release/ 下，和安装包一起留在构建机即可。
+ * ------------------------------------------------------------------------- */
+function writeGiteeMeta(entry) {
+  const file = path.join(ROOT, 'release', 'gitee-' + entry.tag + '.json')
+  const payload = {
+    tag: entry.tag,
+    version: entry.version,
+    assetName: entry.assetName,
+    url: entry.url,
+    size: entry.size,
+    sizeText: entry.sizeText,
+    sha512: entry.sha512,
+    sha256: entry.sha256,
+    publishedAt: entry.publishedAt,
+    source: 'gitee',
   }
-  data.repo = OWNER + '/' + REPO
-  data.mirror = ''
-  const rest = (data.releases || []).filter((r) => r.version !== entry.version)
-  const out = [entry, ...rest].sort((a, b) => cmpVersion(a.version, b.version))
-  data.releases = out
-  data.latest = out[0] || null
-  data.generatedAt = new Date().toISOString()
-  fs.mkdirSync(path.dirname(OUT), { recursive: true })
-  fs.writeFileSync(OUT, JSON.stringify(data, null, 2) + '\n', 'utf8')
-  return data
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n', 'utf8')
+  return file
 }
 
 /* ---------- 主流程 ---------- */
@@ -242,19 +239,15 @@ async function main() {
     publishedAt: new Date().toISOString(),
     size,
     sizeText: fmtSize(size),
-    exeName: path.basename(exe),
-    direct: url,
-    mirror: url,
+    assetName: path.basename(exe),
+    url,
     sha512,
     sha256,
     prerelease: false,
-    notes: '',
   }
 
   if (DRY) {
-    console.log('\n--dry-run：不上传，只写本地 releases.json')
-    upsertRelease(entry)
-    console.log('已更新 ' + path.relative(ROOT, OUT))
+    console.log('\n--dry-run：不上传，也不写 release/gitee-' + TAG + '.json')
     console.log('下载地址将是：' + url)
     return
   }
@@ -326,11 +319,13 @@ async function main() {
     console.log('已上传 ' + path.basename(f) + '（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）')
   }
 
-  upsertRelease(entry)
+  const metaFile = writeGiteeMeta(entry)
   console.log('\n完成。')
   console.log('下载地址：' + url)
-  console.log('已更新：' + path.relative(ROOT, OUT))
-  console.log('\n下一步：把 docs/ 重新上传到 EdgeOne Pages（控制台「新建部署」，文件夹拖进去）。')
+  console.log('已写本地元数据：' + path.relative(ROOT, metaFile))
+  console.log('\n下一步：')
+  console.log('  node scripts/gen-site-data.js   # 合并 GitHub + Gitee + 已有版本')
+  console.log('  然后提交 docs/releases.json 与 ' + path.relative(ROOT, metaFile))
 }
 
 main().catch((e) => {

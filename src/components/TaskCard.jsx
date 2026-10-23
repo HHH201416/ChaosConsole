@@ -1,13 +1,17 @@
 import { useStore } from '../store'
 import { COLUMN_MAP, RUN_STATE_META, formatClock, stageLabel } from '../lib/meta'
+import { useT } from '../lib/useT'
 
-export default function TaskCard({ task, agent, selected, onSelect }) {
+export default function TaskCard({ task, agent, selected, onSelect, bulkSelected, onToggleBulk }) {
+  const t = useT()
   const { startTask, cancelTask, doneTask, openHandoff, stopRetry } = useStore()
   const col = COLUMN_MAP[task.status] || COLUMN_MAP.backlog
   const run = RUN_STATE_META[task.runState] || RUN_STATE_META.idle
 
   const isRunning = task.runState === 'running' || task.runState === 'queued'
   const isDone = task.status === 'complete'
+  const blockedBy = task.blockedBy || []
+  const blocked = blockedBy.length > 0
 
   // 阶段徽章：只有配了流水线（任务上或岗位默认）才显示
   const stages = Array.isArray(task.pipeline) ? task.pipeline : []
@@ -31,14 +35,30 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
   return (
     <div
       draggable
+      data-task-id={task.id}
+      data-testid="task-card"
       onDragStart={onDragStart}
-      onClick={() => onSelect(task.id)}
+      onClick={(e) => onSelect(task.id, e)}
       className={`group cursor-pointer rounded-lg border bg-ink-700 p-2.5 transition-all hover:bg-ink-600 ${
-        selected ? 'border-boss/70 ring-1 ring-boss/30' : 'border-ink-500 hover:border-ink-400'
+        bulkSelected
+          ? 'border-sky-500/70 ring-1 ring-sky-400/30'
+          : selected
+            ? 'border-boss/70 ring-1 ring-boss/30'
+            : 'border-ink-500 hover:border-ink-400'
       } ${isDone ? 'opacity-75' : ''}`}
     >
       {/* 标题 */}
       <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={Boolean(bulkSelected)}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggleBulk?.(task.id)}
+          className={`mt-1 h-3 w-3 shrink-0 cursor-pointer accent-boss ${
+            bulkSelected ? '' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          title={t('bulk.selectAll')}
+        />
         <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${col.dot} ${isRunning ? 'animate-pulseDot' : ''}`} />
         <h4 className="flex-1 text-[13px] font-medium leading-snug text-slate-100">{task.title}</h4>
         <span className="shrink-0 font-mono text-[10px] text-slate-600">{formatClock(task.createdAt)}</span>
@@ -53,7 +73,7 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
             <span className="shrink-0 font-mono text-[10px] text-slate-600">· {agent.executor}</span>
           </>
         ) : (
-          <span className="text-[11px] italic text-slate-600">未指派（Start 时自动分配空闲岗位）</span>
+          <span className="text-[11px] italic text-slate-600">{t('task.unassigned')}</span>
         )}
       </div>
 
@@ -64,17 +84,23 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
         isRunning ||
         task.status === 'needs_input' ||
         stageText ||
-        attempts > 0) && (
+        attempts > 0 ||
+        blocked) && (
         <div className="mt-2 flex flex-wrap items-center gap-1 pl-3.5">
-          {task.tags.map((t) => (
-            <span key={t} className="chip">
-              {t}
+          {task.tags.map((tag) => (
+            <span key={tag} className="chip">
+              {tag}
             </span>
           ))}
           {stageText && <span className="chip bg-violet-500/15 text-violet-300">{stageText}</span>}
           {attempts > 0 && (
             <span className="chip bg-amber-500/15 text-amber-300" title="失败后已自动换岗重试的次数">
-              重试 ×{attempts}
+              {t('task.retryTimes', { n: attempts })}
+            </span>
+          )}
+          {blocked && (
+            <span className="chip bg-rose-500/15 text-rose-300" title={blockedBy.join(', ')}>
+              🔒 {t('task.blockedCount', { n: blockedBy.length })}
             </span>
           )}
           {isRunning && (
@@ -84,7 +110,7 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
             </span>
           )}
           {task.status === 'needs_input' && (
-            <span className="chip bg-boss/20 text-boss-strong">等待回复</span>
+            <span className="chip bg-boss/20 text-boss-strong">{t('task.needsReply')}</span>
           )}
         </div>
       )}
@@ -94,9 +120,9 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-ink-500/70 pt-2 pl-3.5">
         <button
           className="btn-primary px-2 py-1 text-[11px]"
-          disabled={isRunning || isDone}
+          disabled={isRunning || isDone || blocked}
           onClick={(e) => stop(e, () => startTask(task.id))}
-          title={isDone ? '任务已完成' : isRunning ? '正在执行中' : '开始执行'}
+          title={blocked ? t('deps.blocked') : isDone ? t('task.doneHint') : isRunning ? t('task.runningHint') : t('task.autoStart')}
         >
           Start
         </button>
@@ -123,7 +149,7 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
           onClick={(e) => stop(e, () => openHandoff(task.id))}
           title="交给另一个岗位接手（运行中会交接，不是取消）"
         >
-          换岗
+          {t('task.handoff')}
         </button>
         {attempts > 0 && task.autoRetry && (
           <button
@@ -131,7 +157,7 @@ export default function TaskCard({ task, agent, selected, onSelect }) {
             onClick={(e) => stop(e, () => stopRetry(task.id))}
             title="停止失败后自动换岗重试"
           >
-            停止重试
+            {t('task.stopRetry')}
           </button>
         )}
       </div>

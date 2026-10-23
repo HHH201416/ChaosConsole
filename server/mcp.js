@@ -429,83 +429,8 @@ function isPackageInstalled(server) {
 
 /* 参数引号规则抽到了 win-quote.js（runner 也要用同一套，见那里的长注释） */
 const { quoteArg } = require('./win-quote')
-
-/**
- * 结束整棵进程树。
- *
- * Windows 下 shell:true 时 child 只是包了一层的 cmd.exe，child.kill() 杀掉
- * 的只是 cmd，真正的活儿（npm install / claude mcp add）会变成孤儿继续跑 ——
- * 表现为「已经报超时了，node_modules 还在被写」。做法与 runner.js 的
- * killTree 一致。
- */
-function killTree(child) {
-  if (!child) return
-  try {
-    if (process.platform === 'win32' && child.pid) {
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
-    } else {
-      child.kill('SIGKILL')
-    }
-  } catch (err) {
-    console.error('[mcp] 结束进程失败:', err.message)
-  }
-}
-
-/**
- * 异步执行外部命令。
- *
- * 必须异步：`npm install` 和 `claude mcp add` 都要跑好几秒，用 spawnSync 会把
- * 整个 Node 事件循环按住 —— WebSocket 推送、API 响应全部停摆，表现为整个应用卡死。
- */
-function runAsync(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    let child
-    try {
-      // 命令名也要走同一套引号处理：Windows 下 shell:true 时 node 只是把
-      // cmd 和 args 用空格拼起来，命令名（例如 claude.cmd 的绝对路径）只要
-      // 含空格就会被 cmd 拆坏，表现为静默失败。实测 `"npm"` 这种写法在
-      // cmd 下正常，所以加引号是安全的。
-      const spawnCmd = process.platform === 'win32' ? quoteArg(cmd) : cmd
-      child = spawn(spawnCmd, args, {
-        windowsHide: true,
-        shell: process.platform === 'win32',
-        cwd: opts.cwd,
-        env: { ...process.env, ...(opts.env || {}) },
-      })
-    } catch (err) {
-      return resolve({ status: -1, stdout: '', stderr: err.message })
-    }
-
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      killTree(child)
-      resolve({ status: -1, stdout, stderr: stderr + '\n(执行超时)' })
-    }, opts.timeout || 180000)
-
-    child.stdout?.on('data', (c) => {
-      stdout += c.toString()
-    })
-    child.stderr?.on('data', (c) => {
-      stderr += c.toString()
-    })
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ status: -1, stdout, stderr: err.message })
-    })
-    child.on('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ status: code, stdout, stderr })
-    })
-  })
-}
+/* 8.0.0：进程执行工具抽到 exec-util.js，工具链安装复用同一套超时/杀树逻辑 */
+const { runAsync, killTree } = require('./exec-util')
 
 
 /* ------------------------------------------------------------------ *

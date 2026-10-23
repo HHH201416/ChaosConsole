@@ -67,6 +67,17 @@ const post = (p, b) => request('POST', p, b ?? {})
 const patch = (p, b) => request('PATCH', p, b ?? {})
 const del = (p) => request('DELETE', p)
 
+/** 下载文件（导出 JSON / 诊断包）。返回 { blob, filename } */
+async function download(path) {
+  const headers = {}
+  if (TOKEN) headers['x-chaos-token'] = TOKEN
+  const res = await fetch(path, { headers })
+  if (!res.ok) throw new Error(`下载失败（HTTP ${res.status}）`)
+  const disposition = res.headers.get('content-disposition') || ''
+  const m = disposition.match(/filename=\"?([^\";]+)\"?/i)
+  return { blob: await res.blob(), filename: m ? m[1] : 'chaos-export.json' }
+}
+
 export const api = {
   login: (code) => post('/api/login', { code }),
   system: () => get('/api/system'),
@@ -111,9 +122,51 @@ export const api = {
 
   // 任务批量
   clearAllTasks: () => post('/api/tasks/clear'),
+  batch: (action, ids, payload) => post('/api/tasks/batch', { action, ids, payload }),
+  search: (q) => get(`/api/search?q=${encodeURIComponent(q)}`),
+
+  // 8.0.0：任务模板
+  templates: () => get('/api/templates'),
+  createTemplate: (data) => post('/api/templates', data),
+  updateTemplate: (id, data) => patch(`/api/templates/${id}`, data),
+  deleteTemplate: (id) => del(`/api/templates/${id}`),
+
+  // 8.0.0：备份 / 工作区 / 统计 / 诊断 / 工具链
+  backups: () => get('/api/backups'),
+  createBackup: () => post('/api/backups'),
+  restoreBackup: (name) => post(`/api/backups/${encodeURIComponent(name)}/restore`),
+  deleteBackup: (name) => del(`/api/backups/${encodeURIComponent(name)}`),
+  exportWorkspace: () => download('/api/workspace/export'),
+  importWorkspace: (data) => post('/api/workspace/import', data),
+  stats: (days) => get(`/api/stats?days=${encodeURIComponent(days || '30')}`),
+  diagnostics: () => get('/api/diagnostics'),
+  exportDiagnostics: () => download('/api/diagnostics/export'),
+  toolchain: () => get('/api/toolchain'),
+  installTool: (tool) => post('/api/toolchain/install', { tool, consent: true }),
+  cancelToolInstall: (jobId) => post('/api/toolchain/cancel', { jobId }),
+  refreshToolchain: () => post('/api/toolchain/refresh'),
 
   // MCP
   mcp: () => get('/api/mcp'),
   mcpEnable: (id, opts) => post('/api/mcp/enable', { id, ...(opts || {}) }),
   mcpDisable: (id) => post('/api/mcp/disable', { id }),
+
+  // 知识库
+  kb: () => get('/api/kb'),
+  createKb: (data) => post('/api/kb', data),
+  updateKb: (id, data) => patch(`/api/kb/${id}`, data),
+  deleteKb: (id) => del(`/api/kb/${id}`),
+  kbDocs: (id) => get(`/api/kb/${id}/docs`),
+  addKbDoc: (id, data) => post(`/api/kb/${id}/docs`, data),
+  deleteKbDoc: (id, docId) => del(`/api/kb/${id}/docs/${docId}`),
+  exportKb: (id, format) => download(`/api/kb/${id}/export?format=${format || 'json'}`),
+  importKb: (data) => post('/api/kb/import', data),
+  kbSearch: (query, opts) => post('/api/kb/search', { query, ...(opts || {}) }),
+
+  // 混沌 · 本地大模型
+  chaosStatus: () => get('/api/chaos/status'),
+  chaosInstall: () => post('/api/chaos/install', { consent: true }),
+  chaosPull: (model) => post('/api/chaos/pull', { model }),
+  chaosCancel: (jobId) => post('/api/chaos/cancel', { jobId }),
+  chaosGuideDone: () => post('/api/chaos/guide-done'),
 }

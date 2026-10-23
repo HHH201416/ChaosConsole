@@ -154,3 +154,8 @@ data/
 
 # surge.sh 每次发布会往 docs/ 写 CNAME，别提交（会让 GitHub Pages 误认自定义域名）
 docs/CNAME
+
+# 自检脚本生成的测试数据目录
+.test-data/
+.test-data-ui/
+.test-data-v8/

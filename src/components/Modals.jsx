@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { ROLE_PRESETS, fmtBytes } from '../lib/meta'
+import { useT } from '../lib/useT'
+import PipelineEditor from './PipelineEditor'
 
 function Shell({ title, subtitle, children, onClose, width = 'w-[32rem]' }) {
   useEffect(() => {
@@ -240,23 +242,91 @@ export function NewAgentModal({ onClose }) {
 const TAG_PRESETS = ['WebSearch', 'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'Task']
 
 export function NewTaskModal({ onClose }) {
+  const t = useT()
   const createTask = useStore((s) => s.createTask)
   const system = useStore((s) => s.system)
   const agents = useStore((s) => s.agents)
+  const tasks = useStore((s) => s.tasks)
+  const templates = useStore((s) => s.templates)
+  const loadTemplates = useStore((s) => s.loadTemplates)
+  const createTemplate = useStore((s) => s.createTemplate)
   const [form, setForm] = useState({
     title: '',
     description: '',
     tags: [],
     cwd: system?.defaultCwd || '',
     agentId: '',
+    executor: '',
+    model: '',
+    parentId: '',
+    dependsOn: [],
+    pipeline: [],
   })
   const [busy, setBusy] = useState(false)
+  const [templateId, setTemplateId] = useState('')
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [advanced, setAdvanced] = useState(false)
   const titleRef = useRef(null)
 
-  useEffect(() => titleRef.current?.focus(), [])
+  useEffect(() => {
+    titleRef.current?.focus()
+    loadTemplates()
+  }, [loadTemplates])
 
-  const toggleTag = (t) =>
-    setForm((f) => ({ ...f, tags: f.tags.includes(t) ? f.tags.filter((x) => x !== t) : [...f.tags, t] }))
+  const toggleTag = (tag) =>
+    setForm((f) => ({ ...f, tags: f.tags.includes(tag) ? f.tags.filter((x) => x !== tag) : [...f.tags, tag] }))
+
+  const toggleDep = (id) =>
+    setForm((f) => ({
+      ...f,
+      dependsOn: f.dependsOn.includes(id)
+        ? f.dependsOn.filter((x) => x !== id)
+        : f.dependsOn.length >= 20
+          ? f.dependsOn
+          : [...f.dependsOn, id],
+    }))
+
+  const roleOptions = [...new Set(agents.map((a) => a.role))].map((role) => ({
+    role,
+    functionLabel: (agents.find((a) => a.role === role) || {}).functionLabel || role,
+  }))
+
+  const applyTemplate = (id) => {
+    setTemplateId(id)
+    const tpl = templates.find((x) => x.id === id)
+    if (!tpl) return
+    setForm((f) => ({
+      ...f,
+      title: tpl.title || f.title,
+      description: tpl.description || '',
+      tags: Array.isArray(tpl.tags) ? tpl.tags : [],
+      cwd: tpl.cwd || f.cwd,
+      agentId: tpl.agentId || '',
+      executor: tpl.executor || '',
+      model: tpl.model || '',
+      pipeline: Array.isArray(tpl.pipeline) ? tpl.pipeline : [],
+    }))
+  }
+
+  const saveAsTemplate = async () => {
+    if (!form.title.trim()) return
+    const created = await createTemplate({
+      name: templateName.trim() || form.title.trim(),
+      title: form.title,
+      description: form.description,
+      tags: form.tags,
+      cwd: form.cwd,
+      agentId: form.agentId || null,
+      executor: form.executor || '',
+      model: form.model || '',
+      pipeline: form.pipeline,
+    })
+    if (created) {
+      setSaveTemplateOpen(false)
+      setTemplateName('')
+    }
+  }
 
   const submit = async () => {
     if (!form.title.trim() || busy) return
@@ -267,21 +337,54 @@ export function NewTaskModal({ onClose }) {
       tags: form.tags,
       cwd: form.cwd,
       agentId: form.agentId || undefined,
+      executor: form.executor || undefined,
+      model: form.model || undefined,
+      parentId: form.parentId || undefined,
+      dependsOn: form.dependsOn,
+      pipeline: form.pipeline.length ? form.pipeline : undefined,
     })
     setBusy(false)
     if (created) onClose()
   }
 
+  const otherTasks = tasks.filter((task) => task.id !== form.parentId)
+
   return (
-    <Shell
-      title="新建任务"
-      subtitle="任务进入「进行中」时，后端会自动挑一个空闲岗位接手"
-      onClose={onClose}
-      width="w-[36rem]"
-    >
+    <Shell title={t('task.new')} subtitle={t('task.newSubtitle')} onClose={onClose} width="w-[36rem]">
       <div className="space-y-3">
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <label className="mb-1 block text-[11px] text-slate-400">{t('task.template')}</label>
+            <select className="field" value={templateId} onChange={(e) => applyTemplate(e.target.value)}>
+              <option value="">—</option>
+              {templates.map((tpl) => (
+                <option key={tpl.id} value={tpl.id}>
+                  {tpl.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="btn-ghost" onClick={() => setSaveTemplateOpen((v) => !v)}>
+            {t('task.saveTemplate')}
+          </button>
+        </div>
+
+        {saveTemplateOpen && (
+          <div className="flex gap-2 rounded-lg border border-ink-500 bg-ink-900 p-2">
+            <input
+              className="field flex-1 !py-1 text-[11px]"
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              placeholder={t('task.templateName')}
+            />
+            <button className="btn-primary px-2 py-1 text-[11px]" onClick={saveAsTemplate}>
+              {t('common.save')}
+            </button>
+          </div>
+        )}
+
         <div>
-          <label className="mb-1 block text-[11px] text-slate-400">任务名称 *</label>
+          <label className="mb-1 block text-[11px] text-slate-400">{t('task.title')} *</label>
           <input
             ref={titleRef}
             className="field"
@@ -292,9 +395,9 @@ export function NewTaskModal({ onClose }) {
         </div>
 
         <div>
-          <label className="mb-1 block text-[11px] text-slate-400">详细说明（会作为任务描述发给 Agent）</label>
+          <label className="mb-1 block text-[11px] text-slate-400">{t('task.description')}</label>
           <textarea
-            rows={5}
+            rows={4}
             className="field resize-none text-[12px] leading-relaxed"
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
@@ -303,19 +406,19 @@ export function NewTaskModal({ onClose }) {
         </div>
 
         <div>
-          <label className="mb-1 block text-[11px] text-slate-400">标签</label>
+          <label className="mb-1 block text-[11px] text-slate-400">{t('task.tags')}</label>
           <div className="flex flex-wrap gap-1.5">
-            {TAG_PRESETS.map((t) => (
+            {TAG_PRESETS.map((tag) => (
               <button
-                key={t}
-                onClick={() => toggleTag(t)}
+                key={tag}
+                onClick={() => toggleTag(tag)}
                 className={`rounded px-2 py-1 font-mono text-[11px] transition-colors ${
-                  form.tags.includes(t)
+                  form.tags.includes(tag)
                     ? 'bg-boss/20 text-boss-strong ring-1 ring-boss/50'
                     : 'bg-ink-600 text-slate-400 hover:bg-ink-500'
                 }`}
               >
-                {t}
+                {tag}
               </button>
             ))}
           </div>
@@ -323,7 +426,7 @@ export function NewTaskModal({ onClose }) {
 
         <div className="flex gap-3">
           <div className="flex-1">
-            <label className="mb-1 block text-[11px] text-slate-400">执行路径（Agent 的工作目录）</label>
+            <label className="mb-1 block text-[11px] text-slate-400">{t('task.cwd')}</label>
             <input
               className="field font-mono text-[11px]"
               value={form.cwd}
@@ -332,13 +435,9 @@ export function NewTaskModal({ onClose }) {
             />
           </div>
           <div className="w-44">
-            <label className="mb-1 block text-[11px] text-slate-400">指定岗位</label>
-            <select
-              className="field"
-              value={form.agentId}
-              onChange={(e) => setForm({ ...form, agentId: e.target.value })}
-            >
-              <option value="">自动分配</option>
+            <label className="mb-1 block text-[11px] text-slate-400">{t('task.agent')}</label>
+            <select className="field" value={form.agentId} onChange={(e) => setForm({ ...form, agentId: e.target.value })}>
+              <option value="">{t('task.autoAssign')}</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.functionLabel}
@@ -347,14 +446,64 @@ export function NewTaskModal({ onClose }) {
             </select>
           </div>
         </div>
+
+        <button className="text-[11px] text-slate-500 hover:text-slate-300" onClick={() => setAdvanced((v) => !v)}>
+          {advanced ? '▾' : '▸'} {t('task.advanced')}
+        </button>
+
+        {advanced && (
+          <div className="space-y-3 rounded-lg border border-ink-500 bg-ink-900 p-3">
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-400">{t('task.parent')}</label>
+              <select
+                className="field !py-1 text-[11px]"
+                value={form.parentId}
+                onChange={(e) => setForm({ ...form, parentId: e.target.value })}
+              >
+                <option value="">{t('deps.none')}</option>
+                {tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-400">
+                {t('task.dependencies')} ({form.dependsOn.length}/20)
+              </label>
+              <div className="max-h-28 overflow-y-auto rounded border border-ink-500 bg-ink-800 p-1.5">
+                {otherTasks.length === 0 && <p className="px-1 text-[10.5px] text-slate-600">{t('deps.none')}</p>}
+                {otherTasks.map((task) => (
+                  <label key={task.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[10.5px] hover:bg-ink-700">
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3 accent-boss"
+                      checked={form.dependsOn.includes(task.id)}
+                      onChange={() => toggleDep(task.id)}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-slate-300">{task.title}</span>
+                    <span className="shrink-0 font-mono text-[9.5px] text-slate-600">{task.status}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-400">{t('task.advanced')}</label>
+              <PipelineEditor value={form.pipeline} roles={roleOptions} onChange={(pipeline) => setForm({ ...form, pipeline })} />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-5 flex justify-end gap-2">
         <button className="btn-ghost" onClick={onClose}>
-          取消
+          {t('common.cancel')}
         </button>
         <button className="btn-primary" disabled={!form.title.trim() || busy} onClick={submit}>
-          {busy ? '创建中…' : '创建任务'}
+          {busy ? t('task.creating') : t('task.create')}
         </button>
       </div>
     </Shell>
@@ -736,22 +885,35 @@ function DownloadMirrorField() {
  * 多一个原生 select 会动到那条断言的语义。
  */
 function AppearanceField() {
+  const t = useT()
   const theme = useStore((s) => s.theme)
   const resolvedTheme = useStore((s) => s.resolvedTheme)
   const setTheme = useStore((s) => s.setTheme)
+  const language = useStore((s) => s.language)
+  const setLanguage = useStore((s) => s.setLanguage)
+  const accent = useStore((s) => s.accent)
+  const setAccent = useStore((s) => s.setAccent)
 
   const OPTIONS = [
-    { key: 'light', label: '浅色', glyph: '☀' },
-    { key: 'dark', label: '深色', glyph: '☾' },
-    { key: 'system', label: '跟随系统', glyph: '⌾' },
+    { key: 'light', label: t('settings.light'), glyph: '☀' },
+    { key: 'dark', label: t('settings.dark'), glyph: '☾' },
+    { key: 'system', label: t('settings.system'), glyph: '⌾' },
+  ]
+  const ACCENTS = [
+    { key: 'amber', color: '#f5a524' },
+    { key: 'sky', color: '#38bdf8' },
+    { key: 'violet', color: '#8b5cf6' },
+    { key: 'emerald', color: '#34d399' },
   ]
 
   return (
     <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
       <div className="flex items-center justify-between">
-        <span className="text-[12px] font-medium text-slate-200">外观</span>
+        <span className="text-[12px] font-medium text-slate-200">{t('settings.appearance')}</span>
         <span className="font-mono text-[10px] text-slate-500">
-          {theme === 'system' ? `跟随系统 · 当前${resolvedTheme === 'light' ? '浅色' : '深色'}` : '已固定'}
+          {theme === 'system'
+            ? `${t('settings.system')} · ${resolvedTheme === 'light' ? t('settings.light') : t('settings.dark')}`
+            : t('common.enabled')}
         </span>
       </div>
 
@@ -775,6 +937,45 @@ function AppearanceField() {
         })}
       </div>
 
+      <div className="mt-3 flex items-center justify-between">
+        <span className="text-[11px] text-slate-400">{t('settings.language')}</span>
+        <div className="flex gap-1.5">
+          {[
+            ['zh', t('settings.chinese')],
+            ['en', t('settings.english')],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setLanguage(key)}
+              className={`rounded-md border px-2 py-1 text-[11px] ${
+                language === key
+                  ? 'border-boss/50 bg-boss/15 text-boss-strong'
+                  : 'border-ink-500 bg-ink-800 text-slate-400 hover:bg-ink-600'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <span className="text-[11px] text-slate-400">{t('settings.accent')}</span>
+        <div className="flex gap-2">
+          {ACCENTS.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => setAccent(item.key)}
+              title={item.key}
+              className={`h-5 w-5 rounded-full border-2 ${
+                accent === item.key ? 'border-slate-100' : 'border-transparent'
+              }`}
+              style={{ backgroundColor: item.color }}
+            />
+          ))}
+        </div>
+      </div>
+
       <p className="mt-2 text-[10.5px] leading-relaxed text-slate-500">
         默认<b className="text-slate-400">跟随系统</b>，也就是跟着 Windows 的深色/浅色设置走。
         选「浅色」或「深色」之后就固定住，系统再变也不跟。顶栏那个 ☀ / ☾ 按钮可以随时在两者之间一键翻转。
@@ -785,13 +986,20 @@ function AppearanceField() {
 }
 
 export function SettingsModal({ onClose }) {
+  const t = useT()
   const system = useStore((s) => s.system)
+  const openModal = useStore((s) => s.openModal)
   const setPermissionMode = useStore((s) => s.setPermissionMode)
   const setDevecoAutoApprove = useStore((s) => s.setDevecoAutoApprove)
   const setAutoUpdateWhenIdle = useStore((s) => s.setAutoUpdateWhenIdle)
   const setMaxAttempts = useStore((s) => s.setMaxAttempts)
   const setPipelineEnabled = useStore((s) => s.setPipelineEnabled)
   const setMcpOption = useStore((s) => s.setMcpOption)
+  const setDesktopSetting = useStore((s) => s.setDesktopSetting)
+  const exportWorkspace = useStore((s) => s.exportWorkspace)
+  const importWorkspace = useStore((s) => s.importWorkspace)
+  const maybeShowWattPrompt = useStore((s) => s.maybeShowWattPrompt)
+  const resetWattPrompt = useStore((s) => s.resetWattPrompt)
   const loadReleases = useStore((s) => s.loadReleases)
   const rollbackTo = useStore((s) => s.rollbackTo)
   const update = useStore((s) => s.update)
@@ -799,14 +1007,96 @@ export function SettingsModal({ onClose }) {
   const [relBusy, setRelBusy] = useState(false)
   const clearAllTasks = useStore((s) => s.clearAllTasks)
   const [busy, setBusy] = useState(false)
+  const importRef = useRef(null)
 
   if (!system) return null
 
+  const onImportFile = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      const data = JSON.parse(await file.text())
+      if (!window.confirm(t('workspace.importConfirm'))) return
+      await importWorkspace(data)
+    } catch (_) {
+      useStore.getState().toast(t('workspace.badFile'), 'error')
+    }
+  }
+
   return (
-    <Shell title="运行设置" subtitle="这些选项决定 Agent 如何被拉起执行" onClose={onClose}>
+    <Shell title={t('settings.title')} subtitle="这些选项决定 Agent 如何被拉起执行" onClose={onClose}>
       <div className="space-y-4 text-[12px]">
         {/* 外观 */}
         <AppearanceField />
+
+        {/* 8.0.0：派单策略 / 桌面集成 / 新面板入口 */}
+        <div className="space-y-2.5 rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <div className="text-[12px] font-medium text-slate-200">{t('settings.desktop')}</div>
+
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-[11.5px] text-slate-400">{t('settings.dispatch')}</span>
+            <select
+              className="field max-w-[15rem] !py-1 text-[11px]"
+              value={system.dispatchStrategy || 'keyword'}
+              onChange={(e) => setDesktopSetting('dispatchStrategy', e.target.value)}
+            >
+              <option value="keyword">{t('settings.dispatchKeyword')}</option>
+              <option value="least-busy">{t('settings.dispatchLeastBusy')}</option>
+              <option value="round-robin">{t('settings.dispatchRoundRobin')}</option>
+            </select>
+          </label>
+
+          {[
+            ['trayEnabled', t('settings.tray')],
+            ['closeToTray', t('settings.closeToTray')],
+            ['notifyOnComplete', t('settings.notifyComplete')],
+            ['notifyOnNeedsInput', t('settings.notifyNeedsInput')],
+            ['notifyOnlyWhenUnfocused', t('settings.notifyOnlyUnfocused')],
+          ].map(([key, label]) => (
+            <label key={key} className="flex cursor-pointer items-center justify-between gap-3">
+              <span className="text-[11.5px] text-slate-400">{label}</span>
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-boss"
+                checked={key === 'closeToTray' ? Boolean(system.closeToTray) : system[key] !== false}
+                onChange={(e) => setDesktopSetting(key, e.target.checked)}
+              />
+            </label>
+          ))}
+
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-[11.5px] text-slate-400">{t('settings.globalShortcut')}</span>
+            <select
+              className="field max-w-[15rem] !py-1 text-[11px]"
+              value={system.globalShortcut || 'CommandOrControl+Shift+Space'}
+              onChange={(e) => setDesktopSetting('globalShortcut', e.target.value)}
+            >
+              <option value="CommandOrControl+Shift+Space">Ctrl+Shift+Space</option>
+              <option value="CommandOrControl+Alt+C">Ctrl+Alt+C</option>
+              <option value="CommandOrControl+Shift+K">Ctrl+Shift+K</option>
+              <option value="off">{t('settings.shortcutOff')}</option>
+            </select>
+          </label>
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button className="btn-ghost px-2 py-1 text-[10.5px]" onClick={() => openModal('toolchain')}>
+              🧰 {t('settings.toolchain')}
+            </button>
+            <button className="btn-ghost px-2 py-1 text-[10.5px]" onClick={() => openModal('stats')}>
+              📊 {t('settings.stats')}
+            </button>
+            <button className="btn-ghost px-2 py-1 text-[10.5px]" onClick={() => openModal('diagnostics')}>
+              🩺 {t('settings.diagnostics')}
+            </button>
+            <button className="btn-ghost px-2 py-1 text-[10.5px]" onClick={() => openModal('backups')}>
+              🗄 {t('settings.backups')}
+            </button>
+            <button className="btn-ghost px-2 py-1 text-[10.5px]" onClick={resetWattPrompt}>
+              ⚡ {t('settings.wattReset')}
+            </button>
+          </div>
+        </div>
 
         {/* 执行器状态 */}
         <div className="space-y-2">
@@ -1004,17 +1294,19 @@ export function SettingsModal({ onClose }) {
         {/* 版本回退 */}
         <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-[12px] font-medium text-slate-200">版本回退</span>
+            <span className="text-[12px] font-medium text-slate-200">{t('settings.versionHistory')}</span>
             <button
               className="btn-ghost"
               disabled={relBusy}
               onClick={async () => {
+                // 8.0.0：检查历史版本时提示 Watt Toolkit（可关闭/不再提示）
+                maybeShowWattPrompt()
                 setRelBusy(true)
                 setRel(await loadReleases())
                 setRelBusy(false)
               }}
             >
-              {relBusy ? '读取中…' : rel ? '刷新' : '加载历史版本'}
+              {relBusy ? '读取中…' : rel ? t('common.refresh') : '加载历史版本'}
             </button>
           </div>
           <p className="mb-2 text-[10.5px] leading-relaxed text-slate-500">
@@ -1022,6 +1314,13 @@ export function SettingsModal({ onClose }) {
             下好后仍需点顶栏「安装并重启」才真正替换 —— 与升级共用同一套确认流程，
             不会自己装上；点下去之后会静默安装完并自动重新打开。
           </p>
+
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-[10.5px] text-amber-200/90">
+            <span>⚡ 历史版本从 GitHub 下载；国内建议开启 Watt Toolkit / Steam++ 加速。</span>
+            <button className="shrink-0 text-[10px] underline" onClick={() => useStore.getState().openWattPrompt()}>
+              查看
+            </button>
+          </div>
 
           {rel?.error && <p className="text-[11px] text-rose-300">{rel.error}</p>}
           {rel && !rel.error && (rel.releases || []).length === 0 && (
@@ -1048,6 +1347,18 @@ export function SettingsModal({ onClose }) {
               正在下载 {update.rollbackTo}… {update.percent || 0}%
             </p>
           )}
+        </div>
+
+        {/* 8.0.0：数据导出 / 导入 */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-ink-600 pt-3">
+          <button className="btn-ghost" onClick={exportWorkspace}>
+            ⭳ {t('settings.exportWorkspace')}
+          </button>
+          <button className="btn-ghost" onClick={() => importRef.current?.click()}>
+            ⭱ {t('settings.importWorkspace')}
+          </button>
+          <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
+          <span className="text-[10px] text-slate-600">{t('workspace.importConfirm')}</span>
         </div>
 
         {/* 数据 */}

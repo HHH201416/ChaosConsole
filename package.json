@@ -1,6 +1,6 @@
 {
   "name": "chaos-console",
-  "version": "7.6.3",
+  "version": "8.0.1",
   "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
   "main": "electron/main.js",
   "author": {
@@ -18,10 +18,16 @@
     "start": "cross-env NODE_ENV=production electron .",
     "icon": "node scripts/make-icon.js",
     "regress": "node scripts/regress.js",
+    "regress:v8": "node scripts/regress-v8.js",
+    "audit:defects": "node scripts/defect-audit.js",
+    "check:i18n": "node scripts/check-i18n.js",
+    "e2e:v8": "node scripts/e2e-v8.js",
     "manifest": "node scripts/nsis-manifest.js",
     "site:data": "node scripts/gen-site-data.js",
+    "site:verify": "node scripts/verify-site-data.js",
+    "site:verify:online": "node scripts/verify-site-data.js --online",
     "site:publish": "node scripts/publish-gitee.js",
-    "site:deploy": "surge docs chaosconsole.surge.sh",
+    "site:deploy": "gh workflow run pages.yml",
     "dist": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish never",
     "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always"
   },
@@ -60,6 +66,7 @@
       "server/**/*",
       "dist/**/*",
       "package.json",
+      "build/icon.png",
       "scripts/deveco-studio.py",
       "!**/*.map"
     ],

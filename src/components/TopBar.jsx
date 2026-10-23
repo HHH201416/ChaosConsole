@@ -1,5 +1,6 @@
 import { useStore } from '../store'
 import { fmtBytes } from '../lib/meta'
+import { useT } from '../lib/useT'
 
 /**
  * 更新控件。状态由 Electron 主进程推送（update:status），这里只负责呈现。
@@ -9,6 +10,7 @@ import { fmtBytes } from '../lib/meta'
  * 不存在静默下载，也不会自动安装。
  */
 function UpdateControl({ onInstallUpdate }) {
+  const t = useT()
   const update = useStore((s) => s.update)
   const checkUpdate = useStore((s) => s.checkUpdate)
   const downloadUpdate = useStore((s) => s.downloadUpdate)
@@ -18,7 +20,7 @@ function UpdateControl({ onInstallUpdate }) {
   if (status === 'checking') {
     return (
       <button className="btn-ghost" disabled>
-        ⟳ 检查中…
+        ⟳ {t('topbar.checking')}
       </button>
     )
   }
@@ -40,8 +42,8 @@ function UpdateControl({ onInstallUpdate }) {
 
   if (status === 'downloaded') {
     return (
-      <button className="btn-success" onClick={onInstallUpdate} title="安装已下载的新版本">
-        ⤓ 安装并重启
+      <button className="btn-success" onClick={onInstallUpdate} title={t('topbar.installTitle')}>
+        ⤓ {t('topbar.installRestart')}
       </button>
     )
   }
@@ -49,7 +51,7 @@ function UpdateControl({ onInstallUpdate }) {
   if (status === 'installing') {
     return (
       <button className="btn-ghost" disabled>
-        正在安装…
+        {t('topbar.installing')}
       </button>
     )
   }
@@ -57,7 +59,7 @@ function UpdateControl({ onInstallUpdate }) {
   if (status === 'available') {
     return (
       <button className="btn-primary" onClick={() => downloadUpdate()} title={update.message}>
-        ↓ 下载 v{update.version}
+        ↓ {t('topbar.download', { version: update.version })}
       </button>
     )
   }
@@ -68,18 +70,19 @@ function UpdateControl({ onInstallUpdate }) {
       className="btn-ghost"
       onClick={checkUpdate}
       disabled={status === 'unsupported'}
-      title={status === 'unsupported' ? update.message : '检查 GitHub Releases 上的新版本'}
+      title={status === 'unsupported' ? update.message : t('topbar.checkTitle')}
     >
-      {status === 'error' ? '⟳ 重试' : '⟳ 检查更新'}
+      {status === 'error' ? `⟳ ${t('topbar.retryCheck')}` : `⟳ ${t('topbar.checkUpdate')}`}
     </button>
   )
 }
 
 function ConnBadge({ conn }) {
+  const t = useT()
   const map = {
-    open: { cls: 'bg-emerald-500', text: '实时连接', textCls: 'text-emerald-400' },
-    connecting: { cls: 'bg-boss animate-pulseDot', text: '连接中', textCls: 'text-boss-strong' },
-    closed: { cls: 'bg-rose-500', text: '已断开', textCls: 'text-rose-400' },
+    open: { cls: 'bg-emerald-500', text: t('topbar.connected'), textCls: 'text-emerald-400' },
+    connecting: { cls: 'bg-boss animate-pulseDot', text: t('topbar.connecting'), textCls: 'text-boss-strong' },
+    closed: { cls: 'bg-rose-500', text: t('topbar.disconnected'), textCls: 'text-rose-400' },
   }
   const m = map[conn] || map.closed
   return (
@@ -102,6 +105,7 @@ function ConnBadge({ conn }) {
  * 生效的那个，否则图标会和肉眼看到的界面对不上。
  */
 function ThemeToggle() {
+  const t = useT()
   const resolvedTheme = useStore((s) => s.resolvedTheme)
   const toggleTheme = useStore((s) => s.toggleTheme)
   const light = resolvedTheme === 'light'
@@ -110,7 +114,7 @@ function ThemeToggle() {
     <button
       className="btn-ghost shrink-0 px-2"
       onClick={toggleTheme}
-      title={light ? '切换到深色主题' : '切换到浅色主题'}
+      title={light ? t('topbar.themeToDark') : t('topbar.themeToLight')}
     >
       {light ? '☾' : '☀'}
     </button>
@@ -133,12 +137,24 @@ function PaneToggle({ onClick, active, title, glyph }) {
   )
 }
 
-export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onInstallUpdate }) {
+export default function TopBar({
+  onNewAgent,
+  onNewTask,
+  onSettings,
+  onMcp,
+  onInstallUpdate,
+  onToolchain,
+  onKnowledge,
+  onChaos,
+  onPalette,
+}) {
+  const t = useT()
   const { conn, system, tasks, logout, sidebarOpen, chatOpen, toggleSidebar, toggleChat } = useStore()
 
   const running = tasks.filter((t) => t.runState === 'running').length
   const version = system?.version ? `v${system.version}` : ''
   const mcpEnabled = system?.mcp?.enabled || 0
+  const chaosUp = Boolean(system?.chaos?.serverUp)
 
   return (
     /* 窄屏时这个 header 是唯一「看不见就点不到」的地方（body 是 overflow:hidden，
@@ -150,7 +166,7 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
         <PaneToggle
           onClick={toggleSidebar}
           active={sidebarOpen}
-          title={sidebarOpen ? '折叠员工列表' : '展开员工列表'}
+          title={sidebarOpen ? t('topbar.collapseSidebar') : t('topbar.expandSidebar')}
           glyph="☰"
         />
         {/* 这几项之间是基线对齐的，外面这层不参与，免得按钮把标题挤歪 */}
@@ -164,7 +180,7 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
           {running > 0 && (
             <span className="hidden shrink-0 items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-300 lg:flex">
               <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
-              {running} 个任务执行中
+              {t('topbar.runningTasks', { n: running })}
             </span>
           )}
         </div>
@@ -176,37 +192,56 @@ export default function TopBar({ onNewAgent, onNewTask, onSettings, onMcp, onIns
 
         <div className="mx-1 h-5 w-px bg-ink-500" />
 
-        <button className="btn-primary" onClick={onNewAgent} title="新增一个 Agent 岗位">
-          <span className="text-sm leading-none">+</span> 新岗位
+        <button className="btn-primary" onClick={onNewAgent} title={t('topbar.newAgentTitle')}>
+          <span className="text-sm leading-none">+</span> {t('topbar.newAgent')}
         </button>
-        <button className="btn-success" onClick={onNewTask} title="创建一个新任务">
-          <span className="text-sm leading-none">+</span> 新任务
+        <button className="btn-success" onClick={onNewTask} title={t('topbar.newTaskTitle')}>
+          <span className="text-sm leading-none">+</span> {t('topbar.newTask')}
+        </button>
+        <button className="btn-ghost" onClick={onMcp} title={t('topbar.mcpTitle')}>
+          ⛓ MCP
+          {mcpEnabled > 0 && <span className="ml-1 font-mono text-[10px] text-emerald-400">{mcpEnabled}</span>}
+        </button>
+        <button className="btn-ghost" onClick={onKnowledge} title={t('kb.subtitle')}>
+          📚
         </button>
         <button
           className="btn-ghost"
-          onClick={onMcp}
-          title="管理 MCP 服务器（让 Agent 能读写文件、查文档、开浏览器）"
+          onClick={onChaos}
+          title={system?.chaos ? `${t('chaos.title')} · ${t('chaos.subtitle')}` : t('chaos.title')}
         >
-          ⛓ MCP
-          {mcpEnabled > 0 && <span className="ml-1 font-mono text-[10px] text-emerald-400">{mcpEnabled}</span>}
+          🌀 {t('topbar.chaos')}
+          {chaosUp && <span className="ml-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />}
         </button>
         <UpdateControl onInstallUpdate={onInstallUpdate} />
 
         <div className="mx-1 h-5 w-px bg-ink-500" />
 
+        <button
+          className="btn-ghost shrink-0 px-2"
+          onClick={onPalette}
+          title={t('topbar.commandPalette')}
+          data-testid="palette-button"
+        >
+          ⌕
+        </button>
+        <button className="btn-ghost shrink-0 px-2" onClick={onToolchain} title={t('topbar.toolchain')}>
+          🧰
+        </button>
+
         <ThemeToggle />
 
-        <button className="btn-ghost" onClick={onSettings} title="运行设置">
+        <button className="btn-ghost" onClick={onSettings} title={t('topbar.settings')}>
           ⚙
         </button>
-        <button className="btn-ghost" onClick={logout} title="退出登录">
-          退出
+        <button className="btn-ghost" onClick={logout} title={t('topbar.logout')}>
+          {t('topbar.logout')}
         </button>
 
         <PaneToggle
           onClick={toggleChat}
           active={chatOpen}
-          title={chatOpen ? '折叠对话面板' : '展开对话面板'}
+          title={chatOpen ? t('topbar.collapseChat') : t('topbar.expandChat')}
           glyph="▤"
         />
       </div>

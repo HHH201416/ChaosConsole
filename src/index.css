@@ -217,6 +217,50 @@ html[data-theme='light'] {
   --login-grid-line: rgba(28, 25, 23, 0.028);
 }
 
+/* 8.0.0：强调色预设。只覆盖 brand 变量，深/浅各一套，其余语义色不动。 */
+html[data-accent='sky'] {
+  --c-boss: 56 189 248;
+  --c-boss-dark: 2 132 199;
+  --c-boss-strong: 125 211 252;
+  --c-boss-on: 8 47 73;
+  --c-boss-dim: 3 105 161;
+}
+html[data-accent='violet'] {
+  --c-boss: 139 92 246;
+  --c-boss-dark: 109 40 217;
+  --c-boss-strong: 196 181 253;
+  --c-boss-on: 30 20 60;
+  --c-boss-dim: 91 33 182;
+}
+html[data-accent='emerald'] {
+  --c-boss: 52 211 153;
+  --c-boss-dark: 5 150 105;
+  --c-boss-strong: 110 231 183;
+  --c-boss-on: 6 45 34;
+  --c-boss-dim: 4 120 87;
+}
+html[data-theme='light'][data-accent='sky'] {
+  --c-boss: 2 132 199;
+  --c-boss-dark: 3 105 161;
+  --c-boss-strong: 3 105 161;
+  --c-boss-on: 255 255 255;
+  --c-boss-dim: 2 132 199;
+}
+html[data-theme='light'][data-accent='violet'] {
+  --c-boss: 109 40 217;
+  --c-boss-dark: 91 33 182;
+  --c-boss-strong: 109 40 217;
+  --c-boss-on: 255 255 255;
+  --c-boss-dim: 109 40 217;
+}
+html[data-theme='light'][data-accent='emerald'] {
+  --c-boss: 4 120 87;
+  --c-boss-dark: 5 150 105;
+  --c-boss-strong: 4 120 87;
+  --c-boss-on: 255 255 255;
+  --c-boss-dim: 4 120 87;
+}
+
 @layer base {
   html,
   body,

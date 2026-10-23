@@ -19,6 +19,7 @@ const os = require('os')
 const { spawn } = require('child_process')
 
 const CONFIG = require('./config')
+const chaosLlm = require('./chaos-llm')
 
 /* ------------------------------------------------------------------ *
  * Claude
@@ -244,7 +245,7 @@ function refreshDevecoModels({ force = false } = {}) {
 
 /** 启动时在后台预热一次，避免第一次打开设置页时模型列表是空的 */
 function warmup() {
-  Promise.all([refreshDevecoModels()]).catch(() => {
+  Promise.all([refreshDevecoModels(), chaosLlm.probe()]).catch(() => {
     /* ignore */
   })
 }
@@ -253,7 +254,38 @@ function warmup() {
  * 汇总
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * 混沌（Chaos）—— 内置本地免费大模型
+ *
+ * 走本机 Ollama 兼容推理服务（127.0.0.1:11434），模型是 Qwen2.5 /
+ * DeepSeek-R1 蒸馏版等免费开源权重，对外统一「混沌」品牌。详见
+ * chaos-llm.js。它没有 CLI、不需要 API Key、完全免费、数据不出本机；
+ * 代价是没有工具调用能力 —— 派给混沌的任务是纯对话式的。
+ * ------------------------------------------------------------------ */
+
+/** 混沌可用的模型：已安装的排前面，没装过的也列出来（引导安装） */
+function listChaosModels() {
+  return chaosLlm.catalogFor(chaosLlm.snapshot().models)
+}
+
+function chaosAvailable() {
+  return chaosLlm.snapshot().up
+}
+
+function defaultChaosModel() {
+  const installed = listChaosModels().filter((m) => m.installed)
+  if (installed.length) return installed[0].id
+  return chaosLlm.DEFAULT_PULL
+}
+
 const EXECUTORS = [
+  {
+    id: 'chaos',
+    label: '混沌 · 本地大模型',
+    hint: '本机推理，完全免费、无需密钥、数据不出电脑',
+    models: () => listChaosModels(),
+    available: chaosAvailable,
+  },
   {
     id: 'claude',
     label: 'Claude Code',
@@ -298,6 +330,15 @@ function isValidModel(executor, model) {
   const id = String(model || '').trim()
   if (!id) return false
 
+  if (executor === 'chaos') {
+    // 目录里的 id 都放行（还没拉取的模型可以先行指定，跑的时候会提示）；
+    // 形式校验挡掉危险字符 —— 这个值能被 API 写进任务/员工记录。
+    if (/^[a-z0-9][\w.:-]{0,80}$/i.test(id)) {
+      return listChaosModels().some((m) => m.id === id)
+    }
+    return false
+  }
+
   if (executor === 'deveco') {
     // deveco 的模型是 vendor/model 形式，列表是动态拉的
     if (!/^[\w.-]+\/[\w.-]+$/.test(id)) return false
@@ -317,6 +358,16 @@ function defaultModel(executor) {
   return models.length ? models[0].id : null
 }
 
+/** 8.0.0：安装/升级工具后清空探测缓存，下一次请求立刻看到新路径 */
+function invalidateCaches() {
+  devecoModelsCache = null
+  devecoModelsAt = 0
+  devecoLastAttemptAt = 0
+  devecoToolsCache = null
+  devecoToolsAt = 0
+  chaosLlm.invalidate()
+}
+
 module.exports = {
   EXECUTORS,
   EXECUTOR_IDS,
@@ -331,5 +382,9 @@ module.exports = {
   devecoEnvNote,
   listDevecoModels,
   refreshDevecoModels,
+  listChaosModels,
+  chaosAvailable,
+  defaultChaosModel,
   warmup,
+  invalidateCaches,
 }

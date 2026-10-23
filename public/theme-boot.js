@@ -47,8 +47,21 @@
     document.documentElement.dataset.themeMode = mode
   }
 
+  function readAccent() {
+    try {
+      var raw = localStorage.getItem(KEY)
+      if (!raw) return 'amber'
+      var parsed = JSON.parse(raw)
+      var accent = parsed && parsed.accent
+      return accent === 'sky' || accent === 'violet' || accent === 'emerald' ? accent : 'amber'
+    } catch (_) {
+      return 'amber'
+    }
+  }
+
   var mode = readMode()
   apply(mode)
+  document.documentElement.dataset.accent = readAccent()
 
   // 「跟随系统」时，系统主题变了要跟着变。显式选了某一档就不挂。
   if (mode === 'system') {

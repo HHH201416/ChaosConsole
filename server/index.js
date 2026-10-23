@@ -30,6 +30,13 @@ const executors = require('./executors')
 const pipeline = require('./pipeline')
 const mcpScope = require('./mcp-scope')
 const runtime = require('./runtime')
+const backup = require('./backup')
+const workspace = require('./workspace')
+const stats = require('./stats')
+const diagnostics = require('./diagnostics')
+const toolchain = require('./toolchain')
+const knowledge = require('./knowledge')
+const chaosLlm = require('./chaos-llm')
 
 /* ------------------------------------------------------------------ *
  * 授权
@@ -77,7 +84,11 @@ function validateExecutorModel(executor, model, fallbackExecutor = 'claude') {
 
 const app = express()
 app.use(cors())
-app.use(express.json({ limit: '2mb' }))
+// 工作区导入 / 知识库导入单独放宽到 50MB；其余接口保持 2MB，避免普通请求被大包拖死
+app.use((req, res, next) => {
+  if (req.path === '/api/workspace/import' || req.path === '/api/kb/import') return next()
+  return express.json({ limit: '2mb' })(req, res, next)
+})
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'chaos-console', version: APP_VERSION })
@@ -128,6 +139,24 @@ app.get('/api/system', requireAuth, (_req, res) => {
       mcpScopeEnabled: store.getSetting('mcpScopeEnabled', '1') === '1',
       mcpStrict: store.getSetting('mcpStrict', '1') === '1',
       mcpHandoffTool: store.getSetting('mcpHandoffTool', '1') === '1',
+      // 8.0.0：派单策略 / 界面语言 / 强调色 / 桌面集成
+      dispatchStrategy: queue.dispatchStrategy(),
+      uiLanguage: store.getSetting('uiLanguage', 'zh'),
+      accent: store.getSetting('accent', 'amber'),
+      trayEnabled: store.getSetting('trayEnabled', '1') === '1',
+      closeToTray: store.getSetting('closeToTray', '0') === '1',
+      notifyOnComplete: store.getSetting('notifyOnComplete', '1') === '1',
+      notifyOnNeedsInput: store.getSetting('notifyOnNeedsInput', '1') === '1',
+      notifyOnlyWhenUnfocused: store.getSetting('notifyOnlyWhenUnfocused', '1') === '1',
+      globalShortcut: store.getSetting('globalShortcut', 'CommandOrControl+Shift+Space'),
+      backupEnabled: store.getSetting('backupEnabled', '1') === '1',
+      backupIntervalHours: Number(store.getSetting('backupIntervalHours', '24')) || 24,
+      backupRetention: Number(store.getSetting('backupRetention', '10')) || 10,
+      // 知识库与混沌本地大模型
+      kb: knowledge.summary(),
+      kbInjectEnabled: store.getSetting('kbInjectEnabled', '1') === '1',
+      chaos: chaosLlm.summary(),
+      chaosGuideDone: store.getSetting('chaosGuideDone', '0') === '1',
     },
   })
 })
@@ -144,6 +173,19 @@ app.post('/api/settings', requireAuth, (req, res) => {
     mcpScopeEnabled,
     mcpStrict,
     mcpHandoffTool,
+    dispatchStrategy,
+    uiLanguage,
+    accent,
+    trayEnabled,
+    closeToTray,
+    notifyOnComplete,
+    notifyOnNeedsInput,
+    notifyOnlyWhenUnfocused,
+    globalShortcut,
+    backupEnabled,
+    backupIntervalHours,
+    backupRetention,
+    kbInjectEnabled,
   } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
@@ -190,6 +232,55 @@ app.post('/api/settings', requireAuth, (req, res) => {
   if (mcpScopeEnabled !== undefined) store.setSetting('mcpScopeEnabled', mcpScopeEnabled ? '1' : '0')
   if (mcpStrict !== undefined) store.setSetting('mcpStrict', mcpStrict ? '1' : '0')
   if (mcpHandoffTool !== undefined) store.setSetting('mcpHandoffTool', mcpHandoffTool ? '1' : '0')
+
+  // ---- 8.0.0 ----
+  if (dispatchStrategy !== undefined) {
+    if (!queue.DISPATCH_STRATEGIES.includes(dispatchStrategy)) {
+      return res.status(400).json({ ok: false, error: '非法的派单策略' })
+    }
+    store.setSetting('dispatchStrategy', dispatchStrategy)
+  }
+  if (uiLanguage !== undefined) {
+    if (!['zh', 'en'].includes(uiLanguage)) return res.status(400).json({ ok: false, error: '非法的界面语言' })
+    store.setSetting('uiLanguage', uiLanguage)
+  }
+  if (accent !== undefined) {
+    if (!['amber', 'sky', 'violet', 'emerald'].includes(accent)) {
+      return res.status(400).json({ ok: false, error: '非法的强调色' })
+    }
+    store.setSetting('accent', accent)
+  }
+  if (trayEnabled !== undefined) store.setSetting('trayEnabled', trayEnabled ? '1' : '0')
+  if (closeToTray !== undefined) store.setSetting('closeToTray', closeToTray ? '1' : '0')
+  if (notifyOnComplete !== undefined) store.setSetting('notifyOnComplete', notifyOnComplete ? '1' : '0')
+  if (notifyOnNeedsInput !== undefined) store.setSetting('notifyOnNeedsInput', notifyOnNeedsInput ? '1' : '0')
+  if (notifyOnlyWhenUnfocused !== undefined) {
+    store.setSetting('notifyOnlyWhenUnfocused', notifyOnlyWhenUnfocused ? '1' : '0')
+  }
+  if (globalShortcut !== undefined) {
+    const allowed = ['CommandOrControl+Shift+Space', 'CommandOrControl+Alt+C', 'CommandOrControl+Shift+K', 'off']
+    if (!allowed.includes(globalShortcut)) {
+      return res.status(400).json({ ok: false, error: '不支持的全局快捷键' })
+    }
+    store.setSetting('globalShortcut', globalShortcut)
+  }
+  if (backupEnabled !== undefined) store.setSetting('backupEnabled', backupEnabled ? '1' : '0')
+  if (backupIntervalHours !== undefined) {
+    const n = Number(backupIntervalHours)
+    if (!Number.isFinite(n) || n < 1 || n > 24 * 30) {
+      return res.status(400).json({ ok: false, error: '备份间隔要在 1 小时到 30 天之间' })
+    }
+    store.setSetting('backupIntervalHours', String(Math.round(n)))
+  }
+  if (backupRetention !== undefined) {
+    const n = Number(backupRetention)
+    if (!Number.isInteger(n) || n < 1 || n > 200) {
+      return res.status(400).json({ ok: false, error: '备份保留数量要在 1 到 200 之间' })
+    }
+    store.setSetting('backupRetention', String(n))
+  }
+  // 知识库命中注入提示词（默认开）
+  if (kbInjectEnabled !== undefined) store.setSetting('kbInjectEnabled', kbInjectEnabled ? '1' : '0')
   res.json({ ok: true })
 })
 
@@ -371,7 +462,18 @@ app.get('/api/tasks', requireAuth, (_req, res) => {
 })
 
 app.post('/api/tasks', requireAuth, (req, res) => {
-  const { title, description, tags, cwd, agentId, executor, model, pipeline: pipelineOverride } = req.body || {}
+  const {
+    title,
+    description,
+    tags,
+    cwd,
+    agentId,
+    executor,
+    model,
+    pipeline: pipelineOverride,
+    parentId,
+    dependsOn,
+  } = req.body || {}
   if (!title || !String(title).trim()) {
     return res.status(400).json({ ok: false, error: '请填写任务名称' })
   }
@@ -381,6 +483,8 @@ app.post('/api/tasks', requireAuth, (req, res) => {
     const reason = pipeline.validate(pipelineOverride, store.listAgents().map((a) => a.role))
     if (reason) return res.status(400).json({ ok: false, error: reason })
   }
+  const relationError = store.validateTaskRelations({ parentId, dependsOn })
+  if (relationError) return res.status(400).json({ ok: false, error: relationError })
   res.json({
     ok: true,
     data: store.createTask({
@@ -392,6 +496,8 @@ app.post('/api/tasks', requireAuth, (req, res) => {
       executor,
       model,
       pipeline: pipelineOverride,
+      parentId: parentId || null,
+      dependsOn: Array.isArray(dependsOn) ? dependsOn : [],
     }),
   })
 })
@@ -407,6 +513,9 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
       messages: store.listMessages(task.id),
       events: store.listEvents(task.id),
       isRunning: runner.isRunning(task.id),
+      // 8.0.0：父子任务
+      parent: task.parentId ? store.getTask(task.parentId) : null,
+      subtasks: store.listTasks().filter((t) => t.parentId === task.id),
     },
   })
 })
@@ -420,6 +529,14 @@ app.patch('/api/tasks/:id', requireAuth, (req, res) => {
   if (patch.pipeline !== undefined) {
     const reason = pipeline.validate(patch.pipeline, store.listAgents().map((a) => a.role))
     if (reason) return res.status(400).json({ ok: false, error: reason })
+  }
+  if (patch.parentId !== undefined || patch.dependsOn !== undefined) {
+    const relationError = store.validateTaskRelations({
+      id: current.id,
+      parentId: patch.parentId !== undefined ? patch.parentId : current.parentId,
+      dependsOn: patch.dependsOn !== undefined ? patch.dependsOn : current.dependsOn,
+    })
+    if (relationError) return res.status(400).json({ ok: false, error: relationError })
   }
   res.json({ ok: true, data: store.updateTask(req.params.id, patch) })
 })
@@ -487,6 +604,270 @@ app.post('/api/tasks/:id/:action', requireAuth, (req, res) => {
   res.json(result || { ok: true })
 })
 
+/* ---- 8.0.0：批量操作 ---- */
+
+app.post('/api/tasks/batch', requireAuth, (req, res) => {
+  const { action, ids, payload } = req.body || {}
+  const allowed = ['start', 'cancel', 'done', 'delete', 'move', 'retry', 'assign']
+  if (!allowed.includes(action)) return res.status(400).json({ ok: false, error: '未知的批量操作' })
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ ok: false, error: '请选择任务' })
+  if (ids.length > 200) return res.status(400).json({ ok: false, error: '一次最多操作 200 个任务' })
+
+  const results = []
+  for (const id of [...new Set(ids.map(String))]) {
+    if (!store.getTask(id)) {
+      results.push({ id, ok: false, error: '任务不存在' })
+      continue
+    }
+    try {
+      let r = { ok: true }
+      if (action === 'start') r = queue.startTask(id)
+      else if (action === 'cancel') r = queue.cancelTask(id)
+      else if (action === 'done') r = queue.markDone(id)
+      else if (action === 'delete') {
+        queue.forgetTask(id)
+        store.deleteTask(id)
+      } else if (action === 'move') {
+        r = queue.moveTask(id, payload?.status)
+      } else if (action === 'retry') {
+        r = queue.setAutoRetry(id, payload?.enabled !== false)
+      } else if (action === 'assign') {
+        const agentId = payload?.agentId || null
+        if (agentId && !store.getAgent(agentId)) r = { ok: false, error: '员工不存在' }
+        else {
+          const before = store.getTask(id)
+          store.updateTask(id, { agentId })
+          if (before?.agentId && before.agentId !== agentId) store.releaseAgentIfIdle(before.agentId)
+        }
+      }
+      if (r && r.ok === false) results.push({ id, ok: false, error: r.error || '操作失败' })
+      else results.push({ id, ok: true })
+    } catch (err) {
+      results.push({ id, ok: false, error: err.message })
+    }
+  }
+  res.json({ ok: true, results })
+})
+
+/* ---- 8.0.0：任务模板 ---- */
+
+function validateTemplate(body, current = {}) {
+  const name = body.name !== undefined ? String(body.name).trim() : current.name
+  if (!name) return '请填写模板名称'
+  const executor = body.executor !== undefined ? body.executor : current.executor
+  const model = body.model !== undefined ? body.model : current.model
+  const bad = validateExecutorModel(executor, model, current.executor || 'claude')
+  if (bad) return bad
+  if (body.pipeline !== undefined) {
+    const reason = pipeline.validate(body.pipeline, store.listAgents().map((a) => a.role))
+    if (reason) return reason
+  }
+  if (body.agentId && !store.getAgent(body.agentId)) return '指定的岗位不存在'
+  return null
+}
+
+app.get('/api/templates', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: store.listTemplates() })
+})
+
+app.post('/api/templates', requireAuth, (req, res) => {
+  const body = req.body || {}
+  const bad = validateTemplate(body)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.createTemplate(body) })
+})
+
+app.patch('/api/templates/:id', requireAuth, (req, res) => {
+  const current = store.getTemplate(req.params.id)
+  if (!current) return res.status(404).json({ ok: false, error: '模板不存在' })
+  const bad = validateTemplate(req.body || {}, current)
+  if (bad) return res.status(400).json({ ok: false, error: bad })
+  res.json({ ok: true, data: store.updateTemplate(req.params.id, req.body || {}) })
+})
+
+app.delete('/api/templates/:id', requireAuth, (req, res) => {
+  if (!store.deleteTemplate(req.params.id)) return res.status(404).json({ ok: false, error: '模板不存在' })
+  res.json({ ok: true })
+})
+
+/* ---- 知识库 ---- */
+
+app.get('/api/kb', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: { bases: knowledge.listKbs(), summary: knowledge.summary() } })
+})
+
+app.post('/api/kb', requireAuth, (req, res) => {
+  const r = knowledge.createKb(req.body || {})
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.patch('/api/kb/:id', requireAuth, (req, res) => {
+  const r = knowledge.updateKb(req.params.id, req.body || {})
+  if (!r.ok) return res.status(404).json(r)
+  res.json(r)
+})
+
+app.delete('/api/kb/:id', requireAuth, (req, res) => {
+  const r = knowledge.deleteKb(req.params.id)
+  if (!r.ok) return res.status(404).json(r)
+  res.json(r)
+})
+
+app.get('/api/kb/:id/docs', requireAuth, (req, res) => {
+  const r = knowledge.listDocs(req.params.id)
+  if (!r.ok) return res.status(404).json(r)
+  res.json(r)
+})
+
+app.post('/api/kb/:id/docs', requireAuth, (req, res) => {
+  const r = knowledge.addDoc(req.params.id, req.body || {})
+  if (!r.ok) return res.status(r.error === '知识库不存在' ? 404 : 400).json(r)
+  res.json(r)
+})
+
+app.delete('/api/kb/:id/docs/:docId', requireAuth, (req, res) => {
+  const r = knowledge.deleteDoc(req.params.id, req.params.docId)
+  if (!r.ok) return res.status(404).json(r)
+  res.json(r)
+})
+
+/** 导出：?format=json|md。走 download() 的 content-disposition 通道 */
+app.get('/api/kb/:id/export', requireAuth, (req, res) => {
+  const r = knowledge.exportKb(req.params.id, req.query.format === 'md' ? 'md' : 'json')
+  if (!r.ok) return res.status(404).json(r)
+  const { filename, contentType, body } = r.data
+  res.setHeader('Content-Type', contentType)
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+  res.send(body)
+})
+
+/** 导入：{targetId?, name?, description?, docs:[{title,content,source?}]} */
+app.post('/api/kb/import', requireAuth, (req, res) => {
+  const body = req.body || {}
+  if (body.chaosKnowledgeBase !== 1 && !Array.isArray(body.docs)) {
+    return res.status(400).json({ ok: false, error: '不是有效的知识库导出文件' })
+  }
+  const r = knowledge.importKb({
+    targetId: body.targetId,
+    name: body.name,
+    description: body.description,
+    docs: body.docs,
+  })
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+/** 检索：{query, limit?}；不指定 kbId 就全库搜 */
+app.post('/api/kb/search', requireAuth, (req, res) => {
+  const { query, limit, kbId } = req.body || {}
+  let hits = knowledge.search(String(query || ''), { limit: Number(limit) || 8 })
+  if (kbId) hits = hits.filter((h) => h.kbId === kbId)
+  res.json({ ok: true, data: hits })
+})
+
+/* ---- 混沌（本地大模型） ---- */
+
+app.get('/api/chaos/status', requireAuth, async (_req, res) => {
+  try {
+    res.json({ ok: true, data: await chaosLlm.statusAsync() })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/chaos/install', requireAuth, (req, res) => {
+  const r = chaosLlm.startInstall({ consent: req.body?.consent === true })
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.post('/api/chaos/pull', requireAuth, (req, res) => {
+  const r = chaosLlm.startPull(String(req.body?.model || ''))
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+app.post('/api/chaos/cancel', requireAuth, (req, res) => {
+  res.json(chaosLlm.cancelJob(req.body?.jobId))
+})
+
+app.post('/api/chaos/guide-done', requireAuth, (_req, res) => {
+  store.setSetting('chaosGuideDone', '1')
+  res.json({ ok: true })
+})
+
+/* ---- 8.0.0：全局搜索 ---- */
+
+function escapeLike(text) {
+  return String(text).replace(/[\\%_]/g, '\\$&')
+}
+
+app.get('/api/search', requireAuth, (req, res) => {
+  const raw = String(req.query.q || '').trim().slice(0, 100)
+  if (raw.length < 2) {
+    return res.json({ ok: true, data: { tasks: [], agents: [], messages: [], events: [] } })
+  }
+  const like = `%${escapeLike(raw)}%`
+  const lower = raw.toLowerCase()
+
+  const tasks = db
+    .all(
+      `SELECT id FROM tasks
+       WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\'
+       ORDER BY updated_at DESC LIMIT 10`,
+      [like, like, like],
+    )
+    .map((r) => store.getTask(r.id))
+    .filter(Boolean)
+
+  const agents = store
+    .listAgents()
+    .filter((a) => `${a.functionLabel} ${a.role} ${a.name}`.toLowerCase().includes(lower))
+    .slice(0, 10)
+
+  const messages = db
+    .all(
+      `SELECT id, task_id, content, created_at FROM messages
+       WHERE content LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 10`,
+      [like],
+    )
+    .map((m) => {
+      const task = store.getTask(m.task_id)
+      return {
+        id: m.id,
+        taskId: m.task_id,
+        taskTitle: task ? task.title : '',
+        content: String(m.content || '').slice(0, 160),
+        createdAt: m.created_at,
+      }
+    })
+    .filter((m) => m.taskTitle)
+
+  const events = db
+    .all(
+      `SELECT id, task_id, type, name, content, created_at FROM events
+       WHERE name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'
+       ORDER BY id DESC LIMIT 10`,
+      [like, like],
+    )
+    .map((e) => {
+      const task = store.getTask(e.task_id)
+      return {
+        id: e.id,
+        taskId: e.task_id,
+        taskTitle: task ? task.title : '',
+        type: e.type,
+        name: e.name,
+        content: String(e.content || '').slice(0, 160),
+        createdAt: e.created_at,
+      }
+    })
+    .filter((e) => e.taskTitle)
+
+  res.json({ ok: true, data: { tasks, agents, messages, events } })
+})
+
 /* ---- 更新 ---- */
 
 let updateHandler = null
@@ -522,6 +903,13 @@ function setReleasesHandler(fn) {
 let rollbackHandler = null
 function setRollbackHandler(fn) {
   rollbackHandler = fn
+}
+
+/* 8.0.0：桌面能力（下载 / 打开外链 / 安装器）由 Electron 主进程注入。
+   纯 Node 模式下为 null，工具链只做检测，不做下载安装。 */
+function setDesktopHost(host) {
+  toolchain.setDesktopHost(host)
+  chaosLlm.setDesktopHost(host)
 }
 
 const UPDATER_UNAVAILABLE = {
@@ -628,6 +1016,125 @@ app.get('/api/update/status', requireAuth, (_req, res) => {
   res.json({ ok: true, data: updateState })
 })
 
+/* ---- 8.0.0：备份 ---- */
+
+app.get('/api/backups', requireAuth, (_req, res) => {
+  res.json({
+    ok: true,
+    data: {
+      dir: backup.DIR,
+      enabled: store.getSetting('backupEnabled', '1') === '1',
+      intervalHours: Number(store.getSetting('backupIntervalHours', '24')) || 24,
+      retention: Number(store.getSetting('backupRetention', '10')) || 10,
+      backups: backup.list(),
+    },
+  })
+})
+
+app.post('/api/backups', requireAuth, (_req, res) => {
+  try {
+    const meta = backup.create('manual')
+    res.json({ ok: true, data: meta })
+  } catch (err) {
+    diagnostics.recordError('backup.create', err)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/backups/:name/restore', requireAuth, (req, res) => {
+  const name = String(req.params.name || '')
+  if (!backup.validateName(name)) return res.status(400).json({ ok: false, error: '非法的备份文件名' })
+  for (const t of store.listTasks()) queue.forgetTask(t.id)
+  try {
+    backup.restore(name)
+    queue.recoverOnStartup()
+    res.json({ ok: true, data: { restored: name } })
+  } catch (err) {
+    diagnostics.recordError('backup.restore', err)
+    res.status(400).json({ ok: false, error: err.message })
+  }
+})
+
+app.delete('/api/backups/:name', requireAuth, (req, res) => {
+  const name = String(req.params.name || '')
+  if (!backup.validateName(name)) return res.status(400).json({ ok: false, error: '非法的备份文件名' })
+  res.json({ ok: backup.remove(name) })
+})
+
+/* ---- 8.0.0：工作区导出 / 导入 ---- */
+
+app.get('/api/workspace/export', requireAuth, (_req, res) => {
+  const data = workspace.exportWorkspace()
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="chaos-workspace-${stamp}.json"`)
+  res.send(JSON.stringify(data, null, 2))
+})
+
+app.post('/api/workspace/import', requireAuth, express.json({ limit: '50mb' }), (req, res) => {
+  try {
+    const result = workspace.importWorkspace(req.body)
+    res.json({ ok: true, data: result })
+  } catch (err) {
+    diagnostics.recordError('workspace.import', err)
+    res.status(400).json({ ok: false, error: err.message })
+  }
+})
+
+/* ---- 8.0.0：工具链检测 / 一键安装 ---- */
+
+app.get('/api/toolchain', requireAuth, async (_req, res) => {
+  try {
+    const data = await toolchain.detect()
+    res.json({ ok: true, data: { ...data, activeJob: toolchain.status().activeJob, history: toolchain.status().history } })
+  } catch (err) {
+    diagnostics.recordError('toolchain.detect', err)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/toolchain/refresh', requireAuth, async (_req, res) => {
+  toolchain.invalidate()
+  try {
+    res.json({ ok: true, data: await toolchain.detect(true) })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.post('/api/toolchain/install', requireAuth, (req, res) => {
+  const { tool, consent } = req.body || {}
+  const result = toolchain.startInstall(tool, { consent })
+  if (!result.ok) return res.status(400).json(result)
+  res.json(result)
+})
+
+app.post('/api/toolchain/cancel', requireAuth, (req, res) => {
+  res.json(toolchain.cancel((req.body || {}).jobId))
+})
+
+/* ---- 8.0.0：统计 / 诊断 ---- */
+
+app.get('/api/stats', requireAuth, (req, res) => {
+  try {
+    res.json({ ok: true, data: stats.computeStats(req.query.days || '30') })
+  } catch (err) {
+    diagnostics.recordError('stats', err)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.get('/api/diagnostics', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: diagnostics.snapshot() })
+})
+
+app.get('/api/diagnostics/export', requireAuth, (_req, res) => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="chaos-diagnostics-${stamp}.json"`)
+  res.send(diagnostics.exportJson())
+})
+
 /* ---- 静态资源（生产环境由 Electron 直接访问本服务） ---- */
 
 const DIST_DIR = path.join(CONFIG.ROOT, 'dist')
@@ -729,6 +1236,15 @@ const BRIDGED = [
   'event:added',
   'task:history-cleared',
   'tasks:cleared',
+  'template:updated',
+  'template:deleted',
+  'workspace:imported',
+  'toolchain:job',
+  'toolchain:log',
+  'toolchain:changed',
+  'kb:changed',
+  'chaos:job',
+  'chaos:log',
 ]
 for (const evt of BRIDGED) {
   store.bus.on(evt, (payload) => broadcast(evt, payload))
@@ -788,6 +1304,20 @@ async function start() {
   // runner / mcp-scope 要拼「换岗」MCP 工具的地址，端口是运行时定的（可能被占用后 +1）
   runtime.setPort(actualPort)
 
+  // 8.0.0：诊断上下文 + 自动备份
+  diagnostics.setContext({
+    getWsClients: () => wss.clients.size,
+    getPort: () => actualPort,
+    getUpdateStatus: () => {
+      try {
+        return updateStatusHandler ? updateStatusHandler() : updateState
+      } catch (_) {
+        return updateState
+      }
+    },
+  })
+  backup.startScheduler()
+
   // 后台预热 deveco 模型列表：这个命令要起一个 node 进程，放在请求路径上会拖慢首屏
   executors.warmup()
 
@@ -831,6 +1361,7 @@ async function start() {
 
 async function stop() {
   clearInterval(heartbeat)
+  backup.stopScheduler()
   for (const id of runner.runningTaskIds()) runner.cancel(id)
 
   // WebSocketServer 是挂在同一个 http server 上的，而且升级过的连接不受
@@ -883,6 +1414,13 @@ function getPort() {
   return actualPort
 }
 
+process.on('uncaughtException', (err) => {
+  diagnostics.recordError('uncaughtException', err)
+})
+process.on('unhandledRejection', (err) => {
+  diagnostics.recordError('unhandledRejection', err)
+})
+
 module.exports = {
   start,
   stop,
@@ -893,6 +1431,7 @@ module.exports = {
   setUpdateStatusHandler,
   setReleasesHandler,
   setRollbackHandler,
+  setDesktopHost,
   broadcast,
   app,
   server,

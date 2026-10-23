@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { AGENT_STATUS_META, roleColor, STAGE_KEYS, stageLabel } from '../lib/meta'
+import { AGENT_STATUS_META, roleColor } from '../lib/meta'
+import { useT } from '../lib/useT'
+import PipelineEditor from './PipelineEditor'
 
 /** 悬停提示。展开态和折叠态共用一份，免得两边描述的岗位信息各说各话。 */
 const agentHint = (agent) =>
@@ -70,6 +72,7 @@ function AgentRailRow({ agent, onClick }) {
 }
 
 function AgentDetail({ agent, onClose }) {
+  const t = useT()
   const deleteAgent = useStore((s) => s.deleteAgent)
   const saveAgentConfig = useStore((s) => s.saveAgentConfig)
   const mcpServers = useStore((s) => s.mcpServers)
@@ -77,30 +80,30 @@ function AgentDetail({ agent, onClose }) {
 
   // 挂载 / 流水线的草稿：勾完点「保存」才写库（避免每点一下都发请求）
   const [mcpDraft, setMcpDraft] = useState(agent.mcp || [])
-  const [customPipe, setCustomPipe] = useState(Boolean((agent.pipeline || []).length))
-  const [pipeDraft, setPipeDraft] = useState(() => {
-    const map = {}
-    for (const item of agent.pipeline || []) map[item.stage] = item.role
-    return map
-  })
+  const [pipeline, setPipeline] = useState(agent.pipeline || [])
   const [saving, setSaving] = useState(false)
 
-  // MCP 目录可能还没加载过（面板没开过）—— 直接进岗位详情时要能拿到列表
+  // MCP 目录可能还没加载过（面板没开过）—— 直接进岗位详情时要能拿到列表。
+  // 用 ref 只触发一次：没有可挂载服务器时 mcpServers.length 恒为 0，
+  // 依赖 mcpLoading 的写法会在 loading 结束后来回触发，无限打接口。
   const mcpLoading = useStore((s) => s.mcpLoading)
   const loadMcp = useStore((s) => s.loadMcp)
+  const mcpRequested = useRef(false)
   useEffect(() => {
-    if (!mcpServers.length && !mcpLoading) loadMcp()
+    if (mcpRequested.current || mcpServers.length || mcpLoading) return
+    mcpRequested.current = true
+    loadMcp()
   }, [mcpServers.length, mcpLoading, loadMcp])
 
   const roles = [...new Set(agents.map((a) => a.role))]
-  const labelOfRole = (role) => (agents.find((a) => a.role === role) || {}).functionLabel || role
+  const roleOptions = roles.map((r) => ({
+    role: r,
+    functionLabel: (agents.find((a) => a.role === r) || {}).functionLabel || r,
+  }))
   const toggles = mcpServers.filter((s) => !s.internal)
 
   const save = async () => {
     setSaving(true)
-    const pipeline = customPipe
-      ? STAGE_KEYS.filter((k) => pipeDraft[k]).map((k) => ({ stage: k, role: pipeDraft[k] }))
-      : []
     await saveAgentConfig(agent.id, { mcp: mcpDraft, pipeline })
     setSaving(false)
   }
@@ -128,17 +131,17 @@ function AgentDetail({ agent, onClose }) {
             </p>
           </div>
           <button className="btn-ghost" onClick={onClose}>
-            关闭
+            {t('common.close')}
           </button>
         </div>
 
-        <div className="panel-title mb-1.5">系统提示词</div>
+        <div className="panel-title mb-1.5">{t('agent.prompt')}</div>
         <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-ink-500 bg-ink-900 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
           {agent.systemPrompt || '（未设置）'}
         </pre>
 
         {/* 该岗位挂载的 MCP：每个任务起跑时只把这些工具给它 */}
-        <div className="panel-title mb-1.5 mt-4">这个岗位能用的 MCP</div>
+        <div className="panel-title mb-1.5 mt-4">{t('agent.mcp')}</div>
         <div className="space-y-1.5 rounded-lg border border-ink-500 bg-ink-900 p-3">
           {toggles.length === 0 && <p className="text-[11px] text-slate-500">MCP 面板里还没有可挂载的服务器。</p>}
           {toggles.map((s) => (
@@ -165,39 +168,13 @@ function AgentDetail({ agent, onClose }) {
           ))}
         </div>
 
-        {/* 该岗位的默认流水线 */}
-        <div className="panel-title mb-1.5 mt-4">默认阶段流水线</div>
+        {/* 该岗位的默认流水线（8.0.0：可视化排序） */}
+        <div className="panel-title mb-1.5 mt-4">{t('agent.pipeline')}</div>
         <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
-          <label className="flex cursor-pointer items-center gap-2 text-[11.5px] text-slate-200">
-            <input
-              type="checkbox"
-              className="h-3.5 w-3.5 accent-boss"
-              checked={customPipe}
-              onChange={(e) => setCustomPipe(e.target.checked)}
-            />
-            自定义（不勾则跟随执行器默认：claude 走 方案→编码→构建→测试，deveco 走鸿蒙四岗）
-          </label>
-          {customPipe && (
-            <div className="mt-2 space-y-1.5">
-              {STAGE_KEYS.map((key) => (
-                <div key={key} className="flex items-center gap-2">
-                  <span className="w-10 text-[11px] text-slate-400">{stageLabel(key)}</span>
-                  <select
-                    className="field flex-1"
-                    value={pipeDraft[key] || ''}
-                    onChange={(e) => setPipeDraft((prev) => ({ ...prev, [key]: e.target.value }))}
-                  >
-                    <option value="">（跳过这个阶段）</option>
-                    {roles.map((r) => (
-                      <option key={r} value={r}>
-                        {labelOfRole(r)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
-          )}
+          <PipelineEditor value={pipeline} roles={roleOptions} onChange={setPipeline} />
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
+            {t('agent.customPipeline')}
+          </p>
         </div>
 
         <div className="mt-4 flex items-center justify-between">
@@ -210,10 +187,10 @@ function AgentDetail({ agent, onClose }) {
               }
             }}
           >
-            解雇
+            {t('agent.fire')}
           </button>
           <button className="btn-primary" disabled={saving} onClick={save}>
-            {saving ? '保存中…' : '保存'}
+            {saving ? t('common.loading') : t('common.save')}
           </button>
         </div>
       </div>
@@ -222,22 +199,25 @@ function AgentDetail({ agent, onClose }) {
 }
 
 export default function AgentSidebar({ onNewAgent }) {
+  const t = useT()
   const agents = useStore((s) => s.agents)
   const tasks = useStore((s) => s.tasks)
   const open = useStore((s) => s.sidebarOpen)
-  const [openAgent, setOpenAgent] = useState(null)
+  const openAgentId = useStore((s) => s.agentDetailId)
+  const openAgentDetail = useStore((s) => s.openAgentDetail)
+  const closeAgentDetail = useStore((s) => s.closeAgentDetail)
 
   const activeCount = (agentId) =>
-    tasks.filter((t) => t.agentId === agentId && t.status !== 'complete').length
+    tasks.filter((task) => task.agentId === agentId && task.status !== 'complete').length
 
   const working = agents.filter((a) => a.status === 'working').length
-  const current = openAgent ? agents.find((a) => a.id === openAgent.id) : null
+  const current = openAgentId ? agents.find((a) => a.id === openAgentId) : null
 
   const newAgentBtn = (
     <button
       className="rounded px-1.5 py-0.5 text-xs text-slate-500 hover:bg-ink-600 hover:text-slate-100"
       onClick={onNewAgent}
-      title="新增一个岗位"
+      title={t('agent.add')}
     >
       +
     </button>
@@ -258,10 +238,10 @@ export default function AgentSidebar({ onNewAgent }) {
         <>
           <div className="flex items-center justify-between px-3 py-2.5">
             <div className="panel-title">
-              员工 <span className="text-slate-400">{agents.length}</span>
+              {t('agent.employees')} <span className="text-slate-400">{agents.length}</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-sky-400">{working} 忙碌</span>
+              <span className="text-[10px] text-sky-400">{t('agent.busy', { n: working })}</span>
               {newAgentBtn}
             </div>
           </div>
@@ -272,12 +252,12 @@ export default function AgentSidebar({ onNewAgent }) {
                 key={a.id}
                 agent={a}
                 taskCount={activeCount(a.id)}
-                selected={openAgent?.id === a.id}
-                onClick={() => setOpenAgent(a)}
+                selected={openAgentId === a.id}
+                onClick={() => openAgentDetail(a.id)}
               />
             ))}
             {agents.length === 0 && (
-              <p className="px-2 py-6 text-center text-xs text-slate-600">还没有岗位，点右上角「+ 新岗位」添加。</p>
+              <p className="px-2 py-6 text-center text-xs text-slate-600">{t('agent.empty')}</p>
             )}
           </div>
         </>
@@ -294,13 +274,13 @@ export default function AgentSidebar({ onNewAgent }) {
           </div>
           <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto py-2">
             {agents.map((a) => (
-              <AgentRailRow key={a.id} agent={a} onClick={() => setOpenAgent(a)} />
+              <AgentRailRow key={a.id} agent={a} onClick={() => openAgentDetail(a.id)} />
             ))}
           </div>
         </>
       )}
 
-      {current && <AgentDetail agent={current} onClose={() => setOpenAgent(null)} />}
+      {current && <AgentDetail agent={current} onClose={closeAgentDetail} />}
     </aside>
   )
 }

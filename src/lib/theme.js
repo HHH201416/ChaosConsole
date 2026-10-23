@@ -30,6 +30,15 @@ export function resolveTheme(mode) {
 }
 
 /** 把解析结果写到 <html data-theme> 上 —— 整个主题切换就靠这一个属性。 */
+export const ACCENTS = ['amber', 'sky', 'violet', 'emerald']
+
+/** 8.0.0：强调色只改 CSS 变量，深/浅主题各自有一套值（见 index.css） */
+export function applyAccent(accent) {
+  const next = ACCENTS.includes(accent) ? accent : 'amber'
+  document.documentElement.dataset.accent = next
+  return next
+}
+
 export function applyTheme(mode) {
   const resolved = resolveTheme(mode)
   const root = document.documentElement

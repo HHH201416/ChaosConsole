@@ -93,6 +93,42 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- 8.0.0：任务模板（新建任务时一键套用）
+CREATE TABLE IF NOT EXISTS task_templates (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  tags        TEXT NOT NULL DEFAULT '[]',
+  cwd         TEXT NOT NULL DEFAULT '',
+  agent_id    TEXT,
+  executor    TEXT NOT NULL DEFAULT '',
+  model       TEXT NOT NULL DEFAULT '',
+  pipeline    TEXT NOT NULL DEFAULT '[]',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+-- 知识库（应用内建库、导入/导出、检索；runner 组提示词时注入命中片段）
+CREATE TABLE IF NOT EXISTS knowledge_bases (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_docs (
+  id         TEXT PRIMARY KEY,
+  kb_id      TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  source     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_kb ON knowledge_docs(kb_id);
+
 CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_task   ON events(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
@@ -193,6 +229,10 @@ function migrate() {
     ['tasks', 'next_retry_at', 'INTEGER NOT NULL DEFAULT 0'],
     ['tasks', 'handoff_note', "TEXT NOT NULL DEFAULT ''"],
     ['tasks', 'handoff_at', 'INTEGER NOT NULL DEFAULT 0'],
+    // 8.0.0：父子任务、依赖、完成时间
+    ['tasks', 'parent_id', 'TEXT'],
+    ['tasks', 'depends_on', "TEXT NOT NULL DEFAULT '[]'"],
+    ['tasks', 'completed_at', 'INTEGER NOT NULL DEFAULT 0'],
   ]
 
   for (const [table, column, decl] of wanted) {
@@ -202,6 +242,13 @@ function migrate() {
       console.log(`[db] 迁移: ${table}.${column} 已添加`)
     }
   }
+
+  // 索引必须等列补完再建（旧库的 tasks 表在迁移前没有这些列）
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed_at)')
+
+  // 老任务的 completed_at 用 updated_at 兜底，统计口径才完整
+  db.exec("UPDATE tasks SET completed_at = updated_at WHERE status = 'complete' AND completed_at = 0")
 }
 
 /* ------------------------------------------------------------------ *
@@ -248,9 +295,100 @@ function flush() {
 
 /** 把 db 整个重置（用于「清空数据」调试入口） */
 function reset() {
-  db.exec('DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS tasks; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS settings;')
+  db.exec(
+    'DROP TABLE IF EXISTS agents; DROP TABLE IF EXISTS tasks; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS settings; DROP TABLE IF EXISTS task_templates;',
+  )
   db.exec(SCHEMA)
   persistNow()
 }
 
-module.exports = { init, all, get, run, insert, flush, reset, persistNow }
+/* ------------------------------------------------------------------ *
+ * 8.0.0：事务 / 备份 / 恢复
+ * ------------------------------------------------------------------ */
+
+/** 在一个事务里执行 fn；抛错则回滚（导入、恢复这类多表操作必须用） */
+function transaction(fn) {
+  if (!db) throw new Error('数据库尚未初始化')
+  db.exec('BEGIN')
+  try {
+    const result = fn()
+    db.exec('COMMIT')
+    scheduleSave()
+    return result
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK')
+    } catch (_) {
+      /* ignore */
+    }
+    throw err
+  }
+}
+
+/** 当前数据库的完整镜像（备份用） */
+function exportBuffer() {
+  if (!db) throw new Error('数据库尚未初始化')
+  return Buffer.from(db.export())
+}
+
+/** 校验一个 .db 文件是不是完整、可读的 SQLite 库 */
+function inspectFile(file) {
+  try {
+    const bytes = new Uint8Array(fs.readFileSync(file))
+    const candidate = new SQL.Database(bytes)
+    let value = ''
+    try {
+      const res = candidate.exec('PRAGMA integrity_check')
+      value = String(res?.[0]?.values?.[0]?.[0] ?? '')
+    } finally {
+      candidate.close()
+    }
+    return { ok: value === 'ok', result: value || 'unknown' }
+  } catch (err) {
+    return { ok: false, result: err.message }
+  }
+}
+
+/** 用备份文件替换当前库；先做完整性校验，再迁移、落盘 */
+function restoreFromFile(file) {
+  const bytes = new Uint8Array(fs.readFileSync(file))
+  const candidate = new SQL.Database(bytes)
+  let value = ''
+  try {
+    const res = candidate.exec('PRAGMA integrity_check')
+    value = String(res?.[0]?.values?.[0]?.[0] ?? '')
+  } catch (err) {
+    candidate.close()
+    throw new Error(`备份无法打开：${err.message}`)
+  }
+  if (value !== 'ok') {
+    candidate.close()
+    throw new Error(`备份完整性校验失败：${value || 'unknown'}`)
+  }
+  if (db) {
+    try {
+      db.close()
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  db = candidate
+  migrate()
+  persistNow()
+  return true
+}
+
+module.exports = {
+  init,
+  all,
+  get,
+  run,
+  insert,
+  flush,
+  reset,
+  persistNow,
+  transaction,
+  exportBuffer,
+  inspectFile,
+  restoreFromFile,
+}

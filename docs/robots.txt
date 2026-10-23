@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hhh201416.github.io/ChaosConsole/sitemap.xml

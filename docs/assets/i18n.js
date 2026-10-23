@@ -1,0 +1,406 @@
+/*!
+ * ChaosConsole static site — Chinese / English dictionary.
+ *
+ * This file is deliberately dependency-free and works in two places:
+ *   - the browser, where it exposes `window.ChaosI18n`
+ *   - Node, where `require()` returns the raw `{ zh, en }` tables so
+ *     scripts/verify-site-data.js can check that both languages stay in sync.
+ *
+ * Only static interface copy lives here. Release data is never translated.
+ */
+(function (root, factory) {
+  'use strict'
+  var messages = factory()
+  var api = {
+    messages: messages,
+    languages: ['zh', 'en'],
+    /**
+     * Translate a key, replacing `{name}` placeholders.
+     * Unknown keys fall back to Chinese and finally to the key itself.
+     */
+    translate: function (lang, key, vars) {
+      var table = messages[lang] || messages.zh
+      var value = table[key]
+      if (value == null) value = messages.zh[key]
+      if (value == null) return key
+      return String(value).replace(/\{(\w+)\}/g, function (match, name) {
+        return vars && Object.prototype.hasOwnProperty.call(vars, name)
+          ? String(vars[name])
+          : match
+      })
+    },
+    /**
+     * Default to Chinese. English is used when the browser's first language
+     * is English. A saved choice always wins.
+     */
+    detect: function () {
+      var saved = ''
+      try {
+        saved = root.localStorage ? root.localStorage.getItem('chaosconsole.site.lang') : ''
+      } catch (_) {}
+      if (saved === 'zh' || saved === 'en') return saved
+      var nav = root.navigator || {}
+      var langs = nav.languages && nav.languages.length ? nav.languages : [nav.language || '']
+      for (var i = 0; i < langs.length; i++) {
+        if (/^en(?:[-_]|$)/i.test(String(langs[i] || ''))) return 'en'
+        if (String(langs[i] || '').trim()) break
+      }
+      return 'zh'
+    },
+  }
+
+  if (typeof module === 'object' && module.exports) module.exports = messages
+  else root.ChaosI18n = api
+})(typeof window !== 'undefined' ? window : globalThis, function () {
+  'use strict'
+
+  return {
+    zh: {
+      'meta.title': 'ChaosConsole · AI Agent 开发控制台下载',
+      'meta.description': 'ChaosConsole：21 个 AI 岗位协作的 Windows 桌面控制台。提供 GitHub Releases 与 Gitee 双线路下载，附 SHA-512 / SHA-256 校验值。',
+
+      'skip.link': '跳到主要内容',
+      'nav.primary': '主导航',
+      'nav.brandSub': 'AI Agent 开发控制台',
+      'nav.download': '下载',
+      'nav.features': '功能',
+      'nav.install': '安装',
+      'nav.versions': '历史版本',
+      'nav.github': 'GitHub',
+      'nav.menu': '打开导航菜单',
+      'nav.menuClose': '关闭导航菜单',
+      'nav.language': '语言 / Language',
+      'lang.zh': '中文',
+      'lang.en': 'EN',
+
+      'hero.osWarn': '<b>当前只提供 Windows 版</b>（Windows 10/11 64 位）。你现在的系统看起来不是 Windows，仍然可以下载，但无法安装。',
+      'hero.pill': '最新版 {version}',
+      'hero.pillPending': 'v{version} · 安装包待发布',
+      'hero.title': '把 21 个 AI 岗位<br>编进<em>一个控制台</em>',
+      'hero.lede': '需求进来，自动派给对的岗位；<b>跑挂了能中途换岗</b>，不用从头再来。每个岗位只挂它该用的 MCP 工具。<br>Windows 桌面应用，下载即用，<b>免费</b>。',
+      'hero.primaryGithub': 'GitHub 下载',
+      'hero.primaryGitee': 'Gitee 下载（国内）',
+      'hero.githubUnavailable': 'GitHub 线路暂不可用',
+      'hero.giteeUnavailable': 'Gitee 线路暂不可用',
+      'hero.latestLabel': '当前版本',
+      'hero.metaLabel': '版本信息',
+      'hero.published': '发布于 {date}',
+      'hero.notPublished': '尚未发布',
+      'hero.loadError': '版本数据不可用',
+      'hero.sizeLabel': '安装包体积',
+      'hero.sizePending': '待构建',
+      'hero.metaPlatform': 'Windows 10 / 11 · 64 位',
+      'hero.metaAutoUpdate': '安装后自动更新',
+      'hero.metaPending': '安装包构建中',
+      'hero.ctaNote': '全球线路走 GitHub，中国大陆建议走 Gitee。两个来源是不同地址，不是镜像跳转。',
+      'hero.previousStable': '可以先下载上一个稳定版 {version}。',
+      'hero.viewVersions': '查看历史版本',
+
+      'stats.roles': '个 AI 岗位',
+      'stats.stages': '阶段流水线',
+      'stats.gates': '条门禁用例',
+      'stats.versions': '个已发布版本',
+
+      'download.kicker': 'Download',
+      'download.title': '两条真实下载线路',
+      'download.sub': 'GitHub Releases 面向全球，Gitee 面向中国大陆。没有假的镜像跳转：两条线路分别指向各自的发行版资产。',
+      'download.githubTitle': 'GitHub Releases',
+      'download.githubDesc': '全球线路。适合能正常访问 GitHub 的用户，也是自动更新的默认来源。',
+      'download.githubSpeed': '全球可达 · 官方源',
+      'download.githubBtn': '从 GitHub 下载',
+      'download.githubUnavailable': 'GitHub 线路暂不可用',
+      'download.giteeTitle': 'Gitee 发行版',
+      'download.giteeDesc': '中国大陆线路。Gitee 的附件走国内 CDN，直连通常更快，无需额外加速。',
+      'download.giteeSpeed': '国内直连 · 独立资产',
+      'download.giteeBtn': '从 Gitee 下载',
+      'download.giteeUnavailable': 'Gitee 线路暂不可用',
+      'download.pendingTitle': '{version} 安装包正在构建',
+      'download.pendingDesc': '当前 {version} 的安装包尚未上传。版本历史和校验值会在构建完成后自动更新；你也可以先从下方选择上一个稳定版。',
+      'download.hashTitle': '核对安装包',
+      'download.hashDesc': '下载完成后，用下面的 SHA-512 或 SHA-256 与文件实际值比对。程序内的自动更新也使用 SHA-512 校验。',
+      'download.sha512': 'SHA-512',
+      'download.sha256': 'SHA-256',
+      'download.copy': '复制',
+      'download.copySha512': '复制 SHA-512',
+      'download.copySha256': '复制 SHA-256',
+      'download.copied': '已复制',
+      'download.hashPending': '待安装包发布后生成',
+      'download.hashUnavailable': '该版本未提供',
+      'download.startedGithub': '已开始从 GitHub 下载',
+      'download.startedGitee': '已开始从 Gitee 下载',
+
+      'toast.copied': '校验值已复制到剪贴板',
+      'toast.copyFailed': '复制失败，请手动选中复制',
+
+      'features.kicker': 'Features',
+      'features.title': '8.0.0 新增了什么',
+      'features.sub': '从更快地找到任务，到更稳地管好数据：这一版把日常操作里的摩擦点逐一补上。',
+      'feature.command.title': '命令面板',
+      'feature.command.desc': 'Ctrl+K 打开全局搜索，快速跳转任务、岗位、设置和常用动作，不用在多层菜单里找。',
+      'feature.templates.title': '任务模板',
+      'feature.templates.desc': '把常用的标题、描述、标签、执行器、模型和流水线保存成模板，下次一键套用。',
+      'feature.bulk.title': '批量操作',
+      'feature.bulk.desc': '在看板中多选任务，批量启动、取消、完成、移动或删除，整理积压任务更快。',
+      'feature.deps.title': '任务依赖',
+      'feature.deps.desc': '给任务设置前置依赖；依赖未完成时不会派单，完成后自动继续，卡片上会显示阻塞数量。',
+      'feature.dispatch.title': '派单策略',
+      'feature.dispatch.desc': '支持关键词匹配、最少忙碌、轮询三种策略，可按团队习惯选择新任务交给谁。',
+      'feature.pipeline.title': '流水线编辑器',
+      'feature.pipeline.desc': '用可视化编辑器调整阶段与岗位的对应关系，方案、编码、构建、测试按你的流程接力。',
+      'feature.export.title': '导出 / 导入',
+      'feature.export.desc': '把岗位、任务、对话、事件和模板导出为 JSON，换机或重建工作区时一键导入。',
+      'feature.backups.title': '自动备份',
+      'feature.backups.desc': '支持自动与手动备份、恢复和保留策略；恢复前会先停掉运行中的任务，避免数据写坏。',
+      'feature.stats.title': '统计面板',
+      'feature.stats.desc': '查看任务总量、完成率、阻塞数、执行器分布和阶段耗时，纯本地 SVG 绘制，不依赖外部图表库。',
+      'feature.diagnostics.title': '健康诊断',
+      'feature.diagnostics.desc': '一键检查数据库、执行器、工具链和配置，导出诊断包，定位问题时不用靠猜。',
+      'feature.tray.title': '托盘与通知',
+      'feature.tray.desc': '关闭窗口可最小化到系统托盘；任务完成或需要回复时发送通知，并可设置为仅窗口不在前台时提醒。',
+      'feature.bilingual.title': '中英双语',
+      'feature.bilingual.desc': '界面静态文案支持中文和 English 即时切换，语言选择保存在本机。',
+      'feature.accent.title': '主题强调色',
+      'feature.accent.desc': '在深色 / 浅色主题之外，还能选择不同的强调色，让控制台更符合你的习惯。',
+      'feature.toolchain.title': '工具链安装器',
+      'feature.toolchain.desc': '检测 Node.js、Claude Code CLI、DevEco Code CLI 和 DevEco Studio，缺什么就按引导安装。',
+      'feature.watt.title': 'Watt Toolkit 提示',
+      'feature.watt.desc': '从 GitHub 下载历史版本前，会提示国内用户可选用 Watt Toolkit（原 Steam++）加速；它不是必需项，也不会被自动安装。',
+
+      'install.kicker': 'Install',
+      'install.title': '四步装好',
+      'install.sub': '下载到的是 Windows 安装向导，不需要预装 Node.js，也不需要配置开发环境。',
+      'install.step1.title': '下载安装包',
+      'install.step1.desc': '选择 GitHub 或 Gitee 线路，下载 <code>.exe</code> 安装文件。浏览器若询问是否保留，选择保留。',
+      'install.step2.title': '双击运行',
+      'install.step2.desc': '若出现蓝色的「Windows 已保护你的电脑」，点 <b>更多信息</b> → <b>仍要运行</b>。这是未签名程序的常见提示，原因见下方。',
+      'install.step3.title': '选择「仅为我安装」',
+      'install.step3.desc': '后续升级和回退更安静，不需要每次确认权限。选择「为所有人安装」则每次更新都可能弹出 UAC。',
+      'install.step4.title': '启动并开始使用',
+      'install.step4.desc': '首次启动会补齐岗位名册。之后有新版本时，程序内会提示更新。',
+      'install.smartscreen.title': '关于 SmartScreen 警告',
+      'install.smartscreen.desc': '安装包没有购买代码签名证书，Windows 会对未签名、下载量较少的 exe 显示蓝色警告。这与程序是否有问题无关。更稳妥的做法是先按 SHA-512 / SHA-256 核对文件，再决定是否运行。',
+      'install.verify.title': '如何核对哈希',
+      'install.verify.desc': '在 PowerShell 中运行以下命令，把输出与页面上的 SHA-256 比对；也可以把 <code>SHA256</code> 换成 <code>SHA512</code>。',
+      'install.verify.cmdLabel': 'PowerShell 示例',
+      'install.verify.cmd': 'Get-FileHash .\\{asset} -Algorithm SHA256',
+      'install.verify.certutil': '旧系统也可以用：<code>certutil -hashfile &lt;安装包路径&gt; SHA256</code>',
+
+      'versions.kicker': 'Versions',
+      'versions.title': '历史版本',
+      'versions.sub': '通常使用最新版即可。需要回退时可在下方选择旧版本；每个版本都分别标注 GitHub 与 Gitee 是否可用。',
+      'versions.caption': 'ChaosConsole 历史版本与下载来源',
+      'versions.thVersion': '版本',
+      'versions.thDate': '发布日期',
+      'versions.thSize': '体积',
+      'versions.thSources': '下载来源',
+      'versions.latest': '最新',
+      'versions.pending': '待发布',
+      'versions.pendingSize': '待构建',
+      'versions.pendingDate': '尚未发布',
+      'versions.github': 'GitHub',
+      'versions.gitee': 'Gitee',
+      'versions.unavailable': '不可用',
+      'versions.noData': '暂时没有可显示的版本数据。',
+      'versions.loadError': '版本数据加载失败。请刷新页面，或直接前往 GitHub / Gitee 发行版页面。',
+      'versions.releasePage': '发行版页面',
+      'versions.sourceGithubTitle': '从 GitHub 下载 {version}',
+      'versions.sourceGiteeTitle': '从 Gitee 下载 {version}',
+      'versions.githubUnavailable': 'GitHub 上没有这个版本',
+      'versions.giteeUnavailable': 'Gitee 上没有这个版本',
+
+      'footer.tagline': 'ChaosConsole · AI Agent 开发控制台',
+      'footer.desc': 'Windows 10/11 桌面应用。免费使用，无内购。',
+      'footer.repoGithub': 'GitHub 仓库',
+      'footer.repoGitee': 'Gitee 仓库',
+      'footer.releasesGithub': 'GitHub Releases',
+      'footer.releasesGitee': 'Gitee 发行版',
+      'footer.issues': '反馈问题',
+      'footer.license': 'MIT 许可证',
+      'footer.links': '页脚链接',
+      'footer.note': '本页是静态下载页，不提供浏览器内运行的应用。',
+
+      'common.pending': '待发布',
+      'common.notPublished': '尚未发布',
+      'common.unknown': '未知',
+      'common.retry': '重试',
+      'common.loading': '正在读取版本数据…',
+
+      'noscript.title': '需要 JavaScript 显示版本信息',
+      'noscript.desc': '这个静态页面用 JavaScript 读取同目录的版本数据。你的浏览器关闭了 JavaScript，所以版本号和下载按钮没有渲染。可以直接前往发行版页面下载：',
+    },
+
+    en: {
+      'meta.title': 'ChaosConsole · AI Agent Development Console',
+      'meta.description': 'ChaosConsole: a Windows desktop console where 21 AI roles work together. Download from GitHub Releases or Gitee, with SHA-512 and SHA-256 checksums.',
+
+      'skip.link': 'Skip to main content',
+      'nav.primary': 'Main navigation',
+      'nav.brandSub': 'AI Agent Development Console',
+      'nav.download': 'Download',
+      'nav.features': 'Features',
+      'nav.install': 'Install',
+      'nav.versions': 'Versions',
+      'nav.github': 'GitHub',
+      'nav.menu': 'Open navigation menu',
+      'nav.menuClose': 'Close navigation menu',
+      'nav.language': 'Language / 语言',
+      'lang.zh': '中文',
+      'lang.en': 'EN',
+
+      'hero.osWarn': '<b>Windows only</b> (Windows 10/11 64-bit). Your current system does not look like Windows. You can still download the installer, but it will not install here.',
+      'hero.pill': 'Latest {version}',
+      'hero.pillPending': 'v{version} · installer pending',
+      'hero.title': 'Put 21 AI roles<br>into <em>one console</em>',
+      'hero.lede': 'A request arrives and goes to the right role automatically. If a run fails, <b>hand it off mid-task</b> instead of starting over. Each role only gets the MCP tools it needs.<br>Windows desktop app. Download and run. <b>Free.</b>',
+      'hero.primaryGithub': 'Download from GitHub',
+      'hero.primaryGitee': 'Download from Gitee (China)',
+      'hero.githubUnavailable': 'GitHub download is not available',
+      'hero.giteeUnavailable': 'Gitee download is not available',
+      'hero.latestLabel': 'Current version',
+      'hero.metaLabel': 'Release information',
+      'hero.published': 'Published {date}',
+      'hero.notPublished': 'Not published yet',
+      'hero.loadError': 'Version data unavailable',
+      'hero.sizeLabel': 'Installer size',
+      'hero.sizePending': 'Pending build',
+      'hero.metaPlatform': 'Windows 10 / 11 · 64-bit',
+      'hero.metaAutoUpdate': 'Built-in updates',
+      'hero.metaPending': 'Installer in progress',
+      'hero.ctaNote': 'GitHub is the global route; Gitee is the recommended route in mainland China. These are two different sources, not one mirrored URL.',
+      'hero.previousStable': 'You can download the previous stable release, {version}, from the list below.',
+      'hero.viewVersions': 'View version history',
+
+      'stats.roles': 'AI roles',
+      'stats.stages': 'pipeline stages',
+      'stats.gates': 'gate checks',
+      'stats.versions': 'published versions',
+
+      'download.kicker': 'Download',
+      'download.title': 'Two real download sources',
+      'download.sub': 'GitHub Releases serves users worldwide; Gitee serves mainland China. There is no fake mirror redirect: each button points at that platform\'s own release asset.',
+      'download.githubTitle': 'GitHub Releases',
+      'download.githubDesc': 'Global route. Best for users who can reach GitHub normally, and the default source for built-in updates.',
+      'download.githubSpeed': 'Worldwide · official source',
+      'download.githubBtn': 'Download from GitHub',
+      'download.githubUnavailable': 'GitHub download is not available',
+      'download.giteeTitle': 'Gitee Releases',
+      'download.giteeDesc': 'Mainland China route. Gitee serves attachments from a domestic CDN, so direct downloads are usually faster.',
+      'download.giteeSpeed': 'China direct · separate asset',
+      'download.giteeBtn': 'Download from Gitee',
+      'download.giteeUnavailable': 'Gitee download is not available',
+      'download.pendingTitle': 'The {version} installer is being built',
+      'download.pendingDesc': 'The installer for {version} has not been uploaded yet. Version history and checksums will update automatically once the build is published. You can still choose the previous stable release below.',
+      'download.hashTitle': 'Verify the installer',
+      'download.hashDesc': 'After downloading, compare the file with the SHA-512 or SHA-256 value below. Built-in updates also verify the SHA-512 value.',
+      'download.sha512': 'SHA-512',
+      'download.sha256': 'SHA-256',
+      'download.copy': 'Copy',
+      'download.copySha512': 'Copy SHA-512',
+      'download.copySha256': 'Copy SHA-256',
+      'download.copied': 'Copied',
+      'download.hashPending': 'Generated when the installer is published',
+      'download.hashUnavailable': 'Not provided for this release',
+      'download.startedGithub': 'Download started from GitHub',
+      'download.startedGitee': 'Download started from Gitee',
+
+      'toast.copied': 'Checksum copied to the clipboard',
+      'toast.copyFailed': 'Copy failed. Select the value and copy it manually.',
+
+      'features.kicker': 'Features',
+      'features.title': 'What is new in 8.0.0',
+      'features.sub': 'From finding tasks faster to keeping data safer, this release removes friction from everyday work.',
+      'feature.command.title': 'Command palette',
+      'feature.command.desc': 'Press Ctrl+K for global search and jump to tasks, roles, settings, and common actions without digging through menus.',
+      'feature.templates.title': 'Task templates',
+      'feature.templates.desc': 'Save a ready-made title, description, tags, executor, model, and pipeline, then apply it in one click next time.',
+      'feature.bulk.title': 'Bulk actions',
+      'feature.bulk.desc': 'Select multiple tasks on the board and start, cancel, complete, move, or delete them together.',
+      'feature.deps.title': 'Task dependencies',
+      'feature.deps.desc': 'Set prerequisite tasks. A blocked task is not dispatched until its dependency finishes, and cards show the blocked count.',
+      'feature.dispatch.title': 'Dispatch strategies',
+      'feature.dispatch.desc': 'Choose keyword matching, least-busy, or round-robin dispatch to decide which role receives a new task.',
+      'feature.pipeline.title': 'Pipeline editor',
+      'feature.pipeline.desc': 'Use the visual editor to map stages to roles so planning, coding, building, and testing hand off in your order.',
+      'feature.export.title': 'Export and import',
+      'feature.export.desc': 'Export roles, tasks, conversations, events, and templates as JSON; import them when moving machines or rebuilding a workspace.',
+      'feature.backups.title': 'Backups',
+      'feature.backups.desc': 'Run automatic or manual backups, restore them, and set a retention policy. Running tasks are stopped before a restore.',
+      'feature.stats.title': 'Statistics dashboard',
+      'feature.stats.desc': 'See task totals, completion rate, blocked tasks, executor distribution, and stage durations with local SVG charts.',
+      'feature.diagnostics.title': 'Diagnostics',
+      'feature.diagnostics.desc': 'Check the database, executors, toolchain, and configuration, then export a diagnostic bundle when something goes wrong.',
+      'feature.tray.title': 'Tray and notifications',
+      'feature.tray.desc': 'Close the window to the tray and get notified when a task completes or needs input, optionally only when the window is in the background.',
+      'feature.bilingual.title': 'Chinese and English',
+      'feature.bilingual.desc': 'Switch the static interface between Chinese and English instantly; the choice is saved locally.',
+      'feature.accent.title': 'Accent colors',
+      'feature.accent.desc': 'Choose a different accent color on top of the dark and light themes to make the console feel like yours.',
+      'feature.toolchain.title': 'Toolchain installer',
+      'feature.toolchain.desc': 'Detect Node.js, Claude Code CLI, DevEco Code CLI, and DevEco Studio, and install what is missing with guided steps.',
+      'feature.watt.title': 'Watt Toolkit hint',
+      'feature.watt.desc': 'Before downloading older releases from GitHub, users in China can choose Watt Toolkit (formerly Steam++) for acceleration. It is optional and is never installed automatically.',
+
+      'install.kicker': 'Install',
+      'install.title': 'Four steps to install',
+      'install.sub': 'The download is a Windows installer. You do not need Node.js or a configured development environment.',
+      'install.step1.title': 'Download the installer',
+      'install.step1.desc': 'Choose GitHub or Gitee and download the <code>.exe</code> installer. If the browser asks whether to keep the file, choose Keep.',
+      'install.step2.title': 'Run the installer',
+      'install.step2.desc': 'If Windows shows the blue "Windows protected your PC" message, click <b>More info</b> → <b>Run anyway</b>. This is common for unsigned installers; see the note below.',
+      'install.step3.title': 'Choose "Install for me only"',
+      'install.step3.desc': 'Updates and rollbacks stay quiet and do not ask for permission every time. Choosing "Install for all users" may trigger UAC on each update.',
+      'install.step4.title': 'Launch and start working',
+      'install.step4.desc': 'The first launch fills in the role roster. When a new version is available, the app notifies you inside the console.',
+      'install.smartscreen.title': 'About the SmartScreen warning',
+      'install.smartscreen.desc': 'The installer is not code-signed, so Windows shows a blue warning for unsigned files with few downloads. This is not a sign that the app is unsafe. For extra confidence, verify the SHA-512 or SHA-256 value before running it.',
+      'install.verify.title': 'How to verify the hash',
+      'install.verify.desc': 'Run the command below in PowerShell and compare the output with the SHA-256 value on this page. You can also replace <code>SHA256</code> with <code>SHA512</code>.',
+      'install.verify.cmdLabel': 'PowerShell example',
+      'install.verify.cmd': 'Get-FileHash .\\{asset} -Algorithm SHA256',
+      'install.verify.certutil': 'On older systems you can also use <code>certutil -hashfile &lt;installer path&gt; SHA256</code>',
+
+      'versions.kicker': 'Versions',
+      'versions.title': 'Version history',
+      'versions.sub': 'Most users should take the latest version. To roll back, pick an older release below; each row shows whether GitHub and Gitee have it.',
+      'versions.caption': 'ChaosConsole release history and download sources',
+      'versions.thVersion': 'Version',
+      'versions.thDate': 'Published',
+      'versions.thSize': 'Size',
+      'versions.thSources': 'Sources',
+      'versions.latest': 'Latest',
+      'versions.pending': 'Pending',
+      'versions.pendingSize': 'Pending build',
+      'versions.pendingDate': 'Not published yet',
+      'versions.github': 'GitHub',
+      'versions.gitee': 'Gitee',
+      'versions.unavailable': 'Unavailable',
+      'versions.noData': 'No version data is available right now.',
+      'versions.loadError': 'Could not load version data. Refresh the page or open the GitHub / Gitee releases page directly.',
+      'versions.releasePage': 'Releases page',
+      'versions.sourceGithubTitle': 'Download {version} from GitHub',
+      'versions.sourceGiteeTitle': 'Download {version} from Gitee',
+      'versions.githubUnavailable': 'This version is not on GitHub',
+      'versions.giteeUnavailable': 'This version is not on Gitee',
+
+      'footer.tagline': 'ChaosConsole · AI Agent Development Console',
+      'footer.desc': 'A Windows 10/11 desktop app. Free to use, no in-app purchases.',
+      'footer.repoGithub': 'GitHub repository',
+      'footer.repoGitee': 'Gitee repository',
+      'footer.releasesGithub': 'GitHub Releases',
+      'footer.releasesGitee': 'Gitee releases',
+      'footer.issues': 'Report an issue',
+      'footer.license': 'MIT license',
+      'footer.links': 'Footer links',
+      'footer.note': 'This is a static download page. It does not host a browser version of the app.',
+
+      'common.pending': 'Pending',
+      'common.notPublished': 'Not published yet',
+      'common.unknown': 'Unknown',
+      'common.retry': 'Retry',
+      'common.loading': 'Loading version data…',
+
+      'noscript.title': 'JavaScript is needed for version information',
+      'noscript.desc': 'This static page uses JavaScript to read version data from the same folder. Your browser has JavaScript disabled, so the version numbers and download buttons were not rendered. You can download directly from the releases pages:',
+    },
+  }
+})

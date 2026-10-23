@@ -1,7 +1,8 @@
 import { create } from 'zustand'
 import { api, setToken, loadToken } from './lib/api'
 import { loadUiPrefs, saveUiPrefs } from './lib/prefs'
-import { applyTheme, resolveTheme, watchSystemTheme } from './lib/theme'
+import { applyTheme, applyAccent, resolveTheme, watchSystemTheme } from './lib/theme'
+import { translate } from './lib/i18n'
 
 /* ------------------------------------------------------------------ *
  * WebSocket：单例连接 + 断线重连
@@ -38,6 +39,9 @@ function closeSocket() {
    上次的样子」，不该被登录动作重置。登录页也碰不到这几个字段（TopBar/ChatPanel 都在
    登录后才渲染），所以早读没有副作用。 */
 const initialPrefs = loadUiPrefs()
+
+/* 8.0.0：强调色也必须在首帧前生效（theme-boot.js 已设 dataset，这里兜底内存态） */
+applyAccent(initialPrefs.accent)
 
 /* 系统主题监听的退订函数。放在模块作用域而不是 zustand state 里 —— 它是个副作用
    句柄，不是界面状态，塞进 state 会让 devtools 里多出一个不可序列化的字段。 */
@@ -79,6 +83,9 @@ export const useStore = create((set, get) => ({
      和聊天页都能直接开它，不必把回调从 App 一层层传下去。 */
   handoffFor: null,
 
+  /* 8.0.0：岗位详情弹窗（侧栏和命令面板共用） */
+  agentDetailId: null,
+
   /* 更新状态。权威来源是 Electron 主进程，这里只是经 update:status 推送来的投影 */
   update: { status: 'idle', message: '', percent: 0 },
 
@@ -98,6 +105,46 @@ export const useStore = create((set, get) => ({
   theme: initialPrefs.theme,
   /* 当前**生效**的主题（light | dark）。切换按钮的图标要按它画。 */
   resolvedTheme: resolveTheme(initialPrefs.theme),
+
+  /* 8.0.0：语言 / 强调色 / 桌面集成 */
+  language: initialPrefs.language,
+  accent: initialPrefs.accent,
+
+  /* 8.0.0：批量选择 */
+  selectedTaskIds: [],
+
+  /* 8.0.0：命令面板 / 快捷键帮助 */
+  paletteOpen: false,
+  paletteQuery: '',
+  paletteResults: { tasks: [], agents: [], messages: [], events: [] },
+  helpOpen: false,
+
+  /* 8.0.0：任务模板 */
+  templates: [],
+
+  /* 8.0.0：工具链 */
+  toolchain: null,
+  toolchainJob: null,
+  toolchainLogs: [],
+
+  /* 混沌 · 本地大模型 */
+  chaosStatus: null,
+  chaosJob: null,
+  chaosLogs: [],
+
+  /* 8.0.0：备份 / 统计 / 诊断 */
+  backups: [],
+  backupsMeta: null,
+  stats: null,
+  statsLoading: false,
+  diagnostics: null,
+  diagnosticsLoading: false,
+
+  /* 8.0.0：全局弹窗（设置/统计/诊断/备份/工具链等），任何组件都能打开 */
+  uiModal: null,
+
+  /* 8.0.0：Watt Toolkit 提示 */
+  wattPromptOpen: false,
 
   /* ---------------- 提示条 ---------------- */
   toast(text, kind = 'info') {
@@ -180,11 +227,19 @@ export const useStore = create((set, get) => ({
         // 刷新页面或 WS 重连后补一次更新状态，否则正在下载的进度会凭空消失
         api.updateStatus().catch(() => ({ data: null })),
       ])
+      const sys = sysRes.data || {}
+      const language = ['zh', 'en'].includes(sys.uiLanguage) ? sys.uiLanguage : get().language
+      const accent = ['amber', 'sky', 'violet', 'emerald'].includes(sys.accent) ? sys.accent : get().accent
+      applyAccent(accent)
+      document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN'
+      saveUiPrefs({ language, accent })
       set({
         agents: stateRes.data.agents,
         tasks: stateRes.data.tasks,
-        system: sysRes.data,
+        system: sys,
         conversations: convRes.data || [],
+        language,
+        accent,
         ...(updRes?.data ? { update: updRes.data } : {}),
       })
 
@@ -349,6 +404,22 @@ export const useStore = create((set, get) => ({
   },
 
   /* ---- 换岗 ---- */
+
+  openModal(name) {
+    set({ uiModal: name || null })
+  },
+
+  closeModal() {
+    set({ uiModal: null })
+  },
+
+  openAgentDetail(id) {
+    set({ agentDetailId: id })
+  },
+
+  closeAgentDetail() {
+    set({ agentDetailId: null })
+  },
 
   openHandoff(taskId) {
     set({ handoffFor: taskId })
@@ -648,7 +719,385 @@ export const useStore = create((set, get) => ({
       get().toast(err.message, 'error')
     }
   },
+
+  /* ================================================================ *
+   * 8.0.0
+   * ================================================================ */
+
+  t(key, vars) {
+    return translate(get().language, key, vars)
+  },
+
+  async setLanguage(lang) {
+    if (!['zh', 'en'].includes(lang)) return
+    set({ language: lang })
+    document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN'
+    saveUiPrefs({ language: lang })
+    try {
+      await api.setSettings({ uiLanguage: lang })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async setAccent(accent) {
+    const next = applyAccent(accent)
+    set({ accent: next })
+    saveUiPrefs({ accent: next })
+    try {
+      await api.setSettings({ accent: next })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /** 桌面/行为类开关的统一入口 */
+  async setDesktopSetting(key, value) {
+    try {
+      await api.setSettings({ [key]: value })
+      await get().refreshSystem()
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 任务模板 ---- */
+  async loadTemplates() {
+    try {
+      const res = await api.templates()
+      set({ templates: res.data || [] })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async createTemplate(payload) {
+    try {
+      const res = await api.createTemplate(payload)
+      set({ templates: [res.data, ...get().templates] })
+      get().toast(`模板「${res.data.name}」已保存`, 'success')
+      return res.data
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return null
+    }
+  },
+
+  async updateTemplate(id, patch) {
+    try {
+      const res = await api.updateTemplate(id, patch)
+      set({ templates: get().templates.map((t) => (t.id === id ? res.data : t)) })
+      return res.data
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return null
+    }
+  },
+
+  async deleteTemplate(id) {
+    try {
+      await api.deleteTemplate(id)
+      set({ templates: get().templates.filter((t) => t.id !== id) })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 命令面板 / 全局搜索 ---- */
+  openPalette() {
+    set({
+      paletteOpen: true,
+      paletteQuery: '',
+      paletteResults: { tasks: [], agents: [], messages: [], events: [] },
+    })
+  },
+
+  closePalette() {
+    set({ paletteOpen: false })
+  },
+
+  async searchGlobal(query) {
+    set({ paletteQuery: query })
+    if (String(query).trim().length < 2) {
+      set({ paletteResults: { tasks: [], agents: [], messages: [], events: [] } })
+      return
+    }
+    try {
+      const res = await api.search(query)
+      if (get().paletteQuery === query) set({ paletteResults: res.data })
+    } catch (_) {
+      /* 搜索失败不打断输入 */
+    }
+  },
+
+  toggleHelp(open) {
+    set({ helpOpen: open === undefined ? !get().helpOpen : Boolean(open) })
+  },
+
+  /* ---- 批量选择 ---- */
+  toggleTaskSelection(id) {
+    const cur = get().selectedTaskIds
+    set({ selectedTaskIds: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] })
+  },
+
+  clearTaskSelection() {
+    set({ selectedTaskIds: [] })
+  },
+
+  selectAllTasks() {
+    set({ selectedTaskIds: get().tasks.map((t) => t.id) })
+  },
+
+  async batchTasks(action, payload) {
+    const ids = get().selectedTaskIds
+    if (!ids.length) return
+    try {
+      const res = await api.batch(action, ids, payload)
+      const results = res.results || []
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length) {
+        get().toast(
+          `${results.length - failed.length} 个成功，${failed.length} 个失败：${failed[0].error || ''}`,
+          'error',
+        )
+      } else {
+        get().toast(`已批量操作 ${results.length} 个任务`, 'success')
+      }
+      if (['delete', 'move', 'done', 'start', 'cancel'].includes(action)) set({ selectedTaskIds: [] })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 备份 ---- */
+  async loadBackups() {
+    try {
+      const res = await api.backups()
+      set({ backups: res.data.backups || [], backupsMeta: res.data })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async createBackup() {
+    try {
+      await api.createBackup()
+      await get().loadBackups()
+      get().toast('备份已创建', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async restoreBackup(name) {
+    try {
+      await api.restoreBackup(name)
+      await get().bootstrap()
+      get().toast('备份已恢复', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async deleteBackup(name) {
+    try {
+      await api.deleteBackup(name)
+      await get().loadBackups()
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 工作区导出 / 导入 ---- */
+  async exportWorkspace() {
+    try {
+      const { blob, filename } = await api.exportWorkspace()
+      downloadBlob(blob, filename)
+      get().toast('工作区已导出', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async importWorkspace(data) {
+    try {
+      const res = await api.importWorkspace(data)
+      const c = res.data?.counts || {}
+      saveUiPrefs({ selectedTaskId: null })
+      set({ selectedTaskId: null, detail: null })
+      await get().bootstrap()
+      get().toast(
+        `已导入 ${c.agents || 0} 个岗位 / ${c.tasks || 0} 个任务 / ${c.messages || 0} 条消息`,
+        'success',
+      )
+      return true
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return false
+    }
+  },
+
+  /* ---- 统计 / 诊断 ---- */
+  async loadStats(days = '30') {
+    set({ statsLoading: true })
+    try {
+      const res = await api.stats(days)
+      set({ stats: res.data, statsLoading: false })
+    } catch (err) {
+      set({ statsLoading: false })
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async loadDiagnostics() {
+    set({ diagnosticsLoading: true })
+    try {
+      const res = await api.diagnostics()
+      set({ diagnostics: res.data, diagnosticsLoading: false })
+    } catch (err) {
+      set({ diagnosticsLoading: false })
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async exportDiagnostics() {
+    try {
+      const { blob, filename } = await api.exportDiagnostics()
+      downloadBlob(blob, filename)
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 工具链 ---- */
+  async loadToolchain() {
+    try {
+      const res = await api.toolchain()
+      set({ toolchain: res.data, toolchainJob: res.data.activeJob || null })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async installTool(tool) {
+    try {
+      const res = await api.installTool(tool)
+      set({ toolchainJob: res.data, toolchainLogs: [] })
+      get().toast(`开始安装：${tool}`, 'info')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async cancelToolInstall() {
+    const job = get().toolchainJob
+    if (!job) return
+    try {
+      await api.cancelToolInstall(job.id)
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async refreshToolchain() {
+    try {
+      const res = await api.refreshToolchain()
+      set({ toolchain: res.data })
+      await get().refreshSystem()
+      get().toast('已重新检测运行环境', 'success')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- 混沌 · 本地大模型 ---- */
+  async loadChaosStatus() {
+    try {
+      const res = await api.chaosStatus()
+      set({ chaosStatus: res.data, chaosJob: res.data.activeJob || null })
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async installChaos() {
+    try {
+      const res = await api.chaosInstall()
+      set({ chaosJob: res.data, chaosLogs: [] })
+      get().toast('开始安装混沌引擎…', 'info')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async pullChaosModel(model) {
+    try {
+      const res = await api.chaosPull(model)
+      set({ chaosJob: res.data, chaosLogs: [] })
+      get().toast(`开始下载模型 ${model}…`, 'info')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  async cancelChaosJob() {
+    const job = get().chaosJob
+    if (!job) return
+    try {
+      await api.chaosCancel(job.id)
+      get().toast('已请求取消', 'info')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* ---- Watt Toolkit 提示 ---- */
+  openWattPrompt() {
+    set({ wattPromptOpen: true })
+  },
+
+  closeWattPrompt() {
+    set({ wattPromptOpen: false })
+  },
+
+  snoozeWattPrompt() {
+    saveUiPrefs({ wattSnoozedUntil: Date.now() + 6 * 3600 * 1000 })
+    set({ wattPromptOpen: false })
+  },
+
+  dismissWattPrompt() {
+    saveUiPrefs({ wattDismissed: true, wattSnoozedUntil: 0 })
+    set({ wattPromptOpen: false })
+  },
+
+  maybeShowWattPrompt() {
+    const prefs = loadUiPrefs()
+    if (prefs.wattDismissed) return
+    if (prefs.wattSnoozedUntil && prefs.wattSnoozedUntil > Date.now()) return
+    set({ wattPromptOpen: true })
+  },
+
+  resetWattPrompt() {
+    saveUiPrefs({ wattDismissed: false, wattSnoozedUntil: 0 })
+    get().toast('已重置 Watt Toolkit 提醒', 'success')
+  },
 }))
+
+/** 浏览器里触发文件下载（导出的 JSON / 诊断包） */
+function downloadBlob(blob, filename) {
+  try {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || 'chaos-export.json'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+  } catch (err) {
+    console.error('[download] 失败:', err.message)
+  }
+}
 
 /* ------------------------------------------------------------------ *
  * WebSocket 接线
@@ -862,7 +1311,82 @@ function handleServerMessage(msg) {
       break
     }
 
+    /* ---- 8.0.0 ---- */
+    case 'template:updated': {
+      const list = state.templates.some((t) => t.id === payload.id)
+        ? state.templates.map((t) => (t.id === payload.id ? payload : t))
+        : [payload, ...state.templates]
+      useStore.setState({ templates: list })
+      break
+    }
+
+    case 'template:deleted':
+      useStore.setState({ templates: state.templates.filter((t) => t.id !== payload.id) })
+      break
+
+    case 'workspace:imported':
+      useStore.setState({
+        agents: payload.agents || [],
+        tasks: payload.tasks || [],
+        selectedTaskIds: [],
+        selectedTaskId: null,
+        detail: null,
+      })
+      break
+
+    case 'toolchain:job': {
+      useStore.setState({ toolchainJob: payload })
+      if (payload?.status === 'done' || payload?.status === 'error' || payload?.status === 'cancelled') {
+        useStore.getState().loadToolchain()
+        useStore.getState().refreshSystem()
+      }
+      break
+    }
+
+    case 'toolchain:log': {
+      if (!payload) break
+      const logs = [...state.toolchainLogs, payload]
+      if (logs.length > 500) logs.splice(0, logs.length - 500)
+      useStore.setState({ toolchainLogs: logs })
+      break
+    }
+
+    case 'toolchain:changed':
+      useStore.getState().loadToolchain()
+      useStore.getState().refreshSystem()
+      break
+
+    /* ---- 混沌 · 本地大模型 ---- */
+    case 'chaos:job': {
+      useStore.setState({ chaosJob: payload })
+      if (payload?.status === 'done' || payload?.status === 'error' || payload?.status === 'cancelled') {
+        useStore.getState().loadChaosStatus()
+        useStore.getState().refreshSystem()
+        if (payload.status === 'done') {
+          useStore.getState().toast(payload.message || '混沌已就绪', 'success')
+        } else if (payload.status === 'error') {
+          useStore.getState().toast(payload.error || '混沌安装失败', 'error')
+        }
+      }
+      break
+    }
+
+    case 'chaos:log': {
+      if (!payload) break
+      const logs = [...state.chaosLogs, payload]
+      if (logs.length > 500) logs.splice(0, logs.length - 500)
+      useStore.setState({ chaosLogs: logs })
+      break
+    }
+
+    case 'kb:changed':
+      // 知识库数据由 KnowledgeModal 自行拉取，这里只刷新系统摘要里的计数
+      useStore.getState().refreshSystem()
+      break
+
     default:
+      // 新事件忘了接会静默丢失，开发时至少留个痕迹
+      if (typeof console !== 'undefined') console.debug('[ws] 未处理事件:', type)
       break
   }
 }

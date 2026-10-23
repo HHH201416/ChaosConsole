@@ -17,6 +17,7 @@ const path = require('path')
 const net = require('net')
 const fs = require('fs')
 const os = require('os')
+const crypto = require('crypto')
 const dm = require('../server/download-mirror.js')
 const CONFIG = require('../server/config.js')
 const { spawn } = require('child_process')
@@ -24,6 +25,10 @@ const {
   app,
   BrowserWindow,
   Menu,
+  Tray,
+  Notification,
+  nativeImage,
+  globalShortcut,
   shell,
   dialog,
   session,
@@ -49,6 +54,15 @@ let serverPort = null
 let ownsServer = false
 let splashWindow = null
 let splashStartedAt = 0
+let tray = null
+let isQuitting = false
+let registeredShortcut = ''
+
+try {
+  app.setAppUserModelId('com.chaosconsole.boss')
+} catch (_) {
+  /* 某些平台不支持，不影响主流程 */
+}
 
 /** 闪屏停留时长。启动通常远快于此，所以实际效果就是「启动页显示 5 秒」 */
 const SPLASH_MIN_MS = 5000
@@ -1106,6 +1120,296 @@ function scheduleSaveWindowState() {
   windowSaveTimer = setTimeout(saveWindowState, WINDOW_SAVE_DEBOUNCE_MS)
 }
 
+/* ------------------------------------------------------------------ *
+ * 8.0.0：托盘 / 通知 / 全局快捷键 / 工具链下载桥
+ * ------------------------------------------------------------------ */
+
+const DESKTOP_TEXT = {
+  zh: {
+    show: '显示主窗口',
+    hide: '隐藏主窗口',
+    newTask: '新建任务',
+    checkUpdate: '检查更新',
+    quit: '退出',
+    completed: '任务已完成',
+    needsInput: '任务需要你回复',
+    shortcutFailed: '全局快捷键注册失败，可能已被其他应用占用',
+  },
+  en: {
+    show: 'Show window',
+    hide: 'Hide window',
+    newTask: 'New task',
+    checkUpdate: 'Check for updates',
+    quit: 'Quit',
+    completed: 'Task completed',
+    needsInput: 'Task needs your input',
+    shortcutFailed: 'Global shortcut could not be registered',
+  },
+}
+
+function uiLang() {
+  try {
+    return storeModule.getSetting('uiLanguage', 'zh') === 'en' ? 'en' : 'zh'
+  } catch (_) {
+    return 'zh'
+  }
+}
+
+function t(key) {
+  return (DESKTOP_TEXT[uiLang()] || DESKTOP_TEXT.zh)[key] || key
+}
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function toggleWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isVisible()) mainWindow.hide()
+  else showWindow()
+}
+
+function trayIconPath() {
+  const png = path.join(__dirname, '..', 'build', 'icon.png')
+  if (fs.existsSync(png)) return png
+  return path.join(__dirname, '..', 'build', 'icon.ico')
+}
+
+function syncTray() {
+  let enabled = true
+  try {
+    enabled = storeModule.getSetting('trayEnabled', '1') === '1'
+  } catch (_) {
+    enabled = true
+  }
+  if (!enabled) {
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+    return
+  }
+  if (tray) {
+    // 只更新菜单（语言/状态可能变了）
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: t('show'), click: showWindow },
+        { label: t('hide'), click: () => mainWindow?.hide() },
+        { type: 'separator' },
+        {
+          label: t('newTask'),
+          click: () => {
+            showWindow()
+            mainWindow?.webContents.send('menu:new-task')
+          },
+        },
+        {
+          label: t('checkUpdate'),
+          click: () => {
+            showWindow()
+            mainWindow?.webContents.send('menu:check-update')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: t('quit'),
+          click: () => {
+            isQuitting = true
+            requestQuit()
+          },
+        },
+      ]),
+    )
+    return
+  }
+
+  let image = nativeImage.createFromPath(trayIconPath())
+  if (image.isEmpty()) {
+    console.warn('[electron] 托盘图标加载失败')
+    return
+  }
+  image = image.resize({ width: 16, height: 16 })
+  tray = new Tray(image)
+  tray.setToolTip('ChaosConsole')
+  tray.on('click', toggleWindow)
+  syncTray() // 复用上面的菜单构建逻辑
+}
+
+function syncGlobalShortcut() {
+  let accel = 'CommandOrControl+Shift+Space'
+  try {
+    accel = storeModule.getSetting('globalShortcut', accel)
+  } catch (_) {
+    /* ignore */
+  }
+  if (registeredShortcut) {
+    try {
+      globalShortcut.unregister(registeredShortcut)
+    } catch (_) {
+      /* ignore */
+    }
+    registeredShortcut = ''
+  }
+  if (!accel || accel === 'off') return
+  try {
+    const ok = globalShortcut.register(accel, toggleWindow)
+    if (ok) registeredShortcut = accel
+    else mainWindow?.webContents.send('desktop:notice', { kind: 'error', text: t('shortcutFailed') })
+  } catch (err) {
+    console.error('[electron] 全局快捷键注册失败:', err.message)
+  }
+}
+
+function setupNotifications() {
+  if (!Notification.isSupported()) return
+  const lastStatus = new Map()
+  storeModule.bus.on('task:updated', (task) => {
+    if (!task || !task.id) return
+    const prev = lastStatus.get(task.id)
+    lastStatus.set(task.id, task.status)
+    if (prev === undefined || prev === task.status) return
+    if (task.status !== 'complete' && task.status !== 'needs_input') return
+
+    let allowed = true
+    try {
+      if (task.status === 'complete') allowed = storeModule.getSetting('notifyOnComplete', '1') === '1'
+      else allowed = storeModule.getSetting('notifyOnNeedsInput', '1') === '1'
+      if (allowed && storeModule.getSetting('notifyOnlyWhenUnfocused', '1') === '1') {
+        allowed = !(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
+      }
+    } catch (_) {
+      /* 读设置失败就按默认允许 */
+    }
+    if (!allowed) return
+
+    try {
+      const note = new Notification({
+        title: task.status === 'complete' ? t('completed') : t('needsInput'),
+        body: task.title || '',
+        icon: trayIconPath(),
+      })
+      note.on('click', () => {
+        showWindow()
+        mainWindow?.webContents.send('task:focus', task.id)
+      })
+      note.show()
+    } catch (err) {
+      console.error('[electron] 通知失败:', err.message)
+    }
+  })
+  storeModule.bus.on('task:deleted', (payload) => lastStatus.delete(payload?.id))
+}
+
+/* ---- 工具链：主进程下载（Chromium 网络栈，能过系统代理/加速器证书） ---- */
+
+async function downloadFile({ url, dest, sha256, sha512, maxBytes, signal, onProgress } = {}) {
+  if (!/^https:\/\//i.test(String(url || ''))) throw new Error('只允许 HTTPS 下载')
+  if (!dest || typeof dest !== 'string') throw new Error('缺少下载目标路径')
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  const temp = `${dest}.part`
+  const hash256 = crypto.createHash('sha256')
+  const hash512 = crypto.createHash('sha512')
+
+  let res
+  try {
+    res = await ghFetch(url, {
+      headers: { 'User-Agent': 'ChaosConsole-Toolchain' },
+      redirect: 'follow',
+      signal,
+    })
+  } catch (err) {
+    throw new Error(`下载失败：${err.message}`)
+  }
+  if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status}`)
+
+  const total = Number(res.headers.get('content-length')) || 0
+  if (maxBytes && total && total > maxBytes) throw new Error('安装包超出大小上限')
+
+  const fd = fs.openSync(temp, 'w')
+  let received = 0
+  let lastAt = 0
+  try {
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const buf = Buffer.from(value)
+      received += buf.length
+      if (maxBytes && received > maxBytes) throw new Error('安装包超出大小上限')
+      fs.writeSync(fd, buf)
+      hash256.update(buf)
+      hash512.update(buf)
+      const now = Date.now()
+      if (now - lastAt >= 500) {
+        lastAt = now
+        try {
+          onProgress?.({ transferred: received, total, percent: total ? (received / total) * 100 : 0 })
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
+  } catch (err) {
+    fs.closeSync(fd)
+    try {
+      fs.unlinkSync(temp)
+    } catch (_) {
+      /* ignore */
+    }
+    throw err
+  }
+  fs.closeSync(fd)
+
+  const got256 = hash256.digest('hex')
+  const got512 = hash512.digest('base64')
+  if (sha256 && got256.toLowerCase() !== String(sha256).toLowerCase()) {
+    try {
+      fs.unlinkSync(temp)
+    } catch (_) {
+      /* ignore */
+    }
+    throw new Error('SHA-256 校验失败，已丢弃下载文件')
+  }
+  if (sha512 && got512 !== String(sha512)) {
+    try {
+      fs.unlinkSync(temp)
+    } catch (_) {
+      /* ignore */
+    }
+    throw new Error('SHA-512 校验失败，已丢弃下载文件')
+  }
+  fs.renameSync(temp, dest)
+  return { ok: true, path: dest, size: received, sha256: got256, sha512: got512 }
+}
+
+function openExternalSafe(url) {
+  try {
+    const u = new URL(String(url))
+    if (u.protocol !== 'https:') return false
+    shell.openExternal(u.toString())
+    return true
+  } catch (_) {
+    return false
+  }
+}
+
+function registerDesktopHost() {
+  serverModule.setDesktopHost({
+    downloadFile,
+    openExternal: openExternalSafe,
+    revealPath: (p) => {
+      try {
+        shell.showItemInFolder(String(p))
+      } catch (_) {
+        /* ignore */
+      }
+    },
+  })
+}
+
 async function createWindow() {
   const preferred = preferredWindowSize()
   const saved = loadWindowState()
@@ -1165,10 +1469,25 @@ async function createWindow() {
     // 关窗这一刻的状态才是用户想要的，所以不等防抖计时器，直接落盘。
     // 这里即使被下面的 preventDefault 拦下来也没关系：窗口还在，坐标就是有效的。
     saveWindowState()
-    if (closeState === 'running') {
-      event.preventDefault()
-      requestQuit()
+    if (closeState !== 'running') return
+
+    // 8.0.0：可选的「关闭到托盘」。默认关闭，只有用户显式开启且托盘存在时才拦截。
+    let closeToTray = false
+    try {
+      closeToTray =
+        storeModule.getSetting('closeToTray', '0') === '1' &&
+        storeModule.getSetting('trayEnabled', '1') === '1'
+    } catch (_) {
+      closeToTray = false
     }
+    if (closeToTray && !isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+      return
+    }
+
+    event.preventDefault()
+    requestQuit()
   })
 
   mainWindow.on('closed', () => {
@@ -1243,6 +1562,9 @@ app.whenReady().then(async () => {
   serverModule.setUpdateStatusHandler(getUpdateStatus)
   serverModule.setReleasesHandler(listReleases)
   serverModule.setRollbackHandler(downloadReleaseByTag)
+  // 8.0.0：工具链下载能力只注入给「进程内启动」的后端；
+  // 外部后端（npm run dev）拿不到 Electron 的网络栈，会如实返回 unsupported。
+  if (ownsServer) registerDesktopHost()
   initUpdater()
   scheduleIdleAutoUpdate()
   applyCsp()
@@ -1250,13 +1572,32 @@ app.whenReady().then(async () => {
   pushBootStep('装载工作台界面', 88)
   await createWindow()
 
+  // 8.0.0：托盘 / 全局快捷键 / 原生通知
+  syncTray()
+  syncGlobalShortcut()
+  setupNotifications()
+  storeModule.bus.on('settings:updated', ({ key }) => {
+    if (key === 'trayEnabled' || key === 'uiLanguage' || key === 'closeToTray') syncTray()
+    if (key === 'globalShortcut') syncGlobalShortcut()
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    // 托盘存在且不是真正退出时，窗口全关也不退出（正常流程里窗口会被 hide 拦截）
+    if (!isQuitting) {
+      try {
+        if (storeModule.getSetting('trayEnabled', '1') === '1') return
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    app.quit()
+  }
 })
 
 /* ------------------------------------------------------------------ *
@@ -1275,6 +1616,7 @@ let installRequested = false
 /** 请求退出：广播退场动画，等它播完再交给 before-quit 收尾 */
 function requestQuit() {
   if (closeState !== 'running') return
+  isQuitting = true
   closeState = 'closing'
 
   // 闪屏还盖在上面就先收掉，否则退场动画被它挡住，用户什么也看不见
@@ -1298,6 +1640,7 @@ function requestQuit() {
 
 /** 启动期致命错误：还没有界面可播动画，直接跳过退场 */
 function quitImmediately() {
+  isQuitting = true
   closeState = 'finalizing'
   app.quit()
 }
@@ -1378,6 +1721,14 @@ app.on('before-quit', (event) => {
 
     app.exit(0)
   })()
+})
+
+app.on('will-quit', () => {
+  try {
+    globalShortcut.unregisterAll()
+  } catch (_) {
+    /* ignore */
+  }
 })
 
 process.on('uncaughtException', (err) => {

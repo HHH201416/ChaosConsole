@@ -19,10 +19,22 @@ let cache = null
 /* `theme` 是「用户的选择」而不是解析后的结果，取值 'light' | 'dark' | 'system'。
    解析（system -> 具体值）在 src/lib/theme.js。注意这个字段同时被 public/theme-boot.js
    直接读取（那边复刻了 key 名和取值校验），改这里要同步改那边。 */
-const DEFAULTS = { sidebarOpen: true, chatOpen: true, selectedTaskId: null, theme: 'system' }
+const DEFAULTS = {
+  sidebarOpen: true,
+  chatOpen: true,
+  selectedTaskId: null,
+  theme: 'system',
+  // 8.0.0
+  language: 'zh',
+  accent: 'amber',
+  wattDismissed: false,
+  wattSnoozedUntil: 0,
+}
 
 /** 与 src/lib/theme.js 的 THEME_MODES、public/theme-boot.js 的校验保持一致 */
 const VALID_THEMES = ['light', 'dark', 'system']
+const VALID_LANGS = ['zh', 'en']
+const VALID_ACCENTS = ['amber', 'sky', 'violet', 'emerald']
 
 function read() {
   if (cache) return cache
@@ -45,6 +57,10 @@ export function loadUiPrefs() {
     chatOpen: p.chatOpen !== false,
     selectedTaskId: typeof p.selectedTaskId === 'string' && p.selectedTaskId ? p.selectedTaskId : null,
     theme: VALID_THEMES.includes(p.theme) ? p.theme : 'system',
+    language: VALID_LANGS.includes(p.language) ? p.language : 'zh',
+    accent: VALID_ACCENTS.includes(p.accent) ? p.accent : 'amber',
+    wattDismissed: p.wattDismissed === true,
+    wattSnoozedUntil: Number(p.wattSnoozedUntil) || 0,
   }
 }
 

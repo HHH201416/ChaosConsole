@@ -1,9 +1,22 @@
 import { useState } from 'react'
 import { useStore } from '../store'
 import { COLUMNS } from '../lib/meta'
+import { useT } from '../lib/useT'
 import TaskCard from './TaskCard'
 
-function Column({ col, tasks, agentsById, selectedTaskId, onSelect, onDropTask, isDropTarget, setDropTarget }) {
+function Column({
+  col,
+  tasks,
+  agentsById,
+  selectedTaskId,
+  selectedTaskIds,
+  onSelect,
+  onToggleBulk,
+  onDropTask,
+  isDropTarget,
+  setDropTarget,
+}) {
+  const t = useT()
   return (
     <div
       onDragOver={(e) => {
@@ -29,7 +42,7 @@ function Column({ col, tasks, agentsById, selectedTaskId, onSelect, onDropTask, 
           否则会溢出到相邻列上。窄屏放过不下的列由 main 的 overflow-x-auto 横向滚动。 */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
         <span className={`h-1 w-6 rounded-full ${col.bar}`} />
-        <span className="text-[13px] font-semibold text-slate-200">{col.label}</span>
+        <span className="text-[13px] font-semibold text-slate-200">{t(`board.${col.key}`)}</span>
         {/* 英文名是装饰性的冗余信息。列宽 191px 时整行要 221px 才放得下（「需要输入 /
             NEEDS INPUT / 0」比「待处理 / BACKLOG / 0」宽），所以窄了就整条撤掉，
             而不是让它折行或把计数徽标挤到第二行去。whitespace-nowrap 保证它要么
@@ -44,18 +57,20 @@ function Column({ col, tasks, agentsById, selectedTaskId, onSelect, onDropTask, 
 
       {/* 卡片列表 */}
       <div className="flex-1 space-y-2 overflow-y-auto px-2.5 pb-3">
-        {tasks.map((t) => (
+        {tasks.map((task) => (
           <TaskCard
-            key={t.id}
-            task={t}
-            agent={agentsById[t.agentId]}
-            selected={selectedTaskId === t.id}
+            key={task.id}
+            task={task}
+            agent={agentsById[task.agentId]}
+            selected={selectedTaskId === task.id}
+            bulkSelected={selectedTaskIds.includes(task.id)}
+            onToggleBulk={onToggleBulk}
             onSelect={onSelect}
           />
         ))}
         {tasks.length === 0 && (
           <div className="flex h-24 items-center justify-center rounded-lg border border-dashed border-ink-500/70 text-[11px] text-slate-600">
-            拖拽任务卡片到这里
+            {t('board.empty')}
           </div>
         )}
       </div>
@@ -67,11 +82,19 @@ export default function Board() {
   const tasks = useStore((s) => s.tasks)
   const agents = useStore((s) => s.agents)
   const selectedTaskId = useStore((s) => s.selectedTaskId)
+  const selectedTaskIds = useStore((s) => s.selectedTaskIds)
   const selectTask = useStore((s) => s.selectTask)
+  const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
   const moveTask = useStore((s) => s.moveTask)
   const [dropTarget, setDropTarget] = useState(null)
 
   const agentsById = Object.fromEntries(agents.map((a) => [a.id, a]))
+
+  // Ctrl/Cmd/Shift 点击 = 多选；普通点击 = 打开对话
+  const onSelect = (id, e) => {
+    if (e && (e.ctrlKey || e.metaKey || e.shiftKey)) toggleTaskSelection(id)
+    else selectTask(id)
+  }
 
   return (
     /* 注意：`main > div` 恰好是 4 个列，这个结构被 scripts/e2e-check.js 依赖，
@@ -84,7 +107,9 @@ export default function Board() {
           tasks={tasks.filter((t) => t.status === col.key)}
           agentsById={agentsById}
           selectedTaskId={selectedTaskId}
-          onSelect={selectTask}
+          selectedTaskIds={selectedTaskIds}
+          onSelect={onSelect}
+          onToggleBulk={toggleTaskSelection}
           onDropTask={moveTask}
           isDropTarget={dropTarget === col.key}
           setDropTarget={setDropTarget}

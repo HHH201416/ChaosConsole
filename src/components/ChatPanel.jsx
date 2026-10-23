@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { COLUMN_MAP, RUN_STATE_META, EVENT_META, formatTime, relativeTime, roleColor, stageLabel } from '../lib/meta'
+import { useT } from '../lib/useT'
 
 /* ------------------------------------------------------------------ *
  * 单条消息
@@ -173,6 +174,7 @@ const EXAMPLES = [
 ]
 
 export default function ChatPanel() {
+  const t = useT()
   const detail = useStore((s) => s.detail)
   const detailLoading = useStore((s) => s.detailLoading)
   const conversations = useStore((s) => s.conversations)
@@ -262,16 +264,16 @@ export default function ChatPanel() {
       <div className="flex shrink-0 items-center gap-2 border-b border-ink-600 px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-slate-100">对话</span>
+            <span className="text-[13px] font-semibold text-slate-100">{t('chat.title')}</span>
             {isRunning && (
               <span className="flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-300">
                 <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
-                执行中
+                {t('chat.running')}
               </span>
             )}
           </div>
           <div className="mt-0.5 truncate text-[10.5px] text-slate-500">
-            {task ? task.title : '说一句话，自动分配给合适的员工'}
+            {task ? task.title : t('chat.emptyTitle')}
           </div>
         </div>
 
@@ -280,7 +282,7 @@ export default function ChatPanel() {
           onClick={() => setShowHistory((v) => !v)}
           title="查看历史对话"
         >
-          历史 {conversations.length > 0 ? `(${conversations.length})` : ''}
+          {t('chat.history')} {conversations.length > 0 ? `(${conversations.length})` : ''}
         </button>
         <button
           className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
@@ -290,7 +292,7 @@ export default function ChatPanel() {
           }}
           title="开始一个新对话"
         >
-          + 新对话
+          {t('chat.newConversation')}
         </button>
       </div>
 
@@ -311,7 +313,12 @@ export default function ChatPanel() {
           <span className="chip">{executorLabel}</span>
           {stageText && <span className="chip bg-violet-500/15 text-violet-300">{stageText}</span>}
           {attempts > 0 && (
-            <span className="chip bg-amber-500/15 text-amber-300">重试 ×{attempts}</span>
+            <span className="chip bg-amber-500/15 text-amber-300">{t('task.retryTimes', { n: attempts })}</span>
+          )}
+          {(task.blockedBy || []).length > 0 && (
+            <span className="chip bg-rose-500/15 text-rose-300" title={(task.blockedBy || []).join(', ')}>
+              🔒 {t('task.blockedCount', { n: task.blockedBy.length })}
+            </span>
           )}
 
           <div className="ml-auto flex gap-1">
@@ -320,22 +327,22 @@ export default function ChatPanel() {
               onClick={() => setShowEvents((v) => !v)}
               title="查看事件列表（工具调用明细）"
             >
-              {showEvents ? '看对话' : `事件 ${events.length}`}
+              {showEvents ? t('chat.messages') : t('chat.events', { n: events.length })}
             </button>
             <button
               className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => openHandoff(task.id)}
               title="交给另一个岗位接手（运行中会交接，不是中断）"
             >
-              换岗
+              {t('task.handoff')}
             </button>
             <button
               className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => (isRunning ? cancelTask(task.id) : startTask(task.id))}
-              disabled={task.status === 'complete' && !isRunning}
+              disabled={task.status === 'complete' && !isRunning || (task.blockedBy || []).length > 0}
               title={isRunning ? '中断执行' : '重跑这个对话'}
             >
-              {isRunning ? '中断' : '重跑'}
+              {isRunning ? t('chat.stop') : t('chat.rerun')}
             </button>
           </div>
         </div>
@@ -346,11 +353,7 @@ export default function ChatPanel() {
         {!task && !detailLoading && (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <div className="mb-3 text-4xl opacity-25">💬</div>
-            <p className="text-[12px] leading-relaxed text-slate-500">
-              在这里直接说要做什么，
-              <br />
-              系统会按内容自动挑一个员工去做。
-            </p>
+            <p className="text-[12px] leading-relaxed text-slate-500">{t('chat.emptyTitle')}</p>
             <div className="mt-5 flex w-full flex-col gap-1.5">
               {EXAMPLES.map((ex) => (
                 <button
@@ -368,7 +371,7 @@ export default function ChatPanel() {
           </div>
         )}
 
-        {detailLoading && !task && <p className="py-8 text-center text-xs text-slate-600">加载中…</p>}
+        {detailLoading && !task && <p className="py-8 text-center text-xs text-slate-600">{t('chat.loading')}</p>}
 
         {task &&
           !showEvents &&
@@ -378,7 +381,7 @@ export default function ChatPanel() {
 
         {task && showEvents && (
           <div className="space-y-1.5">
-            {events.length === 0 && <p className="py-8 text-center text-xs text-slate-600">还没有事件。</p>}
+            {events.length === 0 && <p className="py-8 text-center text-xs text-slate-600">{t('chat.noEvents')}</p>}
             {events.map((e) => {
               const meta = EVENT_META[e.type] || EVENT_META.info
               return (
@@ -406,7 +409,7 @@ export default function ChatPanel() {
         {isRunning && (
           <div className="flex items-center gap-2 pl-1 text-[11px] text-sky-300">
             <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
-            {agent?.functionLabel || 'Agent'} 正在处理…
+            {t('chat.runningHint', { name: agent?.functionLabel || 'Agent' })}
           </div>
         )}
 
@@ -424,7 +427,7 @@ export default function ChatPanel() {
             disabled={!task || isRunning}
           />
           <span className="shrink-0 whitespace-nowrap pl-1.5 text-[10px] text-slate-600">
-            {isRunning ? '执行中 · 可继续补充指令' : task ? '续跑同一会话' : '自动派单'}
+            {isRunning ? t('chat.executionHint') : task ? t('chat.continue') : t('chat.autoAssign')}
           </span>
         </div>
 
@@ -440,15 +443,11 @@ export default function ChatPanel() {
                 submit()
               }
             }}
-            placeholder={
-              task
-                ? '继续说点什么，会接着当前会话讲（Ctrl+Enter 发送）'
-                : '想让谁做什么？直接说，自动派单（Ctrl+Enter 发送）'
-            }
+            placeholder={task ? t('chat.placeholderTask') : t('chat.placeholder')}
             className="field resize-none py-1.5 text-[12px]"
           />
           <button className="btn-primary h-9 px-3 text-[12px]" disabled={!draft.trim()} onClick={submit}>
-            发送
+            {t('chat.send')}
           </button>
         </div>
       </div>

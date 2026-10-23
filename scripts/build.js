@@ -146,6 +146,26 @@ function fixLatestYml() {
   fs.writeFileSync(ymlPath, content, 'utf8')
   console.log(`[build] ✓ 已修正 latest.yml -> ${name}`)
   console.log(`[build]   version=${pkg.version} size=${size} blockMapSize=${blockMapSize}`)
+
+  // 8.0.0：给官网数据生成器留一份权威的本地清单（含 sha256）
+  try {
+    const buf = fs.readFileSync(exePath)
+    const manifest = {
+      version: pkg.version,
+      tag: `v${pkg.version}`,
+      assetName: name,
+      size,
+      blockMapSize,
+      sha512,
+      sha256: crypto.createHash('sha256').update(buf).digest('hex'),
+      releaseDate,
+      builtAt: new Date().toISOString(),
+    }
+    fs.writeFileSync(path.join(RELEASE_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8')
+    console.log(`[build] ✓ 已生成 release/manifest.json（sha256=${manifest.sha256.slice(0, 12)}…）`)
+  } catch (err) {
+    console.warn(`[build] ⚠ 生成 manifest.json 失败: ${err.message}`)
+  }
 }
 
 console.log(`[build] 目标: ${builderArgs.join(' ')}`)

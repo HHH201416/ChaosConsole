@@ -43,6 +43,8 @@ const executors = require('./executors')
 const pipeline = require('./pipeline')
 const mcpScope = require('./mcp-scope')
 const runtime = require('./runtime')
+const knowledge = require('./knowledge')
+const chaosLlm = require('./chaos-llm')
 const { quoteArg } = require('./win-quote')
 const { DEFAULT_AGENTS } = require('./seed')
 
@@ -279,6 +281,7 @@ function composePrompt({
   stage,
   roster,
   handoffBrief,
+  kb = '',
 }) {
   const parts = []
   const push = (text) => {
@@ -302,6 +305,8 @@ function composePrompt({
   } else if (extraInstruction) {
     // 续跑回合：只发补充指令，上下文由会话自己维持
     push(extraInstruction.trim())
+    // 知识库命中只在首轮注入 —— 续跑时上下文里已经有了
+    if (!isResume && kb) push(`\n${kb}`)
     return parts.join('\n')
   } else {
     push(`# 任务\n${task.title}`)
@@ -311,6 +316,7 @@ function composePrompt({
     push(`\n## 工作目录\n${task.cwd || CONFIG.DEFAULT_CWD}`)
   }
 
+  if (kb) push(`\n${kb}`)
   push(stageSection(stage))
   push(rosterSection(roster))
   push('\n请开始执行。完成后用一段话总结你做了什么、结果如何、是否还有未解决的问题。')
@@ -890,6 +896,152 @@ function cleanupRunScope(taskId) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 混沌（本地大模型）执行路径
+ *
+ * 与 claude / deveco 不同，混沌不是被 spawn 的 CLI，而是本机推理服务的
+ * HTTP 流式调用（见 chaos-llm.js）。它没有工具调用、没有服务端会话：
+ *   - 「会话」由我们自己维持 —— 续跑就是把库里的历史消息一起发回去；
+ *   - 控制指令（CHAOS_STAGE / CHAOS_HANDOFF）照常从全文里扫；
+ *   - 取消 / 超时 / 换岗统一走 AbortController。
+ * 换来的好处：完全免费、零配置、数据不出本机。
+ * ------------------------------------------------------------------ */
+
+const CHAOS_HISTORY_TURNS = 12
+const CHAOS_HISTORY_CLIP = 4000
+
+function chaosPromptUnavailable(message) {
+  return (
+    `${message}\n` +
+    '可以：① 点顶栏的「混沌」按钮按引导一键安装；' +
+    '② 或在对话底部把执行器切回 Claude / DevEco。'
+  )
+}
+
+async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeSessionId, model }) {
+  const controller = new AbortController()
+  const handle = { kill: () => controller.abort(), mock: true, chaos: true }
+  running.set(taskId, handle)
+
+  const stopPayload = () => {
+    const intent = stopIntent.get(taskId)
+    stopIntent.delete(taskId)
+    if (intent === 'timeout') return { ok: false, timedOut: true, error: '执行超时，已中断' }
+    return { ok: false, cancelled: true, handoff: intent === 'handoff' }
+  }
+
+  const timer = setTimeout(() => {
+    stopIntent.set(taskId, 'timeout')
+    store.addEvent(taskId, {
+      type: 'error',
+      name: '超时',
+      content: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束。`,
+    })
+    controller.abort()
+  }, CONFIG.RUN_TIMEOUT)
+
+  try {
+    const probe = await chaosLlm.probe({ force: true })
+    if (!probe.up) {
+      throw new Error(chaosPromptUnavailable('混沌推理服务没有就绪（可能还没安装，或引擎没在运行）。'))
+    }
+    const installed = probe.models.map((m) => m.id)
+    if (installed.length && !installed.includes(model)) {
+      store.addEvent(taskId, {
+        type: 'status',
+        name: '模型未下载',
+        content: `「${model}」还没有在本机拉取，已改用已安装的 ${installed[0]}。可在「混沌」面板里下载更多模型。`,
+      })
+      model = installed[0]
+    }
+
+    // 「会话」= 库里的历史消息 + 本轮提示词。续跑（追问/补指令）靠历史维持上下文。
+    const history = store
+      .listMessages(taskId)
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .slice(-CHAOS_HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: clip(m.content, CHAOS_HISTORY_CLIP) }))
+
+    // 人设走 system 消息（不走拼进正文的那份，避免首轮重复注入）
+    const systemText = String(agent.system_prompt || agent.systemPrompt || '').trim()
+    const messages = []
+    if (systemText) messages.push({ role: 'system', content: systemText })
+    messages.push(...history, { role: 'user', content: prompt })
+
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '混沌思考中',
+      content: `本地推理 ${model}（免费 · 数据不出本机）`,
+    })
+
+    const { text, evalCount } = await chaosLlm.chat({
+      model,
+      messages,
+      signal: controller.signal,
+      onDelta: () => {},
+    })
+
+    const fullText = String(text || '').trim()
+    if (!fullText) {
+      store.addEvent(taskId, { type: 'error', name: '空回复', content: '模型没有返回内容，可重试或换个模型。' })
+      return { ok: false, error: '混沌返回了空回复', sessionId: resumeSessionId || `chaos-${taskId}` }
+    }
+
+    store.addMessage(taskId, 'assistant', fullText)
+    const directive = scanDirective(fullText)
+    if (directive) {
+      store.addEvent(taskId, {
+        type: 'status',
+        name: directive.kind === 'stage' ? '阶段指令' : '换岗指令',
+        content: clip(directive.raw, 600),
+      })
+    }
+
+    const bits = [model]
+    if (evalCount) bits.push(`${evalCount} tokens`)
+    bits.push('本地推理 · 免费')
+    store.addEvent(taskId, {
+      type: 'success',
+      name: '运行结束',
+      content: bits.join(' · '),
+    })
+
+    return {
+      ok: true,
+      sessionId: resumeSessionId || `chaos-${taskId}`,
+      resultText: fullText,
+      toolNames: [],
+      directive: directive || null,
+    }
+  } catch (err) {
+    if (controller.signal.aborted) {
+      const p = stopPayload()
+      if (!p.cancelled && !p.handoff && !p.timedOut) {
+        return { ok: false, error: err.message, sessionId: resumeSessionId || `chaos-${taskId}` }
+      }
+      if (p.cancelled || p.handoff) {
+        store.addEvent(taskId, { type: 'error', name: '已中断', content: '本次执行被主动结束。' })
+      }
+      return { ...p, sessionId: resumeSessionId || `chaos-${taskId}` }
+    }
+    const msg = String(err?.message || err)
+    store.addEvent(taskId, {
+      type: 'error',
+      name: '混沌执行失败',
+      content: clip(msg, 1500),
+    })
+    // 服务掉了要给用户一条能落地的指引
+    if (/fetch failed|ECONNREFUSED|服务/i.test(msg)) {
+      store.addMessage(taskId, 'system', `⚠️ ${chaosPromptUnavailable('混沌推理服务连不上了。')}`)
+    }
+    return { ok: false, error: msg, sessionId: resumeSessionId || `chaos-${taskId}` }
+  } finally {
+    clearTimeout(timer)
+    if (running.get(taskId) === handle) running.delete(taskId)
+    stopIntent.delete(taskId)
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 对外入口
  * ------------------------------------------------------------------ */
 
@@ -956,6 +1108,12 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
       }
     : null
 
+  // 知识库注入：首轮按任务内容检索全库，命中才拼进提示词（设置可关）。
+  // 纯本地 LIKE 评分，不联网、不加延迟（sql.js 在内存里，查询是同步的）。
+  const kbEnabled = store.getSetting('kbInjectEnabled', '1') === '1'
+  const kbQuery = `${task.title || ''} ${task.description || ''}`.slice(0, 400)
+  const kb = kbEnabled && kbQuery.trim() ? knowledge.contextFor(kbQuery) : ''
+
   const prompt = composePrompt({
     systemPrompt: agent.system_prompt || agent.systemPrompt || '',
     task,
@@ -965,7 +1123,31 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
     stage: stageInfo,
     roster: store.listAgents(),
     handoffBrief,
+    kb,
   })
+
+  // 混沌执行器：HTTP 流式调用本机推理服务，不 spawn CLI。
+  // 必须在 bin 探测之前分流 —— executorBinary 认不得它。
+  if (executor === 'chaos') {
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '执行器',
+      content: `chaos · ${model}${isResume ? ' · 续跑' : ''}`,
+    })
+    if (CONFIG.FORCE_MOCK) {
+      const mock = await runMock({ taskId, task, agent, extraInstruction })
+      cleanupRunScope(taskId)
+      return { ...mock, executor, directive: mock.directive || null }
+    }
+    const result = await runChaos({ taskId, task, agent, prompt, extraInstruction, resumeSessionId, model })
+    cleanupRunScope(taskId)
+    if (!result.ok && !result.cancelled && !result.timedOut) {
+      // 本地大模型失败通常等于「没装/没起」：保持任务在「需要输入」，
+      // 并把安装引导写进对话，而不是默默换岗重试烧时间。
+      store.addMessage(taskId, 'system', `💡 混沌本次没能执行：${result.error || '未知原因'}`)
+    }
+    return { ...result, executor, directive: result.directive || null }
+  }
 
   const bin = executorBinary(executor)
   const canRunReal = !CONFIG.FORCE_MOCK && Boolean(bin)

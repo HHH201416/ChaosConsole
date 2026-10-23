@@ -26,29 +26,9 @@ const CONFIG = require('./config')
  * 关键词画像与看板自动派单共用 queue.FUNCTION_KEYWORDS。
  */
 function routeAgent(text, { preferIdle = true } = {}) {
-  const haystack = String(text || '').toLowerCase()
-  const agents = store.listAgents()
-  if (!agents.length) return null
-
-  const scored = agents.map((a) => {
-    // 复用 queue 的评分口径：把这句话当成一个「只有一个标题的任务」
-    const base = queue.scoreAgent(a, { title: haystack, description: '', tags: [] })
-    return { agent: a, score: base, idle: a.status === 'idle' }
-  })
-
-  // 「空闲优先」必须是硬优先级，不能只当一个 +1 的加权：
-  // 关键词得分都是 2 的倍数（职能名命中 +4），所以只要命中的那位正在忙（≥2 分），
-  // 就永远压过空闲的那位（0+1=1 分）—— 结果是把新任务塞给正在干活的员工，
-  // 两个 CLI 并发跑在一起，违背「一个员工同一时刻只干一个任务」。
-  scored.sort((x, y) => {
-    if (preferIdle && x.idle !== y.idle) return x.idle ? -1 : 1
-    return y.score - x.score || x.agent.createdAt - y.agent.createdAt
-  })
-
-  // 有明确命中就用命中的；一个都没命中则退回「第一个空闲的」
-  if (scored[0].score > 0) return scored[0].agent
-  const idle = scored.filter((s) => s.idle)
-  return (idle[0] || scored[0]).agent
+  // 8.0.0：对话与看板共用同一套派单策略（keyword / least-busy / round-robin）。
+  // queue.pickAgentForText 内部保留「空闲优先」硬约束，并处理全员忙碌的退化情况。
+  return queue.pickAgentForText(text, { preferIdle })
 }
 
 function summarizeTitle(text) {

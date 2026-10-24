@@ -1,26 +1,28 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
-import { api } from '../lib/api'
+import { api, getToken } from '../lib/api'
 import { formatTime } from '../lib/meta'
 
 /**
- * 9.3.8：WorkBuddy 式右侧预览面板 —— 对话页旁边看文件和知识库。
+ * 9.3.8/9.5.0：WorkBuddy 式右侧预览面板 —— 对话页旁边看文件、知识库和网页。
  *
  *   📚 知识库：左侧库/文档列表 + 右侧文档全文预览（纯本地检索数据源）
- *   📁 文件：当前对话工作区（任务 cwd）的目录树 + 文本文件预览
+ *   📁 文件：当前对话工作区（任务 cwd）的目录树 + 文本/HTML/图片预览
+ *   🌐 网页：应用内直接打开任意网址（内置浏览器预览）
  *
- * 数据全部走现有 REST；文件预览有越界防护（只能看工作区内的文本文件）。
+ * 数据全部走现有 REST；文件预览有越界防护（只能看工作区内的文件）。
  */
 export default function PreviewPanel() {
   const [tab, setTab] = useState('kb')
   const togglePreview = useStore((s) => s.togglePreview)
 
   return (
-    <aside className="flex w-[22rem] shrink-0 flex-col border-l border-ink-600 bg-ink-800">
+    <aside className="flex w-[24rem] shrink-0 flex-col border-l border-ink-600 bg-ink-800">
       <div className="flex shrink-0 items-center gap-1 border-b border-ink-600 px-2 py-2">
         {[
           { id: 'kb', label: '📚 知识库' },
           { id: 'files', label: '📁 文件' },
+          { id: 'web', label: '🌐 网页' },
         ].map((it) => (
           <button
             key={it.id}
@@ -41,8 +43,87 @@ export default function PreviewPanel() {
         </button>
       </div>
 
-      {tab === 'kb' ? <KbPreview /> : <FilesPreview />}
+      {tab === 'kb' ? <KbPreview /> : tab === 'files' ? <FilesPreview /> : <WebPreview />}
     </aside>
+  )
+}
+
+/* ---------------- 🌐 网页预览（应用内打开任意网址） ---------------- */
+
+const QUICK_SITES = [
+  { name: 'Bing', url: 'https://www.bing.com' },
+  { name: '百度', url: 'https://www.baidu.com' },
+  { name: 'GitHub', url: 'https://github.com' },
+  { name: 'MDN', url: 'https://developer.mozilla.org/zh-CN/' },
+]
+
+function WebPreview() {
+  const [url, setUrl] = useState('')
+  const [loaded, setLoaded] = useState('')
+
+  const go = (u) => {
+    let target = String(u || '').trim()
+    if (!target) return
+    if (!/^https?:\/\//i.test(target)) target = `https://${target}`
+    setUrl(target)
+    setLoaded(target)
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-1.5 px-2 py-2">
+        <input
+          className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
+          placeholder="输入网址，回车打开（应用内预览）"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && go(url)}
+        />
+        <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" onClick={() => go(url)}>
+          打开
+        </button>
+      </div>
+      <div className="flex shrink-0 gap-1 px-2 pb-1.5">
+        {QUICK_SITES.map((s) => (
+          <button
+            key={s.url}
+            className="rounded-md bg-ink-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-ink-600 hover:text-slate-100"
+            onClick={() => go(s.url)}
+          >
+            {s.name}
+          </button>
+        ))}
+        {loaded && (
+          <button
+            className="ml-auto rounded-md bg-ink-700 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-ink-600 hover:text-slate-100"
+            onClick={() => setLoaded('')}
+            title="回到空白页"
+          >
+            关闭页面
+          </button>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 border-t border-ink-600/70 bg-white">
+        {loaded ? (
+          <iframe
+            key={loaded}
+            src={loaded}
+            title="应用内网页预览"
+            className="h-full w-full border-0"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center bg-ink-900 text-center">
+            <div className="mb-2 text-3xl opacity-30">🌐</div>
+            <p className="text-[11px] leading-relaxed text-slate-600">
+              输入网址在应用内直接打开
+              <br />
+              部分网站禁止被内嵌时会白屏 —— 那是对方的安全策略
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -198,10 +279,17 @@ function FilesPreview() {
 
   const open = async (it) => {
     setFileErr('')
+    const ext = (it.name.split('.').pop() || '').toLowerCase()
+    // 9.5.0：HTML / 图片直接内嵌渲染（raw 路由按 content-type 原样输出，token 走 query）
+    if (['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf'].includes(ext)) {
+      const qs = `root=${encodeURIComponent(root)}&path=${encodeURIComponent(it.path)}&token=${encodeURIComponent(getToken() || '')}`
+      setFile({ path: it.path, size: it.size, rawUrl: `/api/workspace/raw?${qs}`, ext })
+      return
+    }
     try {
       const res = await api.workspaceFile(root, it.path)
       if (!res.ok) throw new Error(res.error || '读取失败')
-      setFile(res.data)
+      setFile({ ...res.data, ext })
     } catch (e) {
       setFile(null)
       setFileErr(e.message)
@@ -259,21 +347,34 @@ function FilesPreview() {
           )}
         </div>
         {/* 文件内容 */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2.5">
           {fileErr && <p className="text-[10.5px] leading-relaxed text-amber-400/80">⚠️ {fileErr}</p>}
           {file ? (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-slate-300">{file.path}</span>
-                <span className="shrink-0 font-mono text-[9px] text-slate-600">{(file.size / 1024).toFixed(1)} KB</span>
+                <span className="shrink-0 font-mono text-[9px] text-slate-600">{((file.size || 0) / 1024).toFixed(1)} KB</span>
               </div>
               {file.truncated && <p className="mb-1.5 text-[10px] text-amber-400/80">文件较大，只显示前 256KB。</p>}
-              <pre className="whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-slate-300">
-                {file.content}
-              </pre>
-            </>
+              {/* 9.5.0：HTML/图片/PDF 内嵌渲染；其余按文本展示 */}
+              {file.rawUrl ? (
+                ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico'].includes(file.ext) ? (
+                  <img src={file.rawUrl} alt={file.path} className="mx-auto max-h-full max-w-full rounded-lg" />
+                ) : (
+                  <iframe
+                    src={file.rawUrl}
+                    title={file.path}
+                    className="min-h-0 w-full flex-1 rounded-lg border border-ink-600 bg-white"
+                  />
+                )
+              ) : (
+                <pre className="whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-slate-300">
+                  {file.content}
+                </pre>
+              )}
+            </div>
           ) : (
-            !fileErr && <p className="pt-8 text-center text-[11px] text-slate-600">点左侧文本文件预览内容</p>
+            !fileErr && <p className="pt-8 text-center text-[11px] text-slate-600">点左侧文件预览（文本 / HTML / 图片）</p>
           )}
         </div>
       </div>

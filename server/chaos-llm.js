@@ -558,8 +558,7 @@ async function waitFor(fn, maxMs) {
 }
 
 /** 引擎装好后确保服务在跑：不在就 detached 拉起 `ollama serve` */
-async function ensureServerUp(job, bin) {
-  const s = await probe({ force: true })
+async function ensureServerUp(job, bin) {  const s = await probe({ force: true })
   if (s.up) return true
 
   setStep(job, '启动服务', 78, '启动混沌推理服务…')
@@ -969,6 +968,14 @@ function memoryPrompt() {
   return list.map((m) => `- ${m.text}`).join('\n')
 }
 
+/**
+ * 9.5.0：对外安全入口 —— 引擎没起就自动 detached 拉起 `ollama serve` 并等就绪。
+ * runner 在任务起跑前调用：岗位挂了混沌就一路用混沌，不让引擎没起把任务取消掉。
+ */
+async function ensureUp() {
+  return ensureServerUp({}, ollamaBin())
+}
+
 module.exports = {
   CATALOG,
   DEFAULT_PULL,
@@ -983,6 +990,7 @@ module.exports = {
   catalogFor,
   chat,
   chatWithTools,
+  ensureUp,
   quickAnswer,
   rewritePrompt,
   arena,

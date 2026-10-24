@@ -754,17 +754,20 @@ app.get('/api/workspace/tree', requireAuth, (req, res) => {
   }
 
   const items = []
+  // 9.5.0：HTML/图片/PDF 也能在预览面板内嵌渲染（走 /api/workspace/raw）
+  const RAW_PREVIEW_EXTS = new Set(['html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'pdf'])
   for (const e of entries.slice(0, 500)) {
     const full = path.join(root, e.name)
     try {
       const s = fs.statSync(full)
+      const extName = path.extname(e.name).slice(1).toLowerCase()
       items.push({
         name: e.name,
         path: full,
         dir: e.isDirectory(),
         size: s.size,
         mtime: s.mtimeMs,
-        previewable: e.isFile() && TEXT_EXT.has(path.extname(e.name).slice(1).toLowerCase()),
+        previewable: e.isFile() && (TEXT_EXT.has(extName) || RAW_PREVIEW_EXTS.has(extName)),
       })
     } catch (_) {
       /* 拿不到 stat 的（权限等）跳过 */
@@ -1024,6 +1027,50 @@ app.post('/api/chaos/redeem', requireAuth, (req, res) => {
 app.post('/api/agents/migrate-chaos', requireAuth, (_req, res) => {
   const n = store.migrateAgentsToChaos()
   res.json({ ok: true, data: { switched: n } })
+})
+
+/** 9.5.0：文件原样输出（iframe 预览用）—— HTML/图片按 content-type 直接回 */
+const RAW_EXT_TYPE = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+}
+
+app.get('/api/workspace/raw', requireAuth, (req, res) => {
+  const root = path.resolve(String(req.query.root || ''))
+  const rel = String(req.query.path || '')
+  if (!root || !rel) return res.status(400).json({ ok: false, error: '缺少 root / path 参数' })
+  const target = path.resolve(rel)
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep
+  if (target !== root && !target.startsWith(rootWithSep)) {
+    return res.status(403).json({ ok: false, error: '只能访问工作区内的文件' })
+  }
+  const ext = path.extname(target).toLowerCase()
+  if (!(ext in RAW_EXT_TYPE)) return res.status(400).json({ ok: false, error: '该文件类型不支持预览' })
+  let st
+  try {
+    st = fs.statSync(target)
+  } catch (_) {
+    return res.status(400).json({ ok: false, error: '文件不存在或无法访问' })
+  }
+  if (!st.isFile() || st.size > 10 * 1024 * 1024) {
+    return res.status(400).json({ ok: false, error: '文件过大或不是普通文件' })
+  }
+  res.setHeader('Content-Type', RAW_EXT_TYPE[ext])
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.send(fs.readFileSync(target))
 })
 
 /* ---- 8.0.2：对话重新生成 / 分支 / 时光机回滚 ---- */

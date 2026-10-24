@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
+import { api } from '../lib/api'
 import { ROLE_PRESETS, fmtBytes } from '../lib/meta'
 import { useT } from '../lib/useT'
 import PipelineEditor from './PipelineEditor'

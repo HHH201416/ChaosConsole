@@ -85,7 +85,15 @@ const USE_EXTERNAL_SERVER = process.env.CHAOS_EXTERNAL_SERVER === '1'
  * 单实例：第二次启动时聚焦已有窗口
  * ------------------------------------------------------------------ */
 
-const gotLock = app.requestSingleInstanceLock()
+// 9.5.0：端到端测试用 CHAOS_E2E=1 跳过单实例锁 —— 允许在已安装版运行的同时
+// 起一个带远程调试的测试实例（配独立 CHAOS_PORT / CHAOS_DATA_DIR，互不干扰）。
+// 同时禁硬件加速 + 禁代理：无 GPU 的受控环境里 GPU 进程会崩、系统代理会拦 localhost。
+if (process.env.CHAOS_E2E === '1') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('no-proxy-server')
+  app.commandLine.appendSwitch('disable-gpu')
+}
+const gotLock = process.env.CHAOS_E2E === '1' || app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {

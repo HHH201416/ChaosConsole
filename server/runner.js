@@ -1111,9 +1111,27 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
   }, CONFIG.RUN_TIMEOUT)
 
   try {
-    const probe = await chaosLlm.probe({ force: true })
+    // 9.5.0：岗位挂了混沌就一路用混沌 —— 引擎没起不报错取消，自动拉起再试一次
+    let probe = await chaosLlm.probe({ force: true })
     if (!probe.up) {
-      throw new Error(chaosPromptUnavailable('混沌推理服务没有就绪（可能还没安装，或引擎没在运行）。'))
+      store.addEvent(taskId, {
+        type: 'status',
+        name: '自动拉起引擎',
+        content: '混沌推理服务没在运行，正在自动启动 ollama serve…（稍等片刻）',
+      })
+      try {
+        await chaosLlm.ensureUp()
+      } catch (err) {
+        store.addEvent(taskId, {
+          type: 'error',
+          name: '引擎启动失败',
+          content: clip(String(err?.message || err), 300),
+        })
+      }
+      probe = await chaosLlm.probe({ force: true })
+    }
+    if (!probe.up) {
+      throw new Error(chaosPromptUnavailable('混沌推理服务没有就绪（可能还没安装）。'))
     }
     const installed = probe.models.map((m) => m.id)
     if (installed.length && !installed.includes(model)) {

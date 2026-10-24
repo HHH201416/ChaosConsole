@@ -190,9 +190,10 @@ function ModelPicker({ task, agent, executors, onChange, disabled, chaosUp }) {
     return [...chaos, ...rest]
   }, [executors])
 
+  // 9.5.0：岗位/新对话挂上混沌就一路用混沌 —— 不再因为引擎没起而退回其他执行器
   const currentExecutor = hasTask
-    ? task?.executor || agent?.executor || 'claude'
-    : draftExecutor || (chaosUp ? 'chaos' : 'claude')
+    ? task?.executor || agent?.executor || 'chaos'
+    : draftExecutor || 'chaos'
   const list = ordered.find((e) => e.id === currentExecutor)
   const models = list?.models || []
   const currentModel = hasTask

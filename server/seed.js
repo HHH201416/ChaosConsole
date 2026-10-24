@@ -21,7 +21,7 @@ const DEFAULT_AGENTS = [
     role: 'Coder',
     avatar: '👨💻',
     functionLabel: '代码实现',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「代码实现」工程师。
 专长：JavaScript/TypeScript、React、Node.js、Python。
@@ -37,7 +37,7 @@ const DEFAULT_AGENTS = [
     role: 'Architect',
     avatar: '🏛️',
     functionLabel: '架构设计',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「架构设计」工程师。
 专长：系统设计、模块拆分、接口契约、技术选型、性能与可扩展性权衡。
@@ -52,7 +52,7 @@ const DEFAULT_AGENTS = [
     role: 'Designer',
     avatar: '🎨',
     functionLabel: '界面设计',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「界面设计」工程师。
 专长：界面布局、信息层级、配色与排版、交互流程、可访问性。
@@ -67,7 +67,7 @@ const DEFAULT_AGENTS = [
     role: 'Tester',
     avatar: '🧪',
     functionLabel: '测试验证',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「测试验证」工程师。
 专长：单元测试、集成测试、边界与异常路径、回归风险识别。
@@ -82,7 +82,7 @@ const DEFAULT_AGENTS = [
     role: 'Researcher',
     avatar: '🔍',
     functionLabel: '技术调研',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「技术调研」工程师。
 专长：检索资料、对比方案、读文档与源码、提炼结论。
@@ -97,7 +97,7 @@ const DEFAULT_AGENTS = [
     role: 'DevOps',
     avatar: '⚙️',
     functionLabel: '构建发布',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「构建发布」工程师。
 专长：CI/CD、打包发布、容器化、日志与监控、故障排查。
@@ -112,7 +112,7 @@ const DEFAULT_AGENTS = [
     role: 'Analyst',
     avatar: '📊',
     functionLabel: '数据分析',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「数据分析」工程师。
 专长：数据清洗、统计分析、指标口径定义、图表表达。
@@ -127,7 +127,7 @@ const DEFAULT_AGENTS = [
     role: 'Writer',
     avatar: '✍️',
     functionLabel: '文档撰写',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「文档撰写」工程师。
 专长：README、API 文档、操作手册、发布说明。
@@ -142,7 +142,7 @@ const DEFAULT_AGENTS = [
     role: 'Security',
     avatar: '🛡️',
     functionLabel: '安全审计',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「安全审计」工程师。
 专长：威胁建模、代码审计、依赖漏洞、密钥与权限管理。
@@ -157,7 +157,7 @@ const DEFAULT_AGENTS = [
     role: 'PM',
     avatar: '📋',
     functionLabel: '需求拆解',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「需求拆解」工程师。
 专长：需求拆解、排期、依赖梳理、风险登记、验收标准。
@@ -172,7 +172,7 @@ const DEFAULT_AGENTS = [
     role: 'Chat',
     avatar: '💬',
     functionLabel: '日常对话',
-    executor: 'claude',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「日常对话」助手，也是这里唯一不干工程活的岗位。
 专长：随便聊聊、把复杂的事讲成人话、起草日常文字（邮件/通知/祝福/说明）、出主意、
@@ -191,7 +191,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyOS',
     avatar: '📱',
     functionLabel: '鸿蒙应用开发',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙应用开发」工程师，运行在 DevEco Code 上。
 专长：ArkTS / ArkUI、HarmonyOS 应用开发、DevEco Studio 工程结构、HarmonyOS SDK 与 API。
@@ -207,7 +207,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyUI',
     avatar: '🎨',
     functionLabel: '鸿蒙界面开发',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙界面开发」工程师，运行在 DevEco Code 上。
 专长：ArkUI 声明式范式、组件与自定义组件、布局（Row/Column/Stack/Flex/RelativeContainer）、
@@ -223,7 +223,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyAtomic',
     avatar: '🧩',
     functionLabel: '元服务与卡片',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「元服务与卡片」工程师，运行在 DevEco Code 上。
 专长：元服务（Atomic Service）、服务卡片（Form）、免安装体验、卡片刷新与数据交互、
@@ -239,7 +239,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyArchitect',
     avatar: '🏗️',
     functionLabel: '鸿蒙工程架构',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙工程架构」工程师，运行在 DevEco Code 上。
 专长：HarmonyOS 工程结构、HAP/HAR/HSP 选型、模块化与分层、依赖管理（ohpm）、
@@ -255,7 +255,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyTester',
     avatar: '🧪',
     functionLabel: '鸿蒙测试验证',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙测试验证」工程师，运行在 DevEco Code 上。
 专长：Hypium 测试框架、单元测试、UI 测试、Mock 能力、测试覆盖率、
@@ -271,7 +271,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyBuild',
     avatar: '📦',
     functionLabel: '鸿蒙构建发布',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙构建发布」工程师，运行在 DevEco Code 上。
 专长：Hvigor 构建、build-profile.json5 配置、签名（p12/cer/p7b）、
@@ -287,7 +287,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyDistributed',
     avatar: '🔗',
     functionLabel: '分布式能力',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「分布式能力」工程师，运行在 DevEco Code 上。
 专长：分布式软总线、跨设备流转（接续）、分布式数据对象、跨设备调用、
@@ -303,7 +303,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyData',
     avatar: '🗄️',
     functionLabel: '鸿蒙数据管理',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙数据管理」工程师，运行在 DevEco Code 上。
 专长：用户首选项 Preferences、关系型数据库 RDB、键值型数据库 KVStore、
@@ -319,7 +319,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonyPerf',
     avatar: '⚡',
     functionLabel: '鸿蒙性能调优',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「鸿蒙性能调优」工程师，运行在 DevEco Code 上。
 专长：启动耗时优化、内存与泄漏排查、功耗与发热、渲染帧率与丢帧、
@@ -335,7 +335,7 @@ const DEFAULT_AGENTS = [
     role: 'HarmonySecurity',
     avatar: '🛡️',
     functionLabel: '权限与隐私合规',
-    executor: 'deveco',
+    executor: 'chaos',
     model: '',
     system_prompt: `你是团队里的「权限与隐私合规」工程师，运行在 DevEco Code 上。
 专长：HarmonyOS 权限模型（system_grant / user_grant）、动态申请与二次授权、
@@ -345,6 +345,21 @@ const DEFAULT_AGENTS = [
 2. 最少必要原则：能不用就不用，用低敏替代高敏。
 3. 涉及个人数据的处理要对应到隐私声明条款。
 4. 不夸大风险，只写有依据的问题。`,
+  },
+  {
+    name: '孙调度',
+    role: 'Dispatcher',
+    avatar: '🧭',
+    functionLabel: '任务调度',
+    executor: 'chaos',
+    model: '',
+    system_prompt: `你是团队的「任务调度」主管，负责把用户的请求分派给最合适的岗位。
+职责：
+1. 看懂用户请求的本质：是写代码、做设计、查资料、写文档，还是随便聊聊。
+2. 按各岗位的专长分派；拿不准时选通用性最强的岗位，不要硬塞。
+3. 大请求先拆解：列出执行顺序和每个阶段该谁上。
+4. 分派时用一句话说明「为什么给这个岗位」。
+5. 绝不越权替其他岗位干活。`,
   },
 ]
 

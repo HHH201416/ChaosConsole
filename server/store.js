@@ -134,6 +134,32 @@ function listAgents() {
   return db.all('SELECT * FROM agents ORDER BY created_at ASC, rowid ASC').map(mapAgent)
 }
 
+/**
+ * 9.3.8：把所有岗位一次性迁到混沌执行器（claude/deveco 已下线）。
+ * 模型清空 → 运行时按混沌的默认模型解析。返回迁移条数。
+ */
+function migrateAgentsToChaos() {
+  const before = db.get("SELECT COUNT(*) AS n FROM agents WHERE executor != 'chaos'").n || 0
+  if (before > 0) {
+    db.run("UPDATE agents SET executor = 'chaos', model = '' WHERE executor != 'chaos'")
+  }
+  bus.emit('agents:changed', { reason: 'migrate-chaos' })
+  return before
+}
+
+/**
+ * 9.3.8：确保「任务调度」岗位存在（老库升级时补种；新库由 seed 自带）。
+ * 返回 1 表示新建了，0 表示本来就有。
+ */
+function ensureDispatcherAgent() {
+  const hit = db.get("SELECT id FROM agents WHERE role = 'Dispatcher' LIMIT 1")
+  if (hit) return 0
+  const seed = DEFAULT_AGENTS.find((a) => a.role === 'Dispatcher')
+  if (!seed) return 0
+  createAgent(seed)
+  return 1
+}
+
 function getAgent(id) {
   return mapAgent(db.get('SELECT * FROM agents WHERE id = ?', [id]))
 }
@@ -698,6 +724,8 @@ module.exports = {
   TASK_STATUSES,
   AGENT_STATUSES,
   listAgents,
+  migrateAgentsToChaos,
+  ensureDispatcherAgent,
   getAgent,
   createAgent,
   updateAgent,

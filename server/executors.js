@@ -19,6 +19,26 @@ const os = require('os')
 const { spawn } = require('child_process')
 
 const CONFIG = require('./config')
+const store = require('./store')
+
+/* ------------------------------------------------------------------ *
+ * 9.3.8：第三方 API 执行器（OpenAI 兼容）—— 用户自己填 baseURL / key / model，
+ * 配置存在本机 settings 里，密钥不出本机。没有配置时该执行器不可用。
+ * ------------------------------------------------------------------ */
+
+function apiConfig() {
+  return {
+    baseUrl: String(store.getSetting('apiBaseUrl', '') || '').trim().replace(/\/+$/, ''),
+    apiKey: String(store.getSetting('apiKey', '') || '').trim(),
+    model: String(store.getSetting('apiModel', '') || '').trim(),
+  }
+}
+
+function apiReady() {
+  const c = apiConfig()
+  return Boolean(c.baseUrl && c.apiKey && c.model)
+}
+
 const chaosLlm = require('./chaos-llm')
 
 /* ------------------------------------------------------------------ *
@@ -287,20 +307,16 @@ const EXECUTORS = [
     available: chaosAvailable,
   },
   {
-    id: 'claude',
-    label: 'Claude Code',
-    hint: 'Anthropic 官方 CLI，事件流为 stream-json',
-    models: () => CLAUDE_MODELS,
-    available: () => Boolean(require('./runner').resolveClaudeBin()),
-  },
-  {
-    id: 'deveco',
-    label: 'DevEco Code',
-    hint: '华为 DevEco Code CLI，事件流为 NDJSON',
-    models: () => listDevecoModels(),
-    available: devecoAvailable,
+    id: 'api',
+    label: '第三方 API（OpenAI 兼容）',
+    hint: '自己填接口地址 / 密钥 / 模型，密钥只存本机',
+    models: () => (apiReady() ? [{ id: apiConfig().model, label: apiConfig().model, installed: true }] : []),
+    available: apiReady,
   },
 ]
+
+/* 9.3.8：claude / deveco 不再对外提供（存量记录仍能跑），对用户只暴露混沌与第三方 API */
+const PUBLIC_EXECUTORS = EXECUTORS.filter((e) => e.id === 'chaos' || e.id === 'api')
 
 const EXECUTOR_IDS = EXECUTORS.map((e) => e.id)
 
@@ -309,8 +325,9 @@ function isValidExecutor(id) {
 }
 
 /** 供 /api/system 与前端下拉框使用 */
+/** 供 /api/system 与前端下拉框使用（9.3.8：只暴露 混沌 + 第三方 API） */
 function describe() {
-  return EXECUTORS.map((e) => ({
+  return PUBLIC_EXECUTORS.map((e) => ({
     id: e.id,
     label: e.label,
     hint: e.hint,
@@ -347,6 +364,11 @@ function isValidModel(executor, model) {
     return known.length === 0 || known.some((m) => m.id === id)
   }
 
+  if (executor === 'api') {
+    // 第三方 API 的模型名走 JSON body（fetch，不进命令行），但仍然挡掉控制字符
+    return !/[\r\n\u0000]/.test(id) && id.length <= 120
+  }
+
   return CLAUDE_MODELS.some((m) => m.id === id)
 }
 
@@ -376,6 +398,8 @@ module.exports = {
   describe,
   defaultModel,
   isValidModel,
+  apiConfig,
+  apiReady,
   resolveDevecoBin,
   devecoAvailable,
   resolveDevecoTools,

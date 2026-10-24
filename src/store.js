@@ -160,6 +160,12 @@ export const useStore = create((set, get) => ({
      chat = 对话工作台（岗位栏+看板+聊天），其余为独立功能页 */
   mainView: 'chat',
 
+  /* 9.3.8：右侧预览面板（文件 / 知识库），对话页里可开关 */
+  previewOpen: initialPrefs.previewOpen,
+
+  /* 9.3.8：安全锁屏（设置了 PIN 后，点 🔒 或快捷键锁住整个界面） */
+  locked: false,
+
   /* 8.0.0：Watt Toolkit 提示 */
   wattPromptOpen: false,
 
@@ -286,10 +292,17 @@ export const useStore = create((set, get) => ({
       }
     } catch (err) {
       if (err.status === 401) {
-        // token 过期（比如后端重启过）→ 回到登录页
-        setToken(null)
-        set({ authed: false, token: null, loginError: '会话已失效，请重新输入授权码' })
-        return
+        // 9.3.8：授权码登录已关闭 —— token 过期就静默补一张新票再试一次，
+        // 不再把用户踢回登录页
+        try {
+          const r = await api.login('')
+          setToken(r.token)
+          set({ token: r.token, authed: true })
+          return get().bootstrap()
+        } catch (_) {
+          set({ authed: false, token: null, loginError: '' })
+          return
+        }
       }
       get().toast(err.message, 'error')
     }
@@ -447,6 +460,33 @@ export const useStore = create((set, get) => ({
   /** 9.0.0：切换主工作区页面（WorkBuddy 式导航栏） */
   setMainView(view) {
     set({ mainView: view || 'chat' })
+  },
+
+  /** 9.3.8：右侧预览面板开关（文件 / 知识库） */
+  togglePreview(open) {
+    const next = open === undefined ? !get().previewOpen : Boolean(open)
+    set({ previewOpen: next })
+    saveUiPrefs({ previewOpen: next })
+  },
+
+  /** 9.3.8：锁屏 / 解锁（PIN 校验走后端，PIN 只存本机） */
+  lockApp() {
+    if (!get().system?.hasPin) {
+      get().toast('先到 设置 → 安全 里设置一个 PIN，才能锁屏', 'info')
+      return
+    }
+    set({ locked: true })
+  },
+
+  async unlockApp(pin) {
+    try {
+      const res = await api.unlock(pin)
+      if (!res.ok) throw new Error(res.error || 'PIN 不正确')
+      set({ locked: false })
+      return true
+    } catch (err) {
+      return false
+    }
   },
 
   /** 9.0.0：技能页选中的指令模板，ChatPanel 消费后清空 */
@@ -1245,17 +1285,6 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async generateRedeemCode() {
-    try {
-      const res = await api.chaosRedeemGenerate()
-      if (!res.ok) throw new Error(res.error || '生成失败')
-      return res.data?.code || ''
-    } catch (err) {
-      get().toast(err.message, 'error')
-      return ''
-    }
-  },
-
   /* ---- 混沌 · 本地大模型 ---- */
   async loadChaosStatus() {
     try {
@@ -1385,9 +1414,18 @@ function connectSocket() {
   ws.onclose = (event) => {
     useStore.setState({ conn: 'closed' })
     if (event.code === 4001) {
-      // 服务端拒绝了 token
-      setToken(null)
-      useStore.setState({ authed: false, token: null, loginError: '会话已失效，请重新输入授权码' })
+      // 9.3.8：授权码已关 —— token 被拒就静默补一张新票重连，不踢回登录页
+      ;(async () => {
+        try {
+          const r = await api.login('')
+          setToken(r.token)
+          useStore.setState({ token: r.token, authed: true })
+          scheduleReconnect()
+        } catch (_) {
+          setToken(null)
+          useStore.setState({ authed: false, token: null, loginError: '' })
+        }
+      })()
       return
     }
     scheduleReconnect()

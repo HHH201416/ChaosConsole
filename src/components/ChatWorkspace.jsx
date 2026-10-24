@@ -1,14 +1,18 @@
 import { useState } from 'react'
+import { useStore } from '../store'
 import ConversationList from './ConversationList'
 import AgentSidebar from './AgentSidebar'
 import ChatPanel from './ChatPanel'
+import PreviewPanel from './PreviewPanel'
 
 /**
  * 9.1.0：对话页工作区 —— WorkBuddy 式布局。
  * 左列：可切换的会话列表 / 岗位列表；右侧：全宽聊天主区。
+ * 9.3.8：可开关的预览面板（文件 / 知识库）挂在最右侧。
  */
 export default function ChatWorkspace({ onNewAgent }) {
   const [tab, setTab] = useState('chats')
+  const previewOpen = useStore((s) => s.previewOpen)
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -37,6 +41,9 @@ export default function ChatWorkspace({ onNewAgent }) {
 
       {/* 全宽聊天主区 */}
       <ChatPanel />
+
+      {/* 9.3.8：右侧预览面板（文件 / 知识库） */}
+      {previewOpen && <PreviewPanel />}
     </div>
   )
 }

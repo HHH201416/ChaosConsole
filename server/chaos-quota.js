@@ -84,36 +84,21 @@ function consume(tokens, fallbackChars = 0) {
 
 /* ---------------- 兑换码（兑换「永久 token」） ---------------- */
 
-function listCodes() {
-  return safeParse(store.getSetting(CODES_KEY, '[]'), [])
-}
+/** 9.3.8：兑换码固定 HY2014，自产码逻辑整体移除 */
 
-function saveCodes(list) {
-  store.setSetting(CODES_KEY, JSON.stringify(list))
-}
+/**
+ * 9.3.8：兑换码固定为 HY2014（不再支持本机自产码）。
+ * 兑换成功 → 立刻升级为「永久 token」；重复兑换幂等成功。
+ */
+const FIXED_CODE = 'HY2014'
 
-/** 生成一个兑换码（本机自用：点一下生成，拿去兑换即得永久额度） */
-function generateCode({ note = '' } = {}) {
-  const seg = () => crypto.randomBytes(2).toString('hex').toUpperCase()
-  const code = `CHAOS-${seg()}-${seg()}-${seg()}`
-  const list = listCodes()
-  list.push({ code, note: String(note || '').slice(0, 60), createdAt: Date.now(), usedAt: 0 })
-  saveCodes(list)
-  return code
-}
-
-/** 兑换：码存在且没用过 → 立刻升级为「永久 token」 */
 function redeem(code) {
   const clean = String(code || '').trim().toUpperCase()
   if (!clean) return { ok: false, error: '请输入兑换码' }
-  const list = listCodes()
-  const hit = list.find((c) => c.code === clean)
-  if (!hit) return { ok: false, error: '兑换码不存在，检查一下大小写和连字符' }
-  if (hit.usedAt) return { ok: false, error: '这个兑换码已经被用过了' }
+  if (clean !== FIXED_CODE) return { ok: false, error: '兑换码不正确' }
 
-  hit.usedAt = Date.now()
-  saveCodes(list)
   const q = rawQuota()
+  if (q.permanent) return { ok: true, data: { permanent: true, code: clean, already: true } }
   store.setSetting(
     QUOTA_KEY,
     JSON.stringify({ ...q, permanent: true, redeemedAt: Date.now(), redeemedCode: clean }),
@@ -128,7 +113,5 @@ module.exports = {
   publicUsage,
   canUse,
   consume,
-  generateCode,
   redeem,
-  listCodes,
 }

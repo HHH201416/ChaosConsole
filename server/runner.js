@@ -218,7 +218,7 @@ function displayToolName(raw) {
  * 换岗原语，解析器只负责**识别**，不认识岗位、不做判断。
  * ------------------------------------------------------------------ */
 
-const DIRECTIVE_RE = /^\s*CHAOS_(STAGE|HANDOFF):\s*(\{.*\})\s*$/
+const DIRECTIVE_RE = /^\s*CHAOS_(STAGE|HANDOFF|ASK):\s*(\{.*\}|.+)\s*$/
 
 /**
  * 扫描一段文本里的控制指令。逐行匹配，只认**单行 JSON** ——
@@ -231,6 +231,10 @@ function scanDirective(text) {
   for (const line of src.split(/\r?\n/)) {
     const m = DIRECTIVE_RE.exec(line)
     if (!m) continue
+    // 9.3.8：CHAOS_ASK 后面直接跟问题文本，不用 JSON（对模型最省事）
+    if (m[1].toUpperCase() === 'ASK') {
+      return { kind: 'ask', payload: { question: m[2].trim() }, raw: line.trim() }
+    }
     try {
       return { kind: m[1].toLowerCase(), payload: JSON.parse(m[2]), raw: line.trim() }
     } catch (_) {
@@ -256,6 +260,7 @@ function stageSection(stage) {
     '需要推进阶段或把任务交给别的岗位时，在回复里**单独起一行**写下面对应的指令（不写就不会触发）：',
     `- 本阶段做完、交给下一阶段：\`CHAOS_STAGE: {"done":"${stage.current || stage.pipeline[0].stage}","next":"下一阶段的阶段名","summary":"这一步做了什么"}\``,
     '- 需要别的岗位接手：`CHAOS_HANDOFF: {"role":"岗位代码","reason":"为什么交给它","summary":"交接说明"}`',
+    '- **不确定怎么做、缺关键信息时（优先用这个，别瞎猜）**：单独一行 `CHAOS_ASK: 你要问的问题`——任务会停下来等用户回答，回答后你再继续',
   ].join('\n')
 }
 
@@ -917,6 +922,172 @@ function chaosPromptUnavailable(message) {
   )
 }
 
+/* ------------------------------------------------------------------ *
+ * 9.3.8：混沌本地工具协议 —— 让混沌真的能操作项目文件（自修改、改代码）。
+ * 只暴露三个安全工具：列目录 / 读文本 / 写文本，全部锁死在工作区 cwd 之内。
+ * 每次工具调用都写进事件流（对话页全程可见）。环境变量 CHAOS_TOOLS=0 可关。
+ * ------------------------------------------------------------------ */
+
+const CHAOS_TOOLS_MAX_ROUNDS = 8
+const TOOL_TEXT_EXT = new Set([
+  'md', 'markdown', 'txt', 'json', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'scss', 'less',
+  'html', 'htm', 'vue', 'py', 'java', 'kt', 'kts', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs',
+  'yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'sh', 'bat', 'ps1', 'sql', 'log', 'xml', 'csv',
+])
+const TOOL_IGNORED = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.venv'])
+
+const CHAOS_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'list_files',
+      description: '列出工作区某个目录下的文件与子目录（一层）',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作区的目录路径，默认工作区根' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: '读取工作区里一个文本文件的内容（最多 256KB）',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作区的文件路径' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: '把完整内容写入工作区里的一个文本文件（覆盖或新建）',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作区的文件路径' },
+          content: { type: 'string', description: '要写入的完整文本内容' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+]
+
+/** 把工具给的相对路径解析到 cwd 之内；越界返回 null */
+function resolveToolPath(cwd, rel) {
+  const base = path.resolve(String(cwd || ''))
+  const target = path.resolve(base, String(rel || '.'))
+  const baseWithSep = base.endsWith(path.sep) ? base : base + path.sep
+  if (target !== base && !target.startsWith(baseWithSep)) return null
+  return target
+}
+
+/** 执行一个工具调用，返回给模型看的字符串结果 */
+function runChaosTool(cwd, call) {
+  const name = String(call?.function?.name || '')
+  const args = call?.function?.arguments || {}
+  const rel = String(args.path || '.')
+  const target = resolveToolPath(cwd, rel)
+  if (!target) return `错误：路径越界，只能操作工作区内的文件（${rel}）`
+
+  try {
+    if (name === 'list_files') {
+      const entries = fs
+        .readdirSync(target, { withFileTypes: true })
+        .filter((e) => !TOOL_IGNORED.has(e.name))
+        .slice(0, 300)
+      return entries
+        .map((e) => {
+          let size = ''
+          if (e.isFile()) {
+            try {
+              size = ` (${fs.statSync(path.join(target, e.name)).size}B)`
+            } catch (_) {
+              /* ignore */
+            }
+          }
+          return `${e.isDirectory() ? '[dir] ' : '      '}${e.name}${size}`
+        })
+        .join('\n') || '（空目录）'
+    }
+
+    if (name === 'read_file') {
+      const ext = path.extname(target).slice(1).toLowerCase()
+      if (!TOOL_TEXT_EXT.has(ext)) return `错误：不支持读取 .${ext || '无扩展名'} 类型的文件`
+      const st = fs.statSync(target)
+      if (!st.isFile()) return '错误：不是普通文件'
+      const buf = fs.readFileSync(target)
+      return buf.length > 256 * 1024
+        ? buf.subarray(0, 256 * 1024).toString('utf8') + '\n…（超过 256KB 被截断）'
+        : buf.toString('utf8') || '（空文件）'
+    }
+
+    if (name === 'write_file') {
+      const ext = path.extname(target).slice(1).toLowerCase()
+      if (ext && !TOOL_TEXT_EXT.has(ext)) return `错误：不支持写入 .${ext} 类型的文件`
+      const content = String(args.content ?? '')
+      if (content.length > 1024 * 1024) return '错误：内容超过 1MB 上限'
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, content, 'utf8')
+      return `已写入 ${path.relative(path.resolve(cwd), target)}（${Buffer.byteLength(content, 'utf8')} 字节）`
+    }
+
+    return `错误：未知工具 ${name}`
+  } catch (err) {
+    return `错误：${err.message}`
+  }
+}
+
+/**
+ * 工具循环：最多 CHAOS_TOOLS_MAX_ROUNDS 轮。
+ * 返回 { text: null } 表示模型没走工具路径（或循环后需要再走普通生成），
+ * 返回 { text } 表示模型已在工具循环里给出最终回答。
+ */
+async function runChaosToolLoop({ taskId, cwd, model, messages, signal }) {
+  if (process.env.CHAOS_TOOLS === '0' || !cwd) return { text: null }
+  const convo = messages.slice()
+  let lastEval = 0
+
+  for (let round = 0; round < CHAOS_TOOLS_MAX_ROUNDS; round += 1) {
+    let out
+    try {
+      out = await chaosLlm.chatWithTools({ model, messages: convo, tools: CHAOS_TOOLS, signal })
+    } catch (err) {
+      if (round === 0) return { text: null } // 工具通道不可用 → 退回普通对话
+      throw err
+    }
+    lastEval += out.evalCount || 0
+
+    if (!out.toolCalls.length) {
+      // 模型直接给了最终回答（或第一轮就没走工具）
+      return out.content ? { text: out.content, evalCount: lastEval } : { text: null }
+    }
+
+    convo.push({ role: 'assistant', content: out.content || '', tool_calls: out.toolCalls })
+    for (const call of out.toolCalls) {
+      const fname = String(call?.function?.name || '?')
+      const argStr = clip(JSON.stringify(call?.function?.arguments || {}), 160)
+      const result = runChaosTool(cwd, call)
+      store.addEvent(taskId, {
+        type: 'status',
+        name: `工具 · ${fname}`,
+        content: `${argStr}\n→ ${clip(result, 300)}`,
+      })
+      convo.push({ role: 'tool', content: result })
+    }
+  }
+
+  return { text: null, evalCount: lastEval }
+}
+
 async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeSessionId, model }) {
   const controller = new AbortController()
   const handle = { kill: () => controller.abort(), mock: true, chaos: true }
@@ -1004,12 +1175,26 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
     })
 
     const started = Date.now()
-    let { text, evalCount, evalDuration, doneReason } = await chaosLlm.chat({
-      model,
-      messages,
-      signal: controller.signal,
-      onDelta: () => {},
-    })
+
+    // 9.3.8：先走工具循环 —— 模型要读/写文件（自修改、改代码）就在这里发生；
+    // 模型不支持工具或没用工具时退回普通流式生成。
+    let text = ''
+    let evalCount = 0
+    let evalDuration = 0
+    let doneReason = ''
+    const toolFinal = await runChaosToolLoop({ taskId, cwd: task.cwd, model, messages, signal: controller.signal })
+    if (toolFinal.text !== null) {
+      text = toolFinal.text
+      evalCount = toolFinal.evalCount || 0
+      doneReason = 'stop'
+    } else {
+      ;({ text, evalCount, evalDuration, doneReason } = await chaosLlm.chat({
+        model,
+        messages,
+        signal: controller.signal,
+        onDelta: () => {},
+      }))
+    }
 
     // 8.0.2：长回答被截断（done_reason=length）时自动续写一次，接上而不是烂尾
     if (doneReason === 'length' && !controller.signal.aborted) {
@@ -1111,12 +1296,155 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
 }
 
 /* ------------------------------------------------------------------ *
+ * 9.3.8：第三方 API 执行器（OpenAI 兼容 /chat/completions）。
+ * 用户在设置里填 baseURL / key / model；密钥只存本机 settings。
+ * 与混沌同一套会话组装（人设 + 专家 + 记忆 + 知识库注入），只是换传输层。
+ * ------------------------------------------------------------------ */
+
+async function runApi({ taskId, task, agent, prompt, extraInstruction, resumeSessionId, model }) {
+  const controller = new AbortController()
+  const handle = { kill: () => controller.abort(), mock: true, chaos: true }
+  running.set(taskId, handle)
+
+  const stopPayload = () => {
+    const intent = stopIntent.get(taskId)
+    stopIntent.delete(taskId)
+    if (intent === 'timeout') return { ok: false, timedOut: true, error: '执行超时，已中断' }
+    return { ok: false, cancelled: true, handoff: intent === 'handoff' }
+  }
+
+  const timer = setTimeout(() => {
+    stopIntent.set(taskId, 'timeout')
+    store.addEvent(taskId, {
+      type: 'error',
+      name: '超时',
+      content: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束。`,
+    })
+    controller.abort()
+  }, CONFIG.RUN_TIMEOUT)
+
+  try {
+    const cfg = executors.apiConfig()
+    if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+      throw new Error('第三方 API 还没配置好：到 设置 → 第三方 API，填接口地址、密钥与模型名。')
+    }
+
+    const history = store
+      .listMessages(taskId)
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .slice(-CHAOS_HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: clip(m.content, CHAOS_HISTORY_CLIP) }))
+
+    const systemText = String(agent.system_prompt || agent.systemPrompt || '').trim()
+    const expert = chaosLlm.expertById(String(store.getSetting('chaosExpert', 'default') || 'default'))
+    const memoryText = chaosLlm.memoryPrompt()
+    const systemParts = []
+    if (systemText) systemParts.push(systemText)
+    if (expert && expert.prompt) systemParts.push(`【专家模式：${expert.label}】\n${expert.prompt}`)
+    if (memoryText) {
+      systemParts.push('【用户长期记忆】（用户明确让你记住的偏好与事实，回答时主动遵循）\n' + memoryText)
+    }
+    try {
+      const kbContext = knowledge.contextFor(`${task.title || ''} ${prompt}`.trim().slice(0, 600))
+      if (kbContext) systemParts.push(kbContext)
+    } catch (_) {
+      /* 知识库出问题不拦截对话 */
+    }
+
+    const messages = []
+    if (systemParts.length) messages.push({ role: 'system', content: systemParts.join('\n\n') })
+    messages.push(...history, { role: 'user', content: prompt })
+
+    const useModel = cfg.model || model
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '第三方 API',
+      content: `${useModel} @ ${cfg.baseUrl}（密钥只存在本机）`,
+    })
+
+    const started = Date.now()
+    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+      body: JSON.stringify({ model: useModel, messages }),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const b = await res.json()
+        detail = String(b?.error?.message || b?.error || '')
+      } catch (_) {
+        /* ignore */
+      }
+      throw new Error(`第三方 API 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`)
+    }
+    const body = await res.json()
+    const fullText = String(body?.choices?.[0]?.message?.content || '').trim()
+    if (!fullText) throw new Error('第三方 API 返回了空回复')
+
+    store.addMessage(taskId, 'assistant', fullText)
+    const directive = scanDirective(fullText)
+    if (directive) {
+      store.addEvent(taskId, {
+        type: 'status',
+        name: directive.kind === 'stage' ? '阶段指令' : '换岗指令',
+        content: clip(directive.raw, 600),
+      })
+    }
+
+    const usage = body?.usage || {}
+    const tokens = Number(usage.completion_tokens) || 0
+    store.addEvent(taskId, {
+      type: 'success',
+      name: '运行结束',
+      content: `${useModel} · ${tokens || fullText.length + ' 字'} · 耗时 ${Math.round((Date.now() - started) / 100) / 10}s · 第三方 API`,
+    })
+    store.addEvent(taskId, {
+      type: 'status',
+      name: 'chaos:stats',
+      content: JSON.stringify({
+        chars: fullText.length,
+        tokens,
+        speed: 0,
+        ms: Date.now() - started,
+        model: useModel,
+        via: 'api',
+      }),
+    })
+
+    return {
+      ok: true,
+      sessionId: resumeSessionId || `api-${taskId}`,
+      resultText: fullText,
+      toolNames: [],
+      directive: directive || null,
+    }
+  } catch (err) {
+    if (controller.signal.aborted) {
+      const p = stopPayload()
+      if (!p.cancelled && !p.handoff && !p.timedOut) {
+        return { ok: false, error: err.message, sessionId: resumeSessionId || `api-${taskId}` }
+      }
+      return { ...p, sessionId: resumeSessionId || `api-${taskId}` }
+    }
+    const msg = String(err?.message || err)
+    store.addEvent(taskId, { type: 'error', name: '第三方 API 执行失败', content: clip(msg, 1500) })
+    return { ok: false, error: msg, sessionId: resumeSessionId || `api-${taskId}` }
+  } finally {
+    clearTimeout(timer)
+    if (running.get(taskId) === handle) running.delete(taskId)
+    stopIntent.delete(taskId)
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 对外入口
  * ------------------------------------------------------------------ */
 
-/** 决定这次跑用哪个执行器、哪个模型：任务覆盖 > Agent 设置 > 执行器默认 */
+/** 决定这次跑用哪个执行器、哪个模型：任务覆盖 > Agent 设置 > 执行器默认（9.3.8：默认混沌） */
 function resolveRuntime(task, agent) {
-  const executor = task.executor || agent.executor || 'claude'
+  const executor = task.executor || agent.executor || 'chaos'
   let model = task.model || agent.model || ''
   if (!model) model = executors.defaultModel(executor) || ''
   return { executor, model }
@@ -1214,6 +1542,26 @@ async function execute({ task, agent, extraInstruction = '', resumeSessionId = n
       // 本地大模型失败通常等于「没装/没起」：保持任务在「需要输入」，
       // 并把安装引导写进对话，而不是默默换岗重试烧时间。
       store.addMessage(taskId, 'system', `💡 混沌本次没能执行：${result.error || '未知原因'}`)
+    }
+    return { ...result, executor, directive: result.directive || null }
+  }
+
+  // 9.3.8：第三方 API 执行器（OpenAI 兼容）—— 同样走 HTTP，不 spawn CLI
+  if (executor === 'api') {
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '执行器',
+      content: `api · ${model}${isResume ? ' · 续跑' : ''}`,
+    })
+    if (CONFIG.FORCE_MOCK) {
+      const mock = await runMock({ taskId, task, agent, extraInstruction })
+      cleanupRunScope(taskId)
+      return { ...mock, executor, directive: mock.directive || null }
+    }
+    const result = await runApi({ taskId, task, agent, prompt, extraInstruction, resumeSessionId, model })
+    cleanupRunScope(taskId)
+    if (!result.ok && !result.cancelled && !result.timedOut) {
+      store.addMessage(taskId, 'system', `💡 第三方 API 本次没能执行：${result.error || '未知原因'}`)
     }
     return { ...result, executor, directive: result.directive || null }
   }

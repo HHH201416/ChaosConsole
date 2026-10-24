@@ -324,6 +324,21 @@ function settle(taskId, result) {
   // 有排队的补充指令 → 继续跑，不落位
   if (drainPending(taskId)) return
 
+  // 9.3.8：混沌主动提问（CHAOS_ASK）—— 停在「需要输入」，用户回复后续跑。
+  // 问题在对话里已经有 assistant 消息（指令原文）+ 下面这条系统高亮。
+  if (result.directive && result.directive.kind === 'ask') {
+    const q = String(result.directive.payload?.question || '').trim()
+    store.addMessage(taskId, 'system', `❓ 混沌有个问题想确认：${q || '需要你的输入'}\n直接在下面回复，回答后自动继续。`)
+    store.updateTask(taskId, { status: 'needs_input', runState: 'waiting' })
+    store.addEvent(taskId, {
+      type: 'status',
+      name: '混沌提问',
+      content: '混沌不确定怎么做，已停下来等你回答 —— 回复后自动继续。',
+    })
+    store.releaseAgentIfIdle(task.agentId)
+    return
+  }
+
   const finalText = result.resultText || lastAssistantText(taskId)
   if (looksLikeQuestion(finalText)) {
     store.updateTask(taskId, { status: 'needs_input', runState: 'waiting' })

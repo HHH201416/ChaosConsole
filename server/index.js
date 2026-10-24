@@ -68,7 +68,7 @@ function requireAuth(req, res, next) {
  * 值，别让任意字符串有机会变成命令行的一部分。
  * 返回错误信息；没问题时返回 null。
  */
-function validateExecutorModel(executor, model, fallbackExecutor = 'claude') {
+function validateExecutorModel(executor, model, fallbackExecutor = 'chaos') {
   if (executor !== undefined && executor !== '' && !executors.isValidExecutor(executor)) {
     return '非法的执行器'
   }
@@ -95,10 +95,9 @@ app.get('/api/health', (_req, res) => {
 })
 
 app.post('/api/login', (req, res) => {
-  const code = String(req.body?.code ?? '').trim()
-  if (code !== CONFIG.AUTH_CODE) {
-    return res.status(401).json({ ok: false, error: '授权码不正确' })
-  }
+  // 9.3.8：授权码登录已关闭 —— 任何请求都直接发会话 token（本机单用户应用）。
+  // 保留路由形状，前端无需改动；code 参数仅作兼容接收。
+  void req
   res.json({ ok: true, token: issueToken() })
 })
 
@@ -158,6 +157,17 @@ app.get('/api/system', requireAuth, (_req, res) => {
       chaos: chaosLlm.summary(),
       chaosExpert: store.getSetting('chaosExpert', 'default'),
       chaosGuideDone: store.getSetting('chaosGuideDone', '0') === '1',
+      // 9.3.8：第三方 API（OpenAI 兼容）配置状态 —— 密钥不回传，只给「配没配」
+      api: {
+        baseUrl: executors.apiConfig().baseUrl,
+        hasKey: Boolean(executors.apiConfig().apiKey),
+        model: executors.apiConfig().model,
+        ready: executors.apiReady(),
+      },
+      // 9.3.8：应用自身根目录（自修改模式用它当工作区，混沌直接改自己的源码/页面）
+      appRoot: CONFIG.ROOT,
+      // 9.3.8：安全 —— 是否已设置锁屏 PIN（不回传 PIN 本身）
+      hasPin: Boolean(String(store.getSetting('appPin', '') || '').trim()),
     },
   })
 })
@@ -187,6 +197,10 @@ app.post('/api/settings', requireAuth, (req, res) => {
     backupIntervalHours,
     backupRetention,
     kbInjectEnabled,
+    apiBaseUrl,
+    apiKey,
+    apiModel,
+    appPin,
   } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
@@ -282,6 +296,33 @@ app.post('/api/settings', requireAuth, (req, res) => {
   }
   // 知识库命中注入提示词（默认开）
   if (kbInjectEnabled !== undefined) store.setSetting('kbInjectEnabled', kbInjectEnabled ? '1' : '0')
+  // 9.3.8：第三方 API（OpenAI 兼容）配置 —— 只存本机 settings，不出电脑
+  if (apiBaseUrl !== undefined) {
+    const url = String(apiBaseUrl).trim().replace(/\/+$/, '')
+    if (url && !/^https?:\/\//i.test(url)) {
+      return res.status(400).json({ ok: false, error: '接口地址要以 http(s):// 开头' })
+    }
+    store.setSetting('apiBaseUrl', url)
+  }
+  if (apiKey !== undefined) store.setSetting('apiKey', String(apiKey).trim().slice(0, 300))
+  if (apiModel !== undefined) store.setSetting('apiModel', String(apiModel).trim().slice(0, 120))
+  // 9.3.8：本地锁屏 PIN（空 = 不锁）。只存本机；校验走 /api/unlock。
+  if (appPin !== undefined) {
+    const pin = String(appPin).trim()
+    if (pin && !/^\d{4,12}$/.test(pin)) {
+      return res.status(400).json({ ok: false, error: 'PIN 要是 4~12 位数字，留空表示不锁' })
+    }
+    store.setSetting('appPin', pin)
+  }
+  res.json({ ok: true })
+})
+
+/** 9.3.8：锁屏解锁校验（PIN 只存本机 settings，不回传前端） */
+app.post('/api/unlock', requireAuth, (req, res) => {
+  const pin = String(req.body?.pin || '').trim()
+  const saved = String(store.getSetting('appPin', '') || '').trim()
+  if (!saved) return res.json({ ok: true })
+  if (pin !== saved) return res.status(403).json({ ok: false, error: 'PIN 不正确' })
   res.json({ ok: true })
 })
 
@@ -395,13 +436,18 @@ app.get('/api/conversations', requireAuth, (_req, res) => {
   res.json({ ok: true, data: chat.listConversations() })
 })
 
-app.post('/api/chat', requireAuth, (req, res) => {
+app.post('/api/chat', requireAuth, async (req, res) => {
   const { conversationId, text, cwd, executor, model, agentId } = req.body || {}
   const bad = validateExecutorModel(executor, model)
   if (bad) return res.status(400).json({ ok: false, error: bad })
-  const result = chat.send({ conversationId, text, cwd, executor, model, agentId })
-  if (!result.ok) return res.status(400).json(result)
-  res.json(result)
+  try {
+    // 9.3.8：send 是 async —— 新对话可能要等调度员用混沌分派（≤20s，超时走关键词）
+    const result = await chat.send({ conversationId, text, cwd, executor, model, agentId })
+    if (!result.ok) return res.status(400).json(result)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) })
+  }
 })
 
 /** 一键清空所有任务（让看板回到 0 任务） */
@@ -678,6 +724,94 @@ app.post('/api/templates', requireAuth, (req, res) => {
   res.json({ ok: true, data: store.createTemplate(body) })
 })
 
+/* ---- 9.3.8：右侧预览面板 —— 工作区目录树 / 文本文件预览 ---- */
+
+const TEXT_EXT = new Set([
+  'md', 'markdown', 'txt', 'json', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'scss', 'less',
+  'html', 'htm', 'vue', 'py', 'java', 'kt', 'kts', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs',
+  'yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'sh', 'bat', 'ps1', 'sql', 'log', 'xml', 'csv',
+])
+const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.workbuddy', '__pycache__', '.venv'])
+const PREVIEW_MAX = 256 * 1024
+
+/** 目录树：只列一层，忽略构建产物与依赖目录 */
+app.get('/api/workspace/tree', requireAuth, (req, res) => {
+  const root = String(req.query.root || '').trim()
+  if (!root) return res.status(400).json({ ok: false, error: '缺少 root 参数' })
+  let st
+  try {
+    st = fs.statSync(root)
+  } catch (_) {
+    return res.status(400).json({ ok: false, error: '目录不存在或无法访问' })
+  }
+  if (!st.isDirectory()) return res.status(400).json({ ok: false, error: 'root 不是目录' })
+
+  let entries = []
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true }).filter((e) => !IGNORED_DIRS.has(e.name))
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: `读取目录失败：${err.message}` })
+  }
+
+  const items = []
+  for (const e of entries.slice(0, 500)) {
+    const full = path.join(root, e.name)
+    try {
+      const s = fs.statSync(full)
+      items.push({
+        name: e.name,
+        path: full,
+        dir: e.isDirectory(),
+        size: s.size,
+        mtime: s.mtimeMs,
+        previewable: e.isFile() && TEXT_EXT.has(path.extname(e.name).slice(1).toLowerCase()),
+      })
+    } catch (_) {
+      /* 拿不到 stat 的（权限等）跳过 */
+    }
+  }
+  items.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
+  res.json({ ok: true, data: { root, items } })
+})
+
+/** 文本文件预览：必须在 root 之内、扩展名白名单、256KB 截断 */
+app.get('/api/workspace/file', requireAuth, (req, res) => {
+  const root = path.resolve(String(req.query.root || ''))
+  const rel = String(req.query.path || '')
+  if (!root || !rel) return res.status(400).json({ ok: false, error: '缺少 root / path 参数' })
+  const target = path.resolve(rel)
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep
+  if (target !== root && !target.startsWith(rootWithSep)) {
+    return res.status(403).json({ ok: false, error: '只能预览工作区内的文件' })
+  }
+  const ext = path.extname(target).slice(1).toLowerCase()
+  if (!TEXT_EXT.has(ext)) return res.status(400).json({ ok: false, error: '该文件类型暂不支持预览' })
+  let st
+  try {
+    st = fs.statSync(target)
+  } catch (_) {
+    return res.status(400).json({ ok: false, error: '文件不存在或无法访问' })
+  }
+  if (!st.isFile() || st.size > 5 * 1024 * 1024) {
+    return res.status(400).json({ ok: false, error: '文件过大或不是普通文件' })
+  }
+  try {
+    const buf = fs.readFileSync(target)
+    const truncated = buf.length > PREVIEW_MAX
+    res.json({
+      ok: true,
+      data: {
+        path: target,
+        size: st.size,
+        truncated,
+        content: buf.subarray(0, PREVIEW_MAX).toString('utf8'),
+      },
+    })
+  } catch (err) {
+    res.status(400).json({ ok: false, error: `读取失败：${err.message}` })
+  }
+})
+
 app.patch('/api/templates/:id', requireAuth, (req, res) => {
   const current = store.getTemplate(req.params.id)
   if (!current) return res.status(404).json({ ok: false, error: '模板不存在' })
@@ -884,9 +1018,12 @@ app.post('/api/chaos/redeem', requireAuth, (req, res) => {
   res.json(r)
 })
 
-app.post('/api/chaos/redeem/generate', requireAuth, (req, res) => {
-  const code = quota.generateCode({ note: req.body?.note })
-  res.json({ ok: true, data: { code } })
+/* 9.3.8：自产兑换码已移除 —— 固定兑换码 HY2014，见 chaos-quota.js */
+
+/** 9.3.8：全部岗位一键切混沌（混沌面板的按钮走这里，与启动迁移同一实现） */
+app.post('/api/agents/migrate-chaos', requireAuth, (_req, res) => {
+  const n = store.migrateAgentsToChaos()
+  res.json({ ok: true, data: { switched: n } })
 })
 
 /* ---- 8.0.2：对话重新生成 / 分支 / 时光机回滚 ---- */
@@ -1433,6 +1570,24 @@ async function start() {
 
   // 后台预热 deveco 模型列表：这个命令要起一个 node 进程，放在请求路径上会拖慢首屏
   executors.warmup()
+
+  // 9.3.8：把所有岗位一次性迁到混沌执行器（claude/deveco 已下线）。
+  // 只跑一次，用户手动改过的单个岗位仍可在岗位页自由改回。
+  if (store.getSetting('chaosAgentsMigrated', '0') !== '1') {
+    try {
+      const n = store.migrateAgentsToChaos()
+      if (n > 0) console.log(`[migrate] 已把 ${n} 个岗位切换到混沌执行器`)
+    } catch (err) {
+      console.error('[migrate] 岗位迁移失败（不阻塞启动）:', err.message)
+    }
+    store.setSetting('chaosAgentsMigrated', '1')
+  }
+  // 9.3.8：老库补种「任务调度」岗位（新库 seed 里自带）
+  try {
+    if (store.ensureDispatcherAgent() === 1) console.log('[migrate] 已补种「任务调度」岗位')
+  } catch (_) {
+    /* 不阻塞启动 */
+  }
 
   // 8.0.2：把启用的混沌定时自动化重新排上（服务重启不丢日程）
   chaosLlm.scheduleAllAutomations()

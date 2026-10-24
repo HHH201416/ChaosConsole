@@ -45,7 +45,39 @@ function summarizeTitle(text) {
  *  - 没带 conversationId：开一个新对话（= 建一个任务）并立刻执行
  *  - 带了 conversationId：续跑那个对话
  */
-function send({ conversationId, text, cwd, executor, model, agentId }) {
+/**
+ * 9.3.8：调度员智能分派 —— 新对话没指定岗位时，由「任务调度」岗位用混沌本地
+ * 模型判断这条请求该交给谁。失败/超时/混沌没起 → 退回关键词派单。
+ */
+async function dispatchAgent(content) {
+  const agents = store.listAgents().filter((a) => a.role !== 'Dispatcher')
+  const dispatcher = store.listAgents().find((a) => a.role === 'Dispatcher')
+  if (!dispatcher || !agents.length) return routeAgent(content)
+
+  try {
+    const roster = agents
+      .map((a, i) => `${i + 1}. ${a.functionLabel}（${a.role}）`)
+      .join('\n')
+    const answer = await chaosLlm.quickAnswer({
+      prompt:
+        `用户请求：${content.slice(0, 300)}\n\n候选岗位：\n${roster}\n\n` +
+        `只输出最合适岗位的序号（1~${agents.length} 的一个数字），不要输出任何其他内容。`,
+      system:
+        '你是团队的任务调度主管。你的唯一任务是把请求分派给最合适的岗位。' +
+        '只回答一个序号数字，禁止解释。',
+      timeoutMs: 20 * 1000,
+    })
+    const idx = Number(String(answer.text || '').trim().match(/\d+/)?.[0])
+    if (Number.isInteger(idx) && idx >= 1 && idx <= agents.length) {
+      return agents[idx - 1]
+    }
+  } catch (_) {
+    /* 混沌没起 / 超时 → 关键词兜底 */
+  }
+  return routeAgent(content)
+}
+
+async function send({ conversationId, text, cwd, executor, model, agentId }) {
   const content = String(text || '').trim()
   if (!content) return { ok: false, error: '内容为空' }
 
@@ -64,8 +96,8 @@ function send({ conversationId, text, cwd, executor, model, agentId }) {
     return { ...res, taskId: task.id }
   }
 
-  // ---- 新对话 ----
-  const target = agentId ? store.getAgent(agentId) : routeAgent(content)
+  // ---- 新对话（9.3.8：未指定岗位时由调度员智能分派） ----
+  const target = agentId ? store.getAgent(agentId) : await dispatchAgent(content)
   if (!target) return { ok: false, error: '还没有任何员工，请先招聘' }
 
   // 8.0.2：混沌优先 —— 没显式指定执行器、且本机混沌可用时，新对话默认走混沌

@@ -34,6 +34,8 @@ const DEFAULTS = {
   zenMode: false,
   draftExecutor: '',
   draftModel: '',
+  // 9.3.8：右侧预览面板（文件 / 知识库），ChatPanel 头部 👁 开关
+  previewOpen: false,
 }
 
 /** 与 src/lib/theme.js 的 THEME_MODES、public/theme-boot.js 的校验保持一致 */
@@ -70,6 +72,7 @@ export function loadUiPrefs() {
     zenMode: p.zenMode === true,
     draftExecutor: typeof p.draftExecutor === 'string' ? p.draftExecutor : '',
     draftModel: typeof p.draftModel === 'string' ? p.draftModel : '',
+    previewOpen: p.previewOpen === true,
   }
 }
 

@@ -985,6 +985,134 @@ function AppearanceField() {
   )
 }
 
+/**
+ * 9.3.8：第三方 API（OpenAI 兼容）配置 —— 接口地址 / 密钥 / 模型名。
+ * 只存本机 settings，密钥不回传（界面上只显示「已配置」）。
+ * 配好后执行器下拉里会出现「第三方 API」选项。
+ */
+function ApiField() {
+  const system = useStore((s) => s.system)
+  const apiCfg = system?.api || {}
+  const [baseUrl, setBaseUrl] = useState(apiCfg.baseUrl || '')
+  const [key, setKey] = useState('')
+  const [model, setModel] = useState(apiCfg.model || '')
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const patch = { apiBaseUrl: baseUrl.trim(), apiModel: model.trim() }
+      if (key.trim()) patch.apiKey = key.trim()
+      const res = await api.setSettings(patch)
+      if (!res.ok) throw new Error(res.error || '保存失败')
+      useStore.getState().toast('第三方 API 已保存（密钥只存本机）', 'success')
+      await useStore.getState().refreshSystem()
+      setKey('')
+    } catch (err) {
+      useStore.getState().toast(err.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-[12px] font-medium text-slate-200">🔗 第三方 API（OpenAI 兼容）</span>
+        {apiCfg.ready ? (
+          <span className="chip bg-emerald-500/15 text-emerald-300">已配置 · {apiCfg.model}</span>
+        ) : (
+          <span className="chip">未配置（可选）</span>
+        )}
+      </div>
+      <p className="text-[10.5px] leading-relaxed text-slate-500">
+        想用云端大模型时自己填：接口地址（如 https://api.openai.com/v1 或任意兼容服务）、API Key、模型名。
+        密钥只保存在本机，不会上传。混沌本地模型始终免费可用，此项只是加一个可选项。
+      </p>
+      <div className="grid grid-cols-1 gap-2">
+        <input
+          className="field w-full py-1 text-[11.5px]"
+          placeholder="接口地址，例如 https://api.openai.com/v1"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+        <div className="flex gap-2">
+          <input
+            className="field min-w-0 flex-1 py-1 font-mono text-[11.5px]"
+            type="password"
+            placeholder={apiCfg.hasKey ? 'API Key（已配置，留空则不修改）' : 'API Key'}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <input
+            className="field w-44 py-1 font-mono text-[11.5px]"
+            placeholder="模型名，例如 gpt-4o-mini"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </div>
+      </div>
+      <button className="btn-primary px-3 py-1 text-[11.5px]" disabled={busy} onClick={save}>
+        {busy ? '保存中…' : '保存第三方 API 配置'}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * 9.3.8：安全 —— 本地锁屏 PIN。PIN 只存本机；锁屏后输 PIN 才能进（Ctrl+L / 顶栏 🔒）。
+ */
+function SecurityField() {
+  const system = useStore((s) => s.system)
+  const [pin, setPin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const hasPin = Boolean(system?.hasPin)
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      const res = await api.setSettings({ appPin: pin.trim() })
+      if (!res.ok) throw new Error(res.error || '保存失败')
+      useStore.getState().toast(pin.trim() ? '已设置锁屏 PIN，Ctrl+L 或顶栏 🔒 即可锁定' : '已清除锁屏 PIN', 'success')
+      setPin('')
+      await useStore.getState().refreshSystem()
+    } catch (err) {
+      useStore.getState().toast(err.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-[12px] font-medium text-slate-200">🔒 安全锁屏</span>
+        {hasPin ? (
+          <span className="chip bg-emerald-500/15 text-emerald-300">已启用</span>
+        ) : (
+          <span className="chip">未设置</span>
+        )}
+      </div>
+      <p className="text-[10.5px] leading-relaxed text-slate-500">
+        设置 4~12 位数字 PIN 后，按 Ctrl+L 或点顶栏 🔒 锁住整个界面，输 PIN 才能解锁。PIN 只保存在本机。
+      </p>
+      <div className="flex gap-2">
+        <input
+          className="field w-40 py-1 text-center font-mono tracking-[0.3em]"
+          type="password"
+          inputMode="numeric"
+          placeholder={hasPin ? '输入新 PIN（留空=清除）' : '4~12 位数字'}
+          value={pin}
+          onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))}
+        />
+        <button className="btn-primary px-3 py-1 text-[11.5px]" disabled={busy} onClick={save}>
+          {busy ? '保存中…' : hasPin ? '更新 / 清除' : '启用锁屏'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function SettingsModal({ onClose }) {
   const t = useT()
   const system = useStore((s) => s.system)
@@ -1029,6 +1157,12 @@ export function SettingsModal({ onClose }) {
       <div className="space-y-4 text-[12px]">
         {/* 外观 */}
         <AppearanceField />
+
+        {/* 9.3.8：第三方 API（OpenAI 兼容）—— 用户自己填 key */}
+        <ApiField />
+
+        {/* 9.3.8：安全锁屏 PIN */}
+        <SecurityField />
 
         {/* 8.0.0：派单策略 / 桌面集成 / 新面板入口 */}
         <div className="space-y-2.5 rounded-lg border border-ink-500 bg-ink-900 p-3">

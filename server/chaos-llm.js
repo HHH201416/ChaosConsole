@@ -355,6 +355,42 @@ async function chat({ model, messages, signal, onDelta } = {}) {
   return out
 }
 
+/**
+ * 9.3.8：带工具的非流式对话（本地工具协议）。
+ * 返回原始 assistant 消息（content + tool_calls），由 runner 决定执行哪个工具
+ * 并续轮。额度照常计量。模型不支持 tools 时会正常返回纯 content。
+ */
+async function chatWithTools({ model, messages, tools, signal } = {}) {
+  quotaGate()
+  const res = await fetch(`${baseUrl()}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages, stream: false, tools: tools || undefined }),
+    signal,
+  })
+  if (!res.ok) {
+    let detail = ''
+    try {
+      const b = await res.json()
+      detail = String(b?.error || '')
+    } catch (_) {
+      /* ignore */
+    }
+    throw new Error(`混沌推理服务返回错误（HTTP ${res.status}）${detail ? `：${detail}` : ''}`)
+  }
+  const body = await res.json()
+  if (body.error) throw new Error(`混沌推理服务报错：${body.error}`)
+  const message = body.message || {}
+  const out = {
+    message,
+    content: String(message.content || ''),
+    toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [],
+    evalCount: Number(body.eval_count) || 0,
+  }
+  quotaBill({ evalCount: out.evalCount, text: out.content })
+  return out
+}
+
 /* ------------------------------------------------------------------ *
  * 8.0.2：一次性问答 / 魔法棒 / 擂台
  *
@@ -946,6 +982,7 @@ module.exports = {
   summary,
   catalogFor,
   chat,
+  chatWithTools,
   quickAnswer,
   rewritePrompt,
   arena,

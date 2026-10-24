@@ -213,6 +213,14 @@ export default function TopBar({
           🌀 {t('topbar.chaos')}
           {chaosUp && <span className="ml-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />}
         </button>
+        {/* 9.3.8：安全锁屏（Ctrl+L）—— 设置了 PIN 才生效 */}
+        <button
+          className="btn-ghost shrink-0"
+          onClick={() => useStore.getState().lockApp()}
+          title="锁定界面（Ctrl+L）—— 到 设置 → 安全 设置 PIN 后生效"
+        >
+          🔒
+        </button>
         <UpdateControl onInstallUpdate={onInstallUpdate} />
 
         <div className="mx-1 h-5 w-px bg-ink-500" />

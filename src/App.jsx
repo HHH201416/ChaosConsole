@@ -69,6 +69,64 @@ function BossOverlay() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 9.3.8：安全锁屏遮罩 —— 设置了 PIN 后一键锁住整个界面，解锁要输 PIN。
+ * ------------------------------------------------------------------ */
+
+function LockOverlay() {
+  const locked = useStore((s) => s.locked)
+  const [pin, setPin] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const inputRef = useRef(null)
+  useEffect(() => {
+    if (locked) {
+      setPin('')
+      setErr('')
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }, [locked])
+  if (!locked) return null
+
+  const tryUnlock = async () => {
+    if (!pin.trim() || busy) return
+    setBusy(true)
+    const ok = await useStore.getState().unlockApp(pin.trim())
+    setBusy(false)
+    if (!ok) {
+      setErr('PIN 不正确，再试一次')
+      setPin('')
+      inputRef.current?.focus()
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] flex flex-col items-center justify-center bg-ink-900/98 backdrop-blur">
+      <div className="mb-4 text-5xl">🔒</div>
+      <div className="mb-1 text-[14px] font-semibold text-slate-100">ChaosConsole 已锁定</div>
+      <p className="mb-5 text-[11px] text-slate-500">输入 PIN 解锁（PIN 只存在本机）</p>
+      <div className="flex gap-2">
+        <input
+          ref={inputRef}
+          type="password"
+          inputMode="numeric"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') tryUnlock()
+          }}
+          placeholder="PIN"
+          className="field w-44 py-1.5 text-center font-mono tracking-[0.4em]"
+        />
+        <button className="btn-primary px-3 text-[12px]" disabled={!pin.trim() || busy} onClick={tryUnlock}>
+          解锁
+        </button>
+      </div>
+      {err && <p className="mt-3 text-[11px] text-rose-400">{err}</p>}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
  * 8.0.2：每日一句横幅（本地混沌生成，一天一次）
  * ------------------------------------------------------------------ */
 
@@ -209,11 +267,12 @@ export default function App() {
      5 秒的计时从主窗口真正显示出来那刻才起算，见 LifecycleFx 的 onAppShown。 */
   const [booted, setBooted] = useState(() => shouldSkipBoot())
 
-  // 启动时用已保存的 token 自动登录（后端重启过的话 token 会失效，会退回登录页）
+  // 启动时用已保存的 token 自动登录（后端重启过的话 token 会失效，bootstrap 内部
+  // 会静默补票）。9.3.8：授权码登录已关闭 —— 没有保存的 token 也直接以访客身份进。
   useEffect(() => {
     const token = loadToken()
     if (!token) {
-      setReady(true)
+      useStore.getState().login('').finally(() => setReady(true))
       return
     }
     bootstrap().finally(() => setReady(true))
@@ -304,6 +363,12 @@ export default function App() {
       if (mod && String(e.key).toLowerCase() === 'b') {
         e.preventDefault()
         s.toggleBossMode()
+        return
+      }
+      // 9.3.8：锁屏（Ctrl+L）—— 设置了 PIN 后锁住整个界面
+      if (mod && String(e.key).toLowerCase() === 'l') {
+        e.preventDefault()
+        s.lockApp()
         return
       }
       // 8.0.2：速答浮层（Ctrl+Shift+Space；独立小窗另有全局 Ctrl+Alt+Space）
@@ -464,6 +529,7 @@ export default function App() {
       <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
 
       <Toasts />
+      <LockOverlay />
       <ShutdownOverlay />
     </div>
   )

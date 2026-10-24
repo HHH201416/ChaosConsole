@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { useStore } from '../store'
 import { COLUMN_MAP, RUN_STATE_META, EVENT_META, formatTime, relativeTime, roleColor, stageLabel } from '../lib/meta'
 import { useT } from '../lib/useT'
-import { matchSkill } from '../lib/skills'
 import ChaosDock, { Pins, Snaps, Drafts, TTS } from './ChaosDock'
 
 /* ------------------------------------------------------------------ *
@@ -75,7 +74,21 @@ function Bubble({ message, agent, executorLabel, taskId }) {
 
   // Agent 回复：只显示「是干什么的」，不显示姓名
   const fnLabel = agent?.functionLabel || 'Agent'
+  // 9.3.8：控制指令行（CHAOS_ASK/STAGE/HANDOFF）不在气泡里露原文 —— 提问已由
+  // 系统消息高亮，阶段/换岗由事件流展示
   const sections = splitThink(message.content)
+    .map((p) =>
+      p.think
+        ? p
+        : {
+            ...p,
+            text: p.text
+              .split('\n')
+              .filter((l) => !/^\s*CHAOS_(STAGE|HANDOFF|ASK):/.test(l))
+              .join('\n'),
+          },
+    )
+    .filter((p) => p.text.trim())
   const visible = sections.filter((p) => !p.think).map((p) => p.text).join('\n')
   const chars = message.content?.length || 0
 
@@ -129,6 +142,32 @@ function Bubble({ message, agent, executorLabel, taskId }) {
             <span>· {chars} 字</span>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * 9.3.8：单条事件（对话流内联显示）—— 工具调用 / 派单 / 知识库命中 / 统计等
+ * ------------------------------------------------------------------ */
+
+function EventRow({ e }) {
+  const meta = EVENT_META[e.type] || EVENT_META.info
+  return (
+    <div className="flex gap-2 rounded-md bg-ink-700/50 px-2 py-1.5">
+      <span className={`mt-[1px] w-3 shrink-0 text-center text-[11px] ${meta.cls}`}>{meta.icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          {e.name && <span className={`text-[11px] font-medium ${meta.cls}`}>{e.name}</span>}
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-600">
+            {formatTime(e.createdAt).slice(11)}
+          </span>
+        </div>
+        {e.content && (
+          <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-slate-400">
+            {e.content}
+          </pre>
+        )}
       </div>
     </div>
   )
@@ -366,13 +405,6 @@ export default function ChatPanel() {
     setVoiceOn(true)
   }
 
-  // 斜杠技能菜单：草稿以 / 开头时给过滤列表
-  const slash = matchSkill(draft)
-  const pickSkill = (s) => {
-    setDraft(s.template.replace('{text}', draft.replace(/^\s*\/[^\s]*/, '').trim() || '（在这里填内容）'))
-    inputRef.current?.focus()
-  }
-
   const panel = (
     <aside
       className={`relative flex min-w-0 flex-1 flex-col bg-ink-800 ${
@@ -396,6 +428,13 @@ export default function ChatPanel() {
           </div>
         </div>
 
+        <button
+          className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
+          onClick={() => useStore.getState().togglePreview()}
+          title="预览面板：在旁边查看文件与知识库"
+        >
+          👁 预览
+        </button>
         <button
           className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
           onClick={() => {
@@ -503,42 +542,35 @@ export default function ChatPanel() {
 
         {detailLoading && !task && <p className="py-8 text-center text-xs text-slate-600">{t('chat.loading')}</p>}
 
+        {/* 9.3.8：消息 + 事件按时间线穿插，工具调用/派单/知识库命中等全程可见。
+            showEvents 打开时回到纯事件清单视图。 */}
         {task &&
           !showEvents &&
-          messages.map((m) => (
-            <Bubble
-              key={m.id}
-              message={m}
-              agent={agent}
-              executorLabel={m.role === 'assistant' ? executorLabel : ''}
-              taskId={task.id}
-            />
-          ))}
+          [
+            ...messages.map((m) => ({ kind: 'msg', t: m.createdAt, m })),
+            ...events.map((e) => ({ kind: 'evt', t: e.createdAt, e })),
+          ]
+            .sort((a, b) => a.t - b.t)
+            .map((it) =>
+              it.kind === 'msg' ? (
+                <Bubble
+                  key={`m${it.m.id}`}
+                  message={it.m}
+                  agent={agent}
+                  executorLabel={it.m.role === 'assistant' ? executorLabel : ''}
+                  taskId={task.id}
+                />
+              ) : (
+                <EventRow key={`e${it.e.id}`} e={it.e} />
+              ),
+            )}
 
         {task && showEvents && (
           <div className="space-y-1.5">
             {events.length === 0 && <p className="py-8 text-center text-xs text-slate-600">{t('chat.noEvents')}</p>}
-            {events.map((e) => {
-              const meta = EVENT_META[e.type] || EVENT_META.info
-              return (
-                <div key={e.id} className="flex gap-2 rounded-md bg-ink-700/60 px-2 py-1.5">
-                  <span className={`mt-[1px] w-3 shrink-0 text-center text-[11px] ${meta.cls}`}>{meta.icon}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline gap-2">
-                      {e.name && <span className={`text-[11px] font-medium ${meta.cls}`}>{e.name}</span>}
-                      <span className="ml-auto shrink-0 font-mono text-[10px] text-slate-600">
-                        {formatTime(e.createdAt).slice(11)}
-                      </span>
-                    </div>
-                    {e.content && (
-                      <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-slate-400">
-                        {e.content}
-                      </pre>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+            {events.map((e) => (
+              <EventRow key={e.id} e={e} />
+            ))}
           </div>
         )}
 
@@ -575,26 +607,6 @@ export default function ChatPanel() {
           inputRef={inputRef}
         />
 
-        {/* 斜杠技能过滤菜单 */}
-        {slash && (
-          <div className="mb-1.5 overflow-hidden rounded-xl border border-ink-500 bg-ink-800 shadow-xl">
-            {slash.candidates.map((s) => (
-              <button
-                key={s.cmd}
-                onClick={() => pickSkill(s)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-ink-700"
-              >
-                <span className="text-[13px]">{s.icon}</span>
-                <span className="font-mono text-[11px] text-boss-strong">{s.cmd}</span>
-                <span className="text-[11px] text-slate-300">{s.label}</span>
-              </button>
-            ))}
-            <div className="border-t border-ink-600 px-3 py-1 text-[10px] text-slate-600">
-              点选技能填入模板；按 Esc 忽略。也可到 ⚡ 技能库查看全部。
-            </div>
-          </div>
-        )}
-
         <div className="mb-2 flex items-center justify-between">
           <div className="flex min-w-0 items-center gap-1.5">
             <ModelPicker
@@ -630,11 +642,6 @@ export default function ChatPanel() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Escape' && slash) {
-                e.preventDefault()
-                setDraft('')
-                return
-              }
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault()
                 submit()

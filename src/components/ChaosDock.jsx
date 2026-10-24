@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { SKILLS, matchSkill } from '../lib/skills'
 
 /* ------------------------------------------------------------------ *
  * 8.0.2：混沌工具坞 —— WorkBuddy 式的「一排小图标 + 弹出面板」。
@@ -148,31 +147,6 @@ function ExpertPanel({ onClose }) {
             ) : (
               <p className="mt-1 text-[10px] text-slate-500">不加任何预设人格，平衡全能</p>
             )}
-          </button>
-        ))}
-      </div>
-    </Pop>
-  )
-}
-
-/* ---------------- 技能（斜杠快捷指令） ---------------- */
-
-function SkillPanel({ onClose, onPick }) {
-  return (
-    <Pop title="⚡ 技能库 · 斜杠快捷指令" onClose={onClose} wide>
-      <p className="mb-2 text-[10.5px] leading-relaxed text-slate-500">
-        点一条直接把模板填进输入框（{`{text}`} 处填你的内容）；输入框里敲 <span className="font-mono text-slate-300">/</span> 也会弹出过滤。
-      </p>
-      <div className="space-y-1.5">
-        {SKILLS.map((s) => (
-          <button
-            key={s.cmd}
-            onClick={() => onPick(s)}
-            className="flex w-full items-center gap-2 rounded-lg border border-ink-500 bg-ink-700/50 px-2.5 py-1.5 text-left hover:border-ink-400"
-          >
-            <span className="text-[14px]">{s.icon}</span>
-            <span className="font-mono text-[11px] text-boss-strong">{s.cmd}</span>
-            <span className="text-[11px] text-slate-300">{s.label}</span>
           </button>
         ))}
       </div>
@@ -587,20 +561,7 @@ export default function ChaosDock({ task, messages, events, draft, setDraft, inp
         <DockButton icon="🎭" label="专家中心：切换混沌人格" active={pop === 'expert'} onClick={() => toggle('expert')} />
         {pop === 'expert' && <ExpertPanel onClose={() => setPop('')} />}
       </div>
-      {/* 技能 */}
-      <div className="relative">
-        <DockButton icon="⚡" label="技能库：斜杠快捷指令" active={pop === 'skills'} onClick={() => toggle('skills')} />
-        {pop === 'skills' && (
-          <SkillPanel
-            onClose={() => setPop('')}
-            onPick={(s) => {
-              setDraft(`${s.template.replace('{text}', draft.trim() || '（在这里填内容）')}\n`)
-              setPop('')
-              inputRef.current?.focus()
-            }}
-          />
-        )}
-      </div>
+      {/* 9.3.8：技能入口从对话工具坞移除 —— 技能库统一在左侧导航栏 ⚡ 技能页 */}
       {/* 魔法棒 */}
       <DockButton icon={wandBusy ? '⏳' : '🪄'} label="提示词魔法棒：口语 → 结构化提示词" onClick={magicWand} />
       {/* 擂台 */}
@@ -725,6 +686,3 @@ export function QuickOverlay({ onClose }) {
     </div>
   )
 }
-
-/* 导出 matchSkill 供 ChatPanel 的斜杠菜单复用 */
-export { matchSkill }

@@ -37,12 +37,43 @@ export function HomePage() {
   const openModal = useStore((s) => s.openModal)
   const openPalette = useStore((s) => s.openPalette)
   const selectTask = useStore((s) => s.selectTask)
+  const createTask = useStore((s) => s.createTask)
+  const startTask = useStore((s) => s.startTask)
 
   const chaos = system?.chaos || {}
   const quota = chaos.quota || null
   const hour = new Date().getHours()
   const greet = hour < 6 ? '夜深了' : hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
   const running = tasks.filter((t) => t.runState === 'running').length
+
+  /** 9.3.8：自修改 —— 建一个 cwd=应用自身源码目录的任务并立刻开跑，
+      混沌用本地工具（读/写文件）直接改造这个应用自己的功能与页面。 */
+  const selfModify = async () => {
+    const root = system?.appRoot
+    if (!root) {
+      openModal('task')
+      return
+    }
+    const what = window.prompt(
+      '让混沌改这个应用的什么？（直接描述，比如：把技能页加一个搜索框）',
+      '优化对话页的视觉细节',
+    )
+    if (!what || !what.trim()) return
+    const created = await createTask({
+      title: `🔧 自修改：${what.trim().slice(0, 30)}`,
+      description:
+        `【自修改任务】ChaosConsole 要改造它自己。\n\n目标：${what.trim()}\n\n` +
+        `这是本应用的源码目录，你可以用 list_files / read_file / write_file 工具直接查看与修改：\n` +
+        `- 界面在 src/components/（React + Tailwind）\n` +
+        `- 后端在 server/（Express）\n` +
+        `- 改完先保证改动最小、不破坏现有功能；用户会重启应用来生效。\n` +
+        `请先 read_file 看清相关文件再动手；完成后总结你改了哪些文件、各改了什么。`,
+      tags: ['自修改'],
+      cwd: root,
+      executor: 'chaos',
+    })
+    if (created) await startTask(created.id)
+  }
 
   const quickActions = [
     { icon: '💬', label: '新对话', desc: '跟混沌或 Claude 聊一句', go: () => setMainView('chat') },
@@ -51,6 +82,7 @@ export function HomePage() {
     { icon: '⏰', label: '自动化', desc: '定时让混沌干活', go: () => setMainView('automations') },
     { icon: '📚', label: '知识库', desc: '导入文档，Agent 自动检索', go: () => openModal('knowledge') },
     { icon: '🌀', label: '混沌中心', desc: '模型安装与 Token 管理', go: () => openModal('chaos') },
+    { icon: '🔧', label: '自修改', desc: '让混沌改造这个应用自己', go: selfModify },
   ]
 
   return (
@@ -75,7 +107,7 @@ export function HomePage() {
       </div>
 
       {/* 快捷入口 */}
-      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         {quickActions.map((a) => (
           <button
             key={a.label}

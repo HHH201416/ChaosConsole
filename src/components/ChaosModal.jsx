@@ -6,16 +6,12 @@ import { useT } from '../lib/useT'
 /**
  * 8.0.2：Token 额度卡片。
  * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
- * 兑换码可兑换「永久 Token」（不再限量）。本机可自产兑换码。
+ * 9.3.8：兑换码固定为 HY2014，兑换后升级「永久 Token」（不再限量），不支持自产。
  */
 function TokenCard() {
   const status = useStore((s) => s.chaosStatus)
   const redeemChaosCode = useStore((s) => s.redeemChaosCode)
-  const generateRedeemCode = useStore((s) => s.generateRedeemCode)
-  const loadChaosStatus = useStore((s) => s.loadChaosStatus)
   const [code, setCode] = useState('')
-  const [showGen, setShowGen] = useState(false)
-  const [generated, setGenerated] = useState('')
 
   const q = status?.quota
   if (!q) return null
@@ -41,7 +37,7 @@ function TokenCard() {
         </div>
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-        每天 0 点自动重发 3000 万 token。用兑换码可升级为「永久 Token」，永不限量。
+        每天 0 点自动重发 3000 万 token。输入兑换码 HY2014 可升级为「永久 Token」，永不限量。
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input
@@ -52,7 +48,7 @@ function TokenCard() {
               if (redeemChaosCode(code.trim())) setCode('')
             }
           }}
-          placeholder="输入兑换码（形如 CHAOS-XXXX-XXXX-XXXX）"
+          placeholder="输入兑换码"
           className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
         />
         <button
@@ -64,30 +60,7 @@ function TokenCard() {
         >
           兑换
         </button>
-        <button className="btn-ghost shrink-0 text-[11px]" onClick={() => setShowGen((v) => !v)}>
-          {showGen ? '收起' : '生成兑换码'}
-        </button>
       </div>
-      {showGen && (
-        <div className="mt-2 rounded-lg border border-dashed border-ink-500 p-2">
-          <p className="text-[10px] leading-relaxed text-slate-500">
-            这是本机自用版：自己给自己发电换个合理。生成的码只在本机有效。
-          </p>
-          <button
-            className="btn-ghost mt-1.5 text-[11px]"
-            onClick={async () => {
-              const c = await generateRedeemCode()
-              setGenerated(c)
-              loadChaosStatus()
-            }}
-          >
-            生成一个永久兑换码
-          </button>
-          {generated && (
-            <p className="mt-1 break-all font-mono text-[11.5px] text-emerald-300">{generated}</p>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -144,17 +117,14 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
     onClose()
   }
 
-  const switchDailyChat = async () => {
-    const chat = agents.find((a) => a.role === 'Chat')
-    if (!chat) {
-      toast('找不到「日常对话」岗位', 'error')
-      return
-    }
+  // 9.3.8：一键把**全部岗位**切到混沌（不只日常对话）。后端同一实现也用于启动迁移。
+  const switchAllAgents = async () => {
     try {
-      await api.updateAgent(chat.id, { executor: 'chaos', model: models.find((m) => m.installed)?.id || '' })
+      const res = await api.chaosSwitchAllAgents()
+      if (!res.ok) throw new Error(res.error || '切换失败')
       await refreshSystem()
       setSwitched(true)
-      toast(t('chaos.switched'), 'success')
+      toast(`已把 ${res.data?.switched ?? 0} 个岗位全部切到混沌 🌀`, 'success')
     } catch (err) {
       toast(err.message, 'error')
     }
@@ -268,14 +238,14 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
             </div>
           )}
 
-          {/* 就绪状态 + 切换日常对话 */}
+          {/* 就绪状态 + 一键全部岗位切混沌 */}
           {allReady && (
             <div className="mt-4 rounded-lg border border-emerald-600/50 bg-emerald-900/20 p-3">
               <p className="text-[12.5px] font-medium text-emerald-300">✓ {t('chaos.done')}</p>
               <p className="mt-1 text-[11px] text-slate-400">{switched ? t('chaos.switched') : t('chaos.doneBody')}</p>
               {!switched && (
-                <button className="btn-success mt-2" onClick={switchDailyChat}>
-                  {t('chaos.switchChat')}
+                <button className="btn-success mt-2" onClick={switchAllAgents}>
+                  🌀 把全部岗位切到混沌
                 </button>
               )}
             </div>

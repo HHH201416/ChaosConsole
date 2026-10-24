@@ -4,6 +4,7 @@ import ConversationList from './ConversationList'
 import AgentSidebar from './AgentSidebar'
 import ChatPanel from './ChatPanel'
 import PreviewPanel from './PreviewPanel'
+import ErrorBoundary from './ErrorBoundary'
 
 /**
  * 9.1.0：对话页工作区 —— WorkBuddy 式布局。
@@ -42,8 +43,12 @@ export default function ChatWorkspace({ onNewAgent }) {
       {/* 全宽聊天主区 */}
       <ChatPanel />
 
-      {/* 9.3.8：右侧预览面板（文件 / 知识库） */}
-      {previewOpen && <PreviewPanel />}
+      {/* 9.3.8：右侧预览面板（文件 / 知识库 / 网页）；9.5.5 起单独兜底，面板坏了不影响对话 */}
+      {previewOpen && (
+        <ErrorBoundary compact label="预览面板">
+          <PreviewPanel />
+        </ErrorBoundary>
+      )}
     </div>
   )
 }

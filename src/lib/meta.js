@@ -141,6 +141,24 @@ export function relativeTime(ts) {
 }
 
 /** 字节数格式化。更新进度里直接摆 90951519 这种数字没人看得懂 */
+/**
+ * 把任意值夹成数组。
+ *
+ * 9.5.5：接口返回的 `data` 有时是 `{ bases, items, summary }` 这类包装对象，
+ * 调用方一句 `res.data || []` 是防不住它的 —— 空对象也是真值，`{...}.map`
+ * 就直接抛 TypeError 把整棵 React 树打崩（白屏）。渲染路径上一律先过这个。
+ */
+export function asArr(v) {
+  if (Array.isArray(v)) return v
+  if (v && typeof v === 'object') {
+    // 常见包装字段按优先级兜底，取不到就空数组
+    for (const k of ['bases', 'items', 'docs', 'list', 'data', 'rows']) {
+      if (Array.isArray(v[k])) return v[k]
+    }
+  }
+  return []
+}
+
 export function fmtBytes(n) {
   const v = Number(n)
   if (!Number.isFinite(v) || v <= 0) return '—'

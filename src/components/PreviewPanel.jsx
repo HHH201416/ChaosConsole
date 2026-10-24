@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '../store'
 import { api, getToken } from '../lib/api'
-import { formatTime } from '../lib/meta'
+import { asArr, formatTime } from '../lib/meta'
 
 /**
  * 9.3.8/9.5.0：WorkBuddy 式右侧预览面板 —— 对话页旁边看文件、知识库和网页。
@@ -142,7 +142,8 @@ function KbPreview() {
       try {
         const res = await api.kb()
         if (!alive) return
-        const list = res.data || []
+        // 9.5.5：/api/kb 返回的是 { bases, summary } 包装对象，直接当数组用会白屏
+        const list = asArr(res.data)
         setKbs(list)
         if (list.length && !activeKb) setActiveKb(list[0].id)
       } catch (_) {
@@ -167,7 +168,7 @@ function KbPreview() {
       try {
         const res = await api.kbDocs(activeKb)
         if (!alive) return
-        const list = res.data || []
+        const list = asArr(res.data)
         setDocs(list)
         setActiveDoc(list[0]?.id || null)
       } catch (_) {
@@ -181,13 +182,16 @@ function KbPreview() {
     }
   }, [activeKb])
 
-  const doc = docs.find((d) => d.id === activeDoc) || null
+  // 渲染前再夹一次数组：任何异常数据都不允许把整棵界面打崩
+  const kbList = asArr(kbs)
+  const docList = asArr(docs)
+  const doc = docList.find((d) => d.id === activeDoc) || null
 
   return (
     <div className="flex min-h-0 flex-1">
       {/* 左列：库 + 文档列表 */}
       <div className="flex w-[9.5rem] min-h-0 shrink-0 flex-col overflow-y-auto border-r border-ink-600/70 px-1.5 py-2">
-        {kbs.map((k) => (
+        {kbList.map((k) => (
           <button
             key={k.id}
             onClick={() => setActiveKb(k.id)}
@@ -200,10 +204,10 @@ function KbPreview() {
             <span className="min-w-0 flex-1 truncate">{k.name}</span>
           </button>
         ))}
-        {kbs.length === 0 && <p className="px-2 py-4 text-center text-[10px] leading-relaxed text-slate-600">还没有知识库</p>}
+        {kbList.length === 0 && <p className="px-2 py-4 text-center text-[10px] leading-relaxed text-slate-600">还没有知识库</p>}
         <div className="my-1.5 border-t border-ink-600/70" />
         {loading && <p className="px-2 py-2 text-[10px] text-slate-600">加载中…</p>}
-        {docs.map((d) => (
+        {docList.map((d) => (
           <button
             key={d.id}
             onClick={() => setActiveDoc(d.id)}
@@ -214,7 +218,7 @@ function KbPreview() {
             <span className="block truncate">📄 {d.title}</span>
           </button>
         ))}
-        {!loading && activeKb && docs.length === 0 && (
+        {!loading && activeKb && docList.length === 0 && (
           <p className="px-2 py-3 text-center text-[10px] text-slate-600">这个库还没有文档</p>
         )}
       </div>
@@ -260,7 +264,7 @@ function FilesPreview() {
       try {
         const res = await api.workspaceTree(root)
         if (!res.ok) throw new Error(res.error || '读取失败')
-        setItems(res.data?.items || [])
+        setItems(asArr(res.data?.items ?? res.data))
       } catch (e) {
         setErr(e.message)
         setItems([])

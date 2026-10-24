@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.5\.4"/, '版本为 9.5.4')
+must('package.json', /"version": "9\.6\.0"/, '版本为 9.6.0')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -168,6 +168,21 @@ must('server/runner.js', /name: 'open_path'/, '操作电脑：open_path 工具')
 must('server/runner.js', /PC_CMD_BLACKLIST/, '操作电脑：毁灭性命令黑名单')
 must('server/runner.js', /function computerUseEnabled\(\)/, '操作电脑：设置开关')
 must('server/index.js', /agentComputerUse/, '设置接口与系统摘要支持 agentComputerUse')
+
+/* ---------- 9.6.0：白屏根治（包装对象当数组用 + 渲染兜底） ---------- */
+console.log('— 9.6.0 白屏根治')
+must('src/lib/meta.js', /export function asArr/, 'meta.js 提供 asArr 归一化助手')
+must('src/lib/meta.js', /bases/, 'asArr 能拆 { bases } 包装对象')
+mustNot('src/components/PreviewPanel.jsx', /const list = res\.data \|\| \[\]/, '知识库预览不再把包装对象当数组')
+must('src/components/PreviewPanel.jsx', /asArr\(res\.data\)/, '知识库列表走 asArr 归一化')
+must('src/components/PreviewPanel.jsx', /kbList = asArr\(kbs\)/, '知识库渲染前再夹一次数组')
+must('src/components/PreviewPanel.jsx', /docList = asArr\(docs\)/, '文档列表渲染前再夹一次数组')
+must('src/components/ErrorBoundary.jsx', /getDerivedStateFromError/, '渲染错误兜底边界已实现')
+must('src/components/ErrorBoundary.jsx', /componentStack/, '兜底边界展示组件栈')
+must('src/main.jsx', /ErrorBoundary/, '应用最外层有兜底')
+must('src/App.jsx', /<ErrorBoundary label="主界面">/, '主界面有兜底')
+must('src/components/ChatWorkspace.jsx', /<ErrorBoundary compact label="预览面板">/, '预览面板单独兜底')
+mustNot('src/store.js', /chaosMemory: list\.data \|\| \[\]/, '混沌记忆写入也做数组归一化')
 
 console.log(`\n=== 结果：${pass}/${pass + fail} 通过 ===`)
 if (fail) {

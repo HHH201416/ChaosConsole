@@ -1138,7 +1138,7 @@ export const useStore = create((set, get) => ({
   async saveChaosMemory(items) {
     try {
       const list = await api.chaosMemorySet(items)
-      set({ chaosMemory: list.data || [] })
+      set({ chaosMemory: asArr(list.data) })
     } catch (err) {
       get().toast(err.message, 'error')
     }

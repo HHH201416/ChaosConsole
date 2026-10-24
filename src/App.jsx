@@ -4,6 +4,7 @@ import { loadToken } from './lib/api'
 import Login from './components/Login'
 import TopBar from './components/TopBar'
 import ChatWorkspace from './components/ChatWorkspace'
+import ErrorBoundary from './components/ErrorBoundary'
 import Board from './components/Board'
 import CommandPalette from './components/CommandPalette'
 import ShortcutHelp from './components/ShortcutHelp'
@@ -474,6 +475,9 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-ink-900">
+      {/* 9.5.5：主界面兜底 —— 任何一个组件渲染抛错都只坏掉这一块，
+          不再整页白屏（以前一个 .map 崩了就只剩黑窗口） */}
+      <ErrorBoundary label="主界面">
       <TopBar
         onNewAgent={() => setModal('agent')}
         onNewTask={() => setModal('task')}
@@ -530,6 +534,7 @@ export default function App() {
       <BossModeHost />
       <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
 
+      </ErrorBoundary>
       <Toasts />
       {/* 9.5.1：绿色呼吸边框（纯装饰，不挡点击） */}
       <div className="breathing-border" aria-hidden="true" />

@@ -1,0 +1,15 @@
+9.6.0: 彻底修好启动白屏（知识库预览把包装对象当数组）
+
+根因（真机证据：/api/kb 返回 {"bases":[],"summary":{}}，是对象不是数组）：
+- PreviewPanel.KbPreview 写的是 `const list = res.data || []`，空对象也是真值
+  → kbs 变成 {bases,summary} → kbs.map 抛 TypeError → React 整棵树卸载 → 黑屏
+- previewOpen 存在 localStorage 里，一旦开过预览面板，之后每次启动都会崩
+
+修复：
+- lib/meta.js 新增 asArr()：数组原样返回，包装对象按 bases/items/docs/list/data/rows 拆包
+- PreviewPanel：知识库、文档、目录树全部走 asArr，渲染前再夹一次
+- store.js 混沌记忆写入同样归一化
+- 新增 ErrorBoundary：main.jsx 最外层 + 主界面 + 预览面板三层兜底，
+  任何组件渲染抛错只坏那一块，显示可复制组件栈的错误卡片，不再整页白屏
+- 审计新增 12 条断言（112/112），双回归 50/50 + 64/64，i18n 通过
+- 版本号 9.6.0；清理 GitHub 上 3.6.0 之前与 9.0.0-9.5.4 的全部 Release

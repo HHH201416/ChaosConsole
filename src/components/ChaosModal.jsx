@@ -6,7 +6,7 @@ import { useT } from '../lib/useT'
 /**
  * 8.0.2：Token 额度卡片。
  * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
- * 9.3.8：兑换码固定为 HY2014，兑换后升级「永久 Token」（不再限量），不支持自产。
+ * 9.5.2：兑换码不显示在前端 —— 界面只留输入框，码值线下发放。
  */
 function TokenCard() {
   const status = useStore((s) => s.chaosStatus)
@@ -37,7 +37,7 @@ function TokenCard() {
         </div>
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-        每天 0 点自动重发 3000 万 token。输入兑换码 HY2014 可升级为「永久 Token」，永不限量。
+        每天 0 点自动重发 3000 万 token。持有兑换码可升级为「永久 Token」，永不限量。
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input

@@ -41,6 +41,11 @@ const {
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
 
+// 9.5.1：系统代理（加速器/VPN）经常不放行 localhost —— 渲染进程的 /api 请求被
+// 代理吞掉就会「深色空白进不去」。这里强制 127.0.0.1/localhost 直连，
+// 外部请求（检查更新、下载模型）照常走系统代理。
+app.commandLine.appendSwitch('proxy-bypass-list', '127.0.0.1;localhost;<local>')
+
 // 打包后数据落在用户目录，Program Files 是只读的
 process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath('userData'), 'data')
 
@@ -1585,6 +1590,27 @@ async function createWindow() {
   } catch (err) {
     console.error('[electron] 界面加载失败:', err.message)
     dialog.showErrorBox('启动失败', `无法加载界面 ${target}\n${err.message}`)
+  }
+
+  // 9.5.1：渲染进程崩溃（GPU 等）自愈 —— 自动重载一次，不再无声黑屏
+  let rendererGoneReloaded = false
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[renderer-gone] ${details.reason}`)
+    if (!rendererGoneReloaded && details.reason !== 'clean-exit') {
+      rendererGoneReloaded = true
+      setTimeout(() => mainWindow.webContents.reload(), 800)
+    }
+  })
+
+  // 9.5.1：E2E 模式把渲染进程的控制台/崩溃转发到主进程 stdout ——
+  // 白屏排障用（正式运行不影响）。
+  if (process.env.CHAOS_E2E === '1') {
+    mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      console.log(`[renderer:${level}] ${message} (${sourceId}:${line})`)
+    })
+    mainWindow.webContents.on('render-process-gone', (_e, details) => {
+      console.error(`[renderer-gone] ${JSON.stringify(details)}`)
+    })
   }
 }
 

@@ -529,6 +529,8 @@ export default function App() {
       <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
 
       <Toasts />
+      {/* 9.5.1：绿色呼吸边框（纯装饰，不挡点击） */}
+      <div className="breathing-border" aria-hidden="true" />
       <LockOverlay />
       <ShutdownOverlay />
     </div>

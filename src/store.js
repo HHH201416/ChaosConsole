@@ -4,6 +4,13 @@ import { loadUiPrefs, saveUiPrefs } from './lib/prefs'
 import { applyTheme, applyAccent, resolveTheme, watchSystemTheme } from './lib/theme'
 import { translate } from './lib/i18n'
 
+/* 9.5.3：数组防御。用户机器上出现过 `c.map is not a function` 白屏（bundle 里
+   templates/agents/tasks/conversations 的 .map 调用点），根因是某条路径把非数组
+   写进了这几个全局键（WS snapshot / HTTP 响应异常 / 旧数据残留都有嫌疑）。
+   治标 + 治本双保险：各 set 点显式归一化（asArr），zustand setState 再包一层
+   兜底（见文件末尾 installArrayGuards），保证这四个键永远是真数组。 */
+const asArr = (v) => (Array.isArray(v) ? v : [])
+
 /* ------------------------------------------------------------------ *
  * WebSocket：单例连接 + 断线重连
  * ------------------------------------------------------------------ */
@@ -273,10 +280,10 @@ export const useStore = create((set, get) => ({
       document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN'
       saveUiPrefs({ language, accent })
       set({
-        agents: stateRes.data.agents,
-        tasks: stateRes.data.tasks,
+        agents: asArr(stateRes.data?.agents),
+        tasks: asArr(stateRes.data?.tasks),
         system: sys,
-        conversations: convRes.data || [],
+        conversations: asArr(convRes.data),
         language,
         accent,
         ...(updRes?.data ? { update: updRes.data } : {}),
@@ -287,7 +294,7 @@ export const useStore = create((set, get) => ({
       // 不会出现「token 已失效、却在登录页背后悄悄恢复了选中态」。
       // 必须先校验任务还在：直接调 selectTask 会在任务被删时白弹一条「任务不存在」。
       const saved = loadUiPrefs().selectedTaskId
-      if (saved && !get().selectedTaskId && stateRes.data.tasks.some((t) => t.id === saved)) {
+      if (saved && !get().selectedTaskId && asArr(stateRes.data?.tasks).some((t) => t.id === saved)) {
         get().selectTask(saved)
       }
     } catch (err) {
@@ -345,7 +352,17 @@ export const useStore = create((set, get) => ({
         if (get().selectedTaskId === null) set({ detailLoading: false })
         return
       }
-      set({ detail: res.data, detailLoading: false })
+      // 9.5.3：detail 里的 messages / events / tags 同样归一化，防止异常响应
+      // 把非数组带进渲染路径（ChatPanel 551 行的 [...messages.map(...)]）
+      const d = res.data && typeof res.data === 'object' ? res.data : {}
+      set({
+        detail: {
+          ...d,
+          messages: asArr(d.messages),
+          events: asArr(d.events),
+        },
+        detailLoading: false,
+      })
     } catch (err) {
       set({ detailLoading: false })
       get().toast(err.message, 'error')
@@ -572,7 +589,7 @@ export const useStore = create((set, get) => ({
   async refreshConversations() {
     try {
       const res = await api.conversations()
-      set({ conversations: res.data || [] })
+      set({ conversations: asArr(res.data) })
     } catch (_) {
       /* 静默失败：对话列表不是关键路径 */
     }
@@ -854,7 +871,7 @@ export const useStore = create((set, get) => ({
   async loadTemplates() {
     try {
       const res = await api.templates()
-      set({ templates: res.data || [] })
+      set({ templates: asArr(res.data) })
     } catch (err) {
       get().toast(err.message, 'error')
     }
@@ -1446,7 +1463,9 @@ function scheduleReconnect() {
   }, reconnectDelay)
 }
 
-function handleServerMessage(msg) {
+/* 9.5.3：原始处理器。外面包了一层 try/catch（见 handleServerMessage），
+   一条坏消息最多丢一条事件，绝不许把整个应用炸成白屏。 */
+function handleServerMessageRaw(msg) {
   const { type, payload } = msg
   const state = useStore.getState()
 
@@ -1455,7 +1474,12 @@ function handleServerMessage(msg) {
       break
 
     case 'snapshot':
-      useStore.setState({ agents: payload.agents, tasks: payload.tasks })
+      // 9.5.3：快照异常（payload 非对象 / 字段缺失或非数组）时保留现有数组，
+      // 绝不让 undefined/对象混进 agents/tasks —— 否则下一步的 .map 直接白屏
+      useStore.setState({
+        agents: Array.isArray(payload?.agents) ? payload.agents : state.agents,
+        tasks: Array.isArray(payload?.tasks) ? payload.tasks : state.tasks,
+      })
       break
 
     case 'agent:updated':
@@ -1538,7 +1562,7 @@ function handleServerMessage(msg) {
 
     case 'message:added':
       if (state.detail && state.detail.task.id === payload.taskId) {
-        if (!state.detail.messages.some((m) => m.id === payload.id)) {
+        if (Array.isArray(state.detail.messages) && !state.detail.messages.some((m) => m.id === payload.id)) {
           useStore.setState({ detail: { ...state.detail, messages: [...state.detail.messages, payload] } })
         }
       }
@@ -1546,7 +1570,7 @@ function handleServerMessage(msg) {
 
     case 'event:added':
       if (state.detail && state.detail.task.id === payload.taskId) {
-        if (!state.detail.events.some((e) => e.id === payload.id)) {
+        if (Array.isArray(state.detail.events) && !state.detail.events.some((e) => e.id === payload.id)) {
           useStore.setState({ detail: { ...state.detail, events: [...state.detail.events, payload] } })
         }
       }
@@ -1610,8 +1634,8 @@ function handleServerMessage(msg) {
 
     case 'workspace:imported':
       useStore.setState({
-        agents: payload.agents || [],
-        tasks: payload.tasks || [],
+        agents: asArr(payload?.agents),
+        tasks: asArr(payload?.tasks),
         selectedTaskIds: [],
         selectedTaskId: null,
         detail: null,
@@ -1682,6 +1706,48 @@ function handleServerMessage(msg) {
       // 新事件忘了接会静默丢失，开发时至少留个痕迹
       if (typeof console !== 'undefined') console.debug('[ws] 未处理事件:', type)
       break
+  }
+}
+
+/* 9.5.3：数组兜底层。无论哪条路径（HTTP 响应 / WS 消息 / 未来新代码）往
+   agents / tasks / conversations / templates / selectedTaskIds 写入非数组，
+   都在这里被夹回数组 —— 这是 `c.map is not a function` 白屏的最后一道闸。
+   函数式 updater 也会被拦截处理。注意 snapshot 分支在写入前就保留了旧数组，
+   这层只兜「漏网之鱼」，把它夹成 [] 而不是让它崩掉渲染。 */
+const ARRAY_STATE_KEYS = ['agents', 'tasks', 'conversations', 'templates', 'selectedTaskIds']
+const __rawSetState = useStore.setState
+useStore.setState = function guardedSetState(partial, replace) {
+  try {
+    if (typeof partial === 'function') {
+      return __rawSetState((state) => {
+        const next = partial(state)
+        for (const k of ARRAY_STATE_KEYS) {
+          if (next && k in next && !Array.isArray(next[k])) next[k] = asArr(next[k])
+        }
+        return next
+      }, replace)
+    }
+    if (partial && typeof partial === 'object') {
+      const patched = { ...partial }
+      for (const k of ARRAY_STATE_KEYS) {
+        if (k in patched && !Array.isArray(patched[k])) patched[k] = asArr(patched[k])
+      }
+      return __rawSetState(patched, replace)
+    }
+  } catch (_) {
+    /* 归一化自身出错时不吞掉真正的 setState：退回原始实现 */
+  }
+  return __rawSetState(partial, replace)
+}
+
+/* 9.5.3：WS 消息处理防炸层 —— 任何一条消息处理抛错都只记日志，不冒泡成
+   未捕获异常（onmessage 里的异常不会显示在错误浮层里，但会中断后续消息，
+   并可能在渲染中途留下被写坏的 state 导致白屏）。 */
+function handleServerMessage(msg) {
+  try {
+    handleServerMessageRaw(msg)
+  } catch (err) {
+    if (typeof console !== 'undefined') console.error('[ws] 消息处理失败（已忽略）:', err)
   }
 }
 

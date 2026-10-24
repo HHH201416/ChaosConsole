@@ -300,10 +300,10 @@ export default function ChatPanel() {
   const voiceRef = useRef(null)
   const loadDraftFor = useRef(null)
 
-  const executors = system?.executors || []
+  const executors = Array.isArray(system?.executors) ? system.executors : []
   const chaosUp = Boolean(system?.chaos?.serverUp)
-  const messages = detail?.messages || []
-  const events = detail?.events || []
+  const messages = Array.isArray(detail?.messages) ? detail.messages : []
+  const events = Array.isArray(detail?.events) ? detail.events : []
   const task = detail?.task
   const agent = detail?.agent
 

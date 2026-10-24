@@ -716,7 +716,14 @@ function clearAllTasks() {
 }
 
 function snapshot() {
-  return { agents: listAgents(), tasks: listTasks() }
+  // 9.5.3：双保险 —— 前端 store 已归一化，这里再保证 HTTP /api/state 与
+  // WS snapshot 广播永远送出真数组（9.5.2 用户机器上 `c.map is not a function`）
+  const a = listAgents()
+  const t = listTasks()
+  return {
+    agents: Array.isArray(a) ? a : [],
+    tasks: Array.isArray(t) ? t : [],
+  }
 }
 
 module.exports = {

@@ -22,7 +22,12 @@
     else document.addEventListener('DOMContentLoaded', paint)
   }
   window.addEventListener('error', function (e) {
-    show((e.message || '未知错误') + '\n' + (e.filename || '') + ':' + (e.lineno || ''))
+    var stack = e.error && e.error.stack ? '\n' + String(e.error.stack).slice(0, 900) : ''
+    show(
+      (e.message || '未知错误') +
+        '\n' + (e.filename || '') + ':' + (e.lineno || '') + ':' + (e.colno || '') +
+        stack,
+    )
   })
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason

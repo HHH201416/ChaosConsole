@@ -1235,19 +1235,19 @@ export function SettingsModal({ onClose }) {
 
         {/* 执行器状态 */}
         <div className="space-y-2">
-          {(system.executors || []).map((e) => (
+          {(Array.isArray(system.executors) ? system.executors : []).map((e) => (
             <div key={e.id} className="rounded-lg border border-ink-500 bg-ink-900 p-3">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${e.available ? 'bg-emerald-500' : 'bg-boss'}`} />
                 <span className="font-medium text-slate-200">{e.label}</span>
                 <span className="font-mono text-[10px] text-slate-600">
-                  {e.available ? `${e.models.length} 个模型可用` : '未安装'}
+                  {e.available ? `${(Array.isArray(e.models) ? e.models : []).length} 个模型可用` : '未安装'}
                 </span>
               </div>
               <p className="text-[10.5px] text-slate-500">{e.hint}</p>
               {e.available && (
                 <p className="mt-1 break-all font-mono text-[10px] text-slate-600">
-                  {e.models.map((m) => m.id).join(' · ')}
+                  {(Array.isArray(e.models) ? e.models : []).map((m) => m.id).join(' · ')}
                 </p>
               )}
             </div>

@@ -117,10 +117,26 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.5\.2"/, '版本为 9.5.2')
+must('package.json', /"version": "9\.5\.3"/, '版本为 9.5.3')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
+
+/* ---------- 9.5.3：c.map 白屏崩溃防御 ---------- */
+console.log('— 9.5.3 数组防御（修复 c.map is not a function 白屏）')
+must('src/store.js', /const asArr = \(v\) => \(Array\.isArray\(v\) \? v : \[\]\)/, 'store 有 asArr 归一化辅助')
+must('src/store.js', /agents: asArr\(stateRes\.data\?\.agents\)/, 'bootstrap 归一化 agents')
+must('src/store.js', /tasks: asArr\(stateRes\.data\?\.tasks\)/, 'bootstrap 归一化 tasks')
+must('src/store.js', /const ARRAY_STATE_KEYS = \['agents', 'tasks', 'conversations', 'templates', 'selectedTaskIds'\]/, 'setState 数组兜底层存在')
+must('src/store.js', /Array\.isArray\(payload\?\.agents\) \? payload\.agents : state\.agents/, 'WS snapshot 异常时保留旧 agents')
+must('src/store.js', /Array\.isArray\(payload\?\.tasks\) \? payload\.tasks : state\.tasks/, 'WS snapshot 异常时保留旧 tasks')
+must('src/store.js', /function handleServerMessage\(msg\) \{\s*try \{\s*handleServerMessageRaw\(msg\)/s, 'WS 消息处理有 try/catch 防炸层')
+must('server/store.js', /agents: Array\.isArray\(a\) \? a : \[\]/, '服务端 snapshot 归一化 agents')
+must('server/store.js', /tasks: Array\.isArray\(t\) \? t : \[\]/, '服务端 snapshot 归一化 tasks')
+must('src/components/ChatPanel.jsx', /const messages = Array\.isArray\(detail\?\.messages\)/, 'ChatPanel messages 数组防御')
+must('src/components/ChatPanel.jsx', /const events = Array\.isArray\(detail\?\.events\)/, 'ChatPanel events 数组防御')
+must('src/components/ChatPanel.jsx', /Array\.isArray\(system\?\.executors\)/, 'ChatPanel executors 数组防御')
+must('src/components/Modals.jsx', /Array\.isArray\(system\.executors\)/, '设置页 executors 数组防御')
 
 console.log(`\n=== 结果：${pass}/${pass + fail} 通过 ===`)
 if (fail) {

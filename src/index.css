@@ -763,21 +763,20 @@ html[data-theme='light'][data-accent='emerald'] {
 }
 
 /* ------------------------------------------------------------------ *
- * 9.5.1：绿色呼吸边框 —— 应用窗口四周的常驻呼吸光圈（可访问性：跟随系统减少动效）
+ * 9.5.4：氛围灯呼吸光 —— 窗口四周的常驻柔光（9.5.3 之前的版本是硬边框 +
+ * 小光晕，用户要「像氛围灯一样温柔的光」）。没有硬边线，只有多层大模糊、
+ * 低透明度的弥散光晕从窗口边缘向外渗出，5.5s 慢呼吸（可访问性：跟随系统减少动效）
  * ------------------------------------------------------------------ */
 
 @keyframes breathe-glow {
   0%,
   100% {
-    box-shadow:
-      inset 0 0 0 1.5px rgb(34 197 94 / 0.5),
-      0 0 14px rgb(34 197 94 / 0.22);
-    opacity: 0.7;
+    /* 熄下来的状态：只动透明度，不动 box-shadow —— 9.5.4 E2E 调试发现
+       box-shadow 逐帧动画会让合成器每帧重绘整屏模糊层（截图工具都被拖垮），
+       改成「静态光晕 + opacity 呼吸」走 GPU 合成，零重绘。 */
+    opacity: 0.32;
   }
   50% {
-    box-shadow:
-      inset 0 0 0 2px rgb(34 197 94 / 0.9),
-      0 0 30px rgb(34 197 94 / 0.45);
     opacity: 1;
   }
 }
@@ -787,13 +786,19 @@ html[data-theme='light'][data-accent='emerald'] {
   inset: 0;
   z-index: 70;
   pointer-events: none;
-  border-radius: 8px;
-  animation: breathe-glow 2.6s ease-in-out infinite;
+  /* 光层铺满窗口、外发光会被窗口边界裁掉，所以氛围光做「从窗框向内晕开」：
+     负 spread 拉掉硬内边，大 blur 让光像从边框渗进来的雾状渐变。阴影静态
+     只栅格化一次，呼吸感由上面的 opacity 动画承担。 */
+  box-shadow:
+    inset 0 0 70px -10px rgb(34 197 94 / 0.26),
+    inset 0 0 170px -36px rgb(34 197 94 / 0.13);
+  animation: breathe-glow 5.5s ease-in-out infinite;
+  will-change: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .breathing-border {
     animation: none;
-    box-shadow: inset 0 0 0 2px rgb(34 197 94 / 0.6);
+    opacity: 0.7;
   }
 }

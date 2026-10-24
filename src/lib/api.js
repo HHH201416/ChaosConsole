@@ -180,11 +180,14 @@ export const api = {
   chaosAutomations: () => get('/api/chaos/automations'),
   chaosAutomationUpsert: (a) => post('/api/chaos/automations', a),
   chaosAutomationDelete: (id) => del(`/api/chaos/automations/${id}`),
-  // 8.0.2：Token 额度（每日 3000 万免费 + 固定兑换码换永久）
+  // 8.0.2：Token 额度（每日 3000 万免费；9.5.4 起填手机号绑定激活）
   chaosQuota: () => get('/api/chaos/quota'),
-  chaosRedeem: (code) => post('/api/chaos/redeem', { code }),
+  chaosBindPhone: (phone) => post('/api/chaos/phone', { phone }),
   // 9.3.8：全部岗位一键切混沌 + 工作区预览（文件 / 知识库侧栏）
   chaosSwitchAllAgents: () => post('/api/agents/migrate-chaos'),
+  // 9.5.4：AIPPT（主题 + 页数 + 语气 → 本地 .pptx）
+  aipptList: () => get('/api/aippt/list'),
+  aipptGenerate: (payload) => post('/api/aippt/generate', payload),
   workspaceTree: (root) => get(`/api/workspace/tree?root=${encodeURIComponent(root)}`),
   workspaceFile: (root, p) => get(`/api/workspace/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(p)}`),
   // 9.3.8：安全 —— 本地锁屏解锁校验

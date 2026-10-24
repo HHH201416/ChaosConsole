@@ -168,6 +168,8 @@ app.get('/api/system', requireAuth, (_req, res) => {
       appRoot: CONFIG.ROOT,
       // 9.3.8：安全 —— 是否已设置锁屏 PIN（不回传 PIN 本身）
       hasPin: Boolean(String(store.getSetting('appPin', '') || '').trim()),
+      // 9.5.4：是否允许 Agent 操作电脑（run_command / open_path 工具总闸，默认开）
+      agentComputerUse: store.getSetting('agentComputerUse', '1') === '1',
     },
   })
 })
@@ -201,12 +203,17 @@ app.post('/api/settings', requireAuth, (req, res) => {
     apiKey,
     apiModel,
     appPin,
+    agentComputerUse,
   } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
       return res.status(400).json({ ok: false, error: '非法的权限模式' })
     }
     store.setSetting('permissionMode', permissionMode)
+  }
+  // 9.5.4：允许 Agent 操作电脑（run_command / open_path 工具总闸，默认开）
+  if (agentComputerUse !== undefined) {
+    store.setSetting('agentComputerUse', agentComputerUse ? '1' : '0')
   }
   if (devecoAutoApprove !== undefined) {
     store.setSetting('devecoAutoApprove', devecoAutoApprove ? '1' : '0')
@@ -1007,7 +1014,7 @@ app.delete('/api/chaos/automations/:id', requireAuth, (req, res) => {
   res.json(r)
 })
 
-/* ---- 8.0.2：混沌 Token 额度（每日 3000 万免费 + 兑换码换永久） ---- */
+/* ---- 8.0.2：混沌 Token 额度（每日 3000 万免费；9.5.4 起填手机号激活） ---- */
 
 const quota = require('./chaos-quota')
 
@@ -1015,13 +1022,49 @@ app.get('/api/chaos/quota', requireAuth, (_req, res) => {
   res.json({ ok: true, data: quota.publicUsage() })
 })
 
-app.post('/api/chaos/redeem', requireAuth, (req, res) => {
-  const r = quota.redeem(req.body?.code)
+/* 9.5.4：原「兑换码」接口改为手机号绑定（每个手机号每天 3000 万 token）。
+   旧路径保留别名接受 phone，兼容还没更新的调用方。 */
+app.post('/api/chaos/phone', requireAuth, (req, res) => {
+  const r = quota.bindPhone(req.body?.phone)
   if (!r.ok) return res.status(400).json(r)
   res.json(r)
 })
 
-/* 9.3.8：自产兑换码已移除 —— 固定兑换码 HY2014，见 chaos-quota.js */
+app.post('/api/chaos/redeem', requireAuth, (req, res) => {
+  const r = quota.bindPhone(req.body?.phone || req.body?.code)
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+/* ---- 9.5.4：AIPPT（主题 + 页数 + 语气 → 本地生成 .pptx） ---- */
+
+const aippt = require('./aippt')
+
+app.get('/api/aippt/list', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: aippt.listFiles() })
+})
+
+app.post('/api/aippt/generate', requireAuth, async (req, res) => {
+  try {
+    const r = await aippt.generate({
+      topic: req.body?.topic,
+      pages: req.body?.pages,
+      tone: req.body?.tone,
+      model: req.body?.model,
+    })
+    if (!r.ok) return res.status(400).json(r)
+    store.bus.emit('chaos:changed', { reason: 'aippt-generated' })
+    res.json({ ok: true, data: r })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.get('/api/aippt/file', requireAuth, (req, res) => {
+  const file = aippt.resolveFile(req.query?.id)
+  if (!file) return res.status(404).json({ ok: false, error: '文件不存在' })
+  res.download(file)
+})
 
 /** 9.3.8：全部岗位一键切混沌（混沌面板的按钮走这里，与启动迁移同一实现） */
 app.post('/api/agents/migrate-chaos', requireAuth, (_req, res) => {
@@ -1435,8 +1478,24 @@ app.get('/api/diagnostics/export', requireAuth, (_req, res) => {
 
 const DIST_DIR = path.join(CONFIG.ROOT, 'dist')
 if (fs.existsSync(DIST_DIR)) {
-  app.use(express.static(DIST_DIR))
+  /* 9.5.4：缓存策略修复。express.static 默认 `public, max-age=0`，Electron 的
+     HTTP 缓存曾经把旧版 index.html 连同旧 bundle 一起喂给渲染进程 —— 应用
+     升级后窗口里跑的还是旧前端（9.5.3 用户机器上 `c.map` 依旧存在的根因）。
+     index.html 永不缓存（no-store）；/assets/ 下的文件名带内容哈希，可放心
+     长缓存。 */
+  app.use(
+    express.static(DIST_DIR, {
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-store, must-revalidate')
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        }
+      },
+    }),
+  )
   app.get(/^(?!\/api).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, must-revalidate')
     res.sendFile(path.join(DIST_DIR, 'index.html'))
   })
 } else {

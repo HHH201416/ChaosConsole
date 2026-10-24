@@ -1,0 +1,9 @@
+9.5.4: 氛围灯光效 + 缓存加固 + 手机号绑定 + AIPPT + 操作电脑 + UI 修复
+
+- 氛围灯：去掉硬边框，改为静态大模糊内晕 + opacity 呼吸（GPU 合成零重绘，5.5s）
+- 缓存加固：index.html no-store、资产 immutable、Electron 启动清 HTTP/代码缓存（旧缓存喂旧 bundle 的白屏根因）
+- 兑换码改手机号绑定：每个手机号每天 3000 万 token（归一化 +86/空格/横线，幂等）
+- AIPPT：左侧新 TAB，主题+页数+语气改本地模型大纲，pptxgenjs 渲染 .pptx，可下载可历史
+- 操作电脑：run_command 命令执行工具（60s 超时+黑名单）/ open_path 打开文件网页，设置总闸 agentComputerUse
+- UI：岗位列表有界高度可滚动；右上角「事件」切换按钮移除
+- 审计 100/100、回归 50/50+64/64、i18n 通过

@@ -1,6 +1,6 @@
 {
   "name": "chaos-console",
-  "version": "9.5.3",
+  "version": "9.5.4",
   "description": "AI Agent Development Console (ChaosConsole) - multi-agent kanban and chat console",
   "main": "electron/main.js",
   "author": {
@@ -35,6 +35,7 @@
     "cors": "^2.8.5",
     "electron-updater": "^6.3.9",
     "express": "^4.21.2",
+    "pptxgenjs": "^4.0.1",
     "sql.js": "^1.12.0",
     "ws": "^8.18.0"
   },

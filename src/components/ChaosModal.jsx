@@ -6,16 +6,18 @@ import { useT } from '../lib/useT'
 /**
  * 8.0.2：Token 额度卡片。
  * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
- * 9.5.2：兑换码不显示在前端 —— 界面只留输入框，码值线下发放。
+ * 9.5.4：原「兑换码」改为填手机号 —— 每个手机号每天 3000 万 token。
  */
 function TokenCard() {
   const status = useStore((s) => s.chaosStatus)
-  const redeemChaosCode = useStore((s) => s.redeemChaosCode)
-  const [code, setCode] = useState('')
+  const bindChaosPhone = useStore((s) => s.bindChaosPhone)
+  const [phone, setPhone] = useState('')
 
   const q = status?.quota
   if (!q) return null
   const pct = q.unlimited ? 100 : Math.min(100, Math.round(((q.remaining || 0) / q.dailyFree) * 100))
+  const digits = phone.replace(/\D/g, '')
+  const canBind = /^1[3-9]\d{9}$/.test(digits)
 
   return (
     <div className="mt-4 rounded-lg border border-ink-500 bg-ink-900 p-3">
@@ -30,6 +32,11 @@ function TokenCard() {
             <span className="chip">已用 {Number(q.usedToday).toLocaleString()}</span>
           </>
         )}
+        {q.phone && (
+          <span className="chip bg-sky-500/15 text-sky-300">
+            已绑定 {String(q.phone).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')}
+          </span>
+        )}
       </div>
       {!q.unlimited && (
         <div className="progress-track mt-2 !w-full">
@@ -37,28 +44,30 @@ function TokenCard() {
         </div>
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-        每天 0 点自动重发 3000 万 token。持有兑换码可升级为「永久 Token」，永不限量。
+        每天 0 点自动重发 3000 万 token。填入手机号完成绑定 —— 每个手机号每天 3000 万 token。
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && code.trim()) {
-              if (redeemChaosCode(code.trim())) setCode('')
+            if (e.key === 'Enter' && canBind) {
+              if (bindChaosPhone(phone.trim())) setPhone('')
             }
           }}
-          placeholder="输入兑换码"
+          placeholder="输入手机号"
+          inputMode="numeric"
+          maxLength={14}
           className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
         />
         <button
           className="btn-primary shrink-0 px-2 py-1 text-[11px]"
-          disabled={!code.trim()}
+          disabled={!canBind}
           onClick={async () => {
-            if (await redeemChaosCode(code.trim())) setCode('')
+            if (await bindChaosPhone(phone.trim())) setPhone('')
           }}
         >
-          兑换
+          绑定
         </button>
       </div>
     </div>
@@ -207,7 +216,7 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
             </div>
           </div>
 
-          {/* 8.0.2：Token 额度（每日 3000 万免费 + 兑换码换永久） */}
+          {/* 8.0.2：Token 额度（每日 3000 万免费；9.5.4 起填手机号绑定） */}
           <TokenCard />
 
           {/* 模型列表 */}

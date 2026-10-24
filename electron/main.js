@@ -1619,6 +1619,16 @@ async function createWindow() {
  * ------------------------------------------------------------------ */
 
 app.whenReady().then(async () => {
+  // 9.5.4：启动即清 HTTP 缓存与 V8 代码缓存。升级后渲染进程曾从磁盘缓存里
+  // 拿到旧版 index.html（引用旧 bundle），导致「明明装了新版、窗口里跑的还是
+  // 旧前端」。本应用所有内容都来自本机服务，缓存毫无收益、只有风险 —— 每次启动清一次。
+  try {
+    await session.defaultSession.clearCache()
+    await session.defaultSession.clearCodeCaches({})
+  } catch (_) {
+    /* 清不掉也不阻塞启动 */
+  }
+
   // 必须在 createSplash 之前：闪屏窗口也是 Chromium，它的原生部件同样要看 themeSource
   applyNativeTheme()
   createSplash()

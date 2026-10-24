@@ -1286,13 +1286,13 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  /* ---- 8.0.2：Token 额度（每日 3000 万免费 + 兑换码换永久） ---- */
+  /* ---- 8.0.2：Token 额度（每日 3000 万免费；9.5.4 起填手机号绑定激活） ---- */
 
-  async redeemChaosCode(code) {
+  async bindChaosPhone(phone) {
     try {
-      const res = await api.chaosRedeem(code)
-      if (!res.ok) throw new Error(res.error || '兑换失败')
-      get().toast('兑换成功！已解锁永久 Token 🎉', 'success')
+      const res = await api.chaosBindPhone(phone)
+      if (!res.ok) throw new Error(res.error || '绑定失败')
+      get().toast(res.data?.already ? '该手机号已绑定过，每天 3000 万 token 继续有效' : '绑定成功！每个手机号每天 3000 万 token', 'success')
       await get().loadChaosStatus()
       await get().refreshSystem()
       return true

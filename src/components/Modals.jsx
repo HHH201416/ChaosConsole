@@ -1165,6 +1165,22 @@ export function SettingsModal({ onClose }) {
         {/* 9.3.8：安全锁屏 PIN */}
         <SecurityField />
 
+        {/* 9.5.4：允许 Agent 操作电脑（run_command / open_path 工具总闸） */}
+        <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <span>
+            <span className="block text-[11.5px] text-slate-200">允许 Agent 操作电脑</span>
+            <span className="mt-0.5 block text-[10px] text-slate-500">
+              关闭后混沌岗位只能读写工作区文件，不能再执行命令或打开文件（每次调用都会记录在对话事件流里）
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 shrink-0 accent-boss"
+            checked={system.agentComputerUse !== false}
+            onChange={(e) => setDesktopSetting('agentComputerUse', e.target.checked)}
+          />
+        </label>
+
         {/* 8.0.0：派单策略 / 桌面集成 / 新面板入口 */}
         <div className="space-y-2.5 rounded-lg border border-ink-500 bg-ink-900 p-3">
           <div className="text-[12px] font-medium text-slate-200">{t('settings.desktop')}</div>

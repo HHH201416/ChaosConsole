@@ -981,6 +981,100 @@ const CHAOS_TOOLS = [
   },
 ]
 
+/* 9.5.4：操作电脑工具（设置开关「允许 Agent 操作电脑」控制，默认开）。
+   run_command 用 PowerShell 执行任意命令（60s 超时 + 8KB 输出截断 + 盘级毁灭命令黑名单）；
+   open_path 用系统默认方式打开文件 / 文件夹 / 网页。 */
+const PC_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description:
+        '在这台电脑上执行一条命令（PowerShell，工作区为当前目录），返回 stdout/stderr。' +
+        '适合：查目录、跑脚本、装依赖、查系统信息等。60 秒超时。',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: '要执行的命令，例如 node -v 或 Get-ChildItem D:\\' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_path',
+      description: '用系统默认方式打开一个文件、文件夹或网页（http/https 链接）',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件/文件夹的完整路径，或 http(s) 网页链接' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+]
+
+/** 「允许 Agent 操作电脑」开关（设置 agentComputerUse，1 开 / 0 关，默认开） */
+function computerUseEnabled() {
+  return store.getSetting('agentComputerUse', '1') === '1'
+}
+
+/** 盘级毁灭命令黑名单（format/diskpart 等）—— 其余命令信任模型 + 事件流全透明 */
+const PC_CMD_BLACKLIST = /\b(format|diskpart|cipher\s+\/w|bdehdcfg|cleanmgr\s+\/verylowdisk)\b/i
+
+/** 用 PowerShell 执行命令：60s 超时，输出截到 8KB。返回可直接给模型看的文本。 */
+function runPcCommand(command) {
+  const cmd = String(command || '').trim()
+  if (!cmd) return '错误：命令为空'
+  if (PC_CMD_BLACKLIST.test(cmd)) return '错误：该命令属于盘级毁灭性操作，已被安全策略拦截'
+  return new Promise((resolve) => {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd],
+      { windowsHide: true },
+    )
+    let out = ''
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch (_) {
+        /* ignore */
+      }
+      resolve(`超时：命令执行超过 60 秒被中断。\n已捕获输出：\n${out.slice(0, 8192)}`)
+    }, 60 * 1000)
+    child.stdout.on('data', (d) => {
+      if (out.length < 8192) out += d.toString()
+    })
+    child.stderr.on('data', (d) => {
+      if (out.length < 8192) out += d.toString()
+    })
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve(`错误：${err.message}`)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve(`退出码 ${code}\n${out.slice(0, 8192) || '（无输出）'}`)
+    })
+  })
+}
+
+/** 用系统默认方式打开文件 / 文件夹 / 网页 */
+function openPcPath(target) {
+  const t = String(target || '').trim()
+  if (!t) return '错误：路径为空'
+  if (/^(http|https):\/\//i.test(t)) {
+    spawn('cmd', ['/c', 'start', '', t], { detached: true, windowsHide: true, stdio: 'ignore' }).unref()
+    return `已在默认浏览器打开 ${t}`
+  }
+  if (!fs.existsSync(t)) return `错误：路径不存在（${t}）`
+  spawn('cmd', ['/c', 'start', '', t], { detached: true, windowsHide: true, stdio: 'ignore' }).unref()
+  return `已用系统默认方式打开 ${t}`
+}
+
 /** 把工具给的相对路径解析到 cwd 之内；越界返回 null */
 function resolveToolPath(cwd, rel) {
   const base = path.resolve(String(cwd || ''))
@@ -990,10 +1084,21 @@ function resolveToolPath(cwd, rel) {
   return target
 }
 
-/** 执行一个工具调用，返回给模型看的字符串结果 */
-function runChaosTool(cwd, call) {
+/** 执行一个工具调用，返回给模型看的字符串结果（9.5.4 起 run_command/open_path 为异步） */
+async function runChaosTool(cwd, call) {
   const name = String(call?.function?.name || '')
   const args = call?.function?.arguments || {}
+
+  /* 操作电脑工具：设置开关控制，不锁工作区（这就是「操作电脑」的本意） */
+  if (name === 'run_command') {
+    if (!computerUseEnabled()) return '错误：已在设置里关闭「允许 Agent 操作电脑」'
+    return runPcCommand(args.command)
+  }
+  if (name === 'open_path') {
+    if (!computerUseEnabled()) return '错误：已在设置里关闭「允许 Agent 操作电脑」'
+    return openPcPath(args.path)
+  }
+
   const rel = String(args.path || '.')
   const target = resolveToolPath(cwd, rel)
   if (!target) return `错误：路径越界，只能操作工作区内的文件（${rel}）`
@@ -1059,7 +1164,12 @@ async function runChaosToolLoop({ taskId, cwd, model, messages, signal }) {
   for (let round = 0; round < CHAOS_TOOLS_MAX_ROUNDS; round += 1) {
     let out
     try {
-      out = await chaosLlm.chatWithTools({ model, messages: convo, tools: CHAOS_TOOLS, signal })
+      out = await chaosLlm.chatWithTools({
+        model,
+        messages: convo,
+        tools: computerUseEnabled() ? CHAOS_TOOLS.concat(PC_TOOLS) : CHAOS_TOOLS,
+        signal,
+      })
     } catch (err) {
       if (round === 0) return { text: null } // 工具通道不可用 → 退回普通对话
       throw err
@@ -1075,7 +1185,7 @@ async function runChaosToolLoop({ taskId, cwd, model, messages, signal }) {
     for (const call of out.toolCalls) {
       const fname = String(call?.function?.name || '?')
       const argStr = clip(JSON.stringify(call?.function?.arguments || {}), 160)
-      const result = runChaosTool(cwd, call)
+      const result = await runChaosTool(cwd, call)
       store.addEvent(taskId, {
         type: 'status',
         name: `工具 · ${fname}`,

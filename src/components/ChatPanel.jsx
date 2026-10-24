@@ -487,13 +487,8 @@ export default function ChatPanel() {
             >
               🔁
             </button>
-            <button
-              className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
-              onClick={() => setShowEvents((v) => !v)}
-              title="查看事件列表（工具调用明细）"
-            >
-              {showEvents ? t('chat.messages') : t('chat.events', { n: events.length })}
-            </button>
+            {/* 9.5.4：右上角「事件」切换按钮已按用户要求移除 ——
+                事件仍按时间线内联在对话流里（9.3.8 的设计），不需要独立视图入口 */}
             <button
               className="rounded px-1.5 py-0.5 text-[10.5px] text-slate-500 hover:bg-ink-600 hover:text-slate-100"
               onClick={() => openHandoff(task.id)}
@@ -589,13 +584,13 @@ export default function ChatPanel() {
       {/* 输入区（9.1.0：与消息列同宽居中） */}
       <div className="shrink-0 border-t border-ink-600 p-3">
         <div className="mx-auto w-full max-w-3xl">
-        {/* 8.0.2：Token 用尽的友好提醒（每日 3000 万免费 + 兑换码出路） */}
+        {/* 8.0.2：Token 用尽的友好提醒（每日 3000 万免费 + 手机号绑定出路） */}
         {(() => {
           const q = chaosStatus?.quota
           if (!q || q.unlimited || Number(q.remaining) > 0) return null
           return (
             <div className="mb-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[10.5px] leading-relaxed text-amber-200">
-              今日 Token 已用完，混沌暂时不能回答（每天自动重发 3000 万）。可打开顶栏 🌀 面板用兑换码升级「永久 Token」。
+              今日 Token 已用完，混沌暂时不能回答（每天自动重发 3000 万）。可打开顶栏 🌀 面板填手机号完成绑定。
             </div>
           )
         })()}

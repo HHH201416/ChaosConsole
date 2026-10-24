@@ -230,7 +230,10 @@ export default function AgentSidebar({ onNewAgent }) {
        折叠只改宽度、不用 transform —— transform 会让这个祖先成为 fixed 元素的包含块，
        把 AgentDetail 那个 fixed 弹窗连带裁掉。 */
     <aside
-      className={`flex shrink-0 flex-col border-r border-ink-600 bg-ink-800 transition-[width] duration-200 ${
+      /* 9.5.4：min-h-0 + flex-1 —— 以前是 shrink-0，岗位一多（22 个）列表就把
+         aside 撑出容器高度，overflow-y-auto 拿不到有界高度，「岗位页滑不下去」。
+         在父级（flex-col + min-h-0）里改成占满并允许收缩，滚动就回来了。 */
+      className={`flex min-h-0 flex-1 flex-col border-r border-ink-600 bg-ink-800 transition-[width] duration-200 ${
         open ? 'w-48 lg:w-52 desk:w-64' : 'w-14'
       }`}
     >

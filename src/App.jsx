@@ -27,6 +27,7 @@ import { BootScreen, ShutdownOverlay, shouldSkipBoot } from './components/Lifecy
 import { QuickOverlay } from './components/ChaosDock'
 import NavRail from './components/NavRail'
 import { HomePage, ExpertsPage, SkillsPage, AutomationsPage } from './components/ChaosPages'
+import AipptPage from './components/AipptPage'
 
 /* ------------------------------------------------------------------ *
  * 8.0.2：老板键遮罩 —— 一键把整个界面伪装成「编译日志终端」。
@@ -491,6 +492,7 @@ export default function App() {
         {mainView === 'home' && <HomePage />}
         {mainView === 'experts' && <ExpertsPage />}
         {mainView === 'skills' && <SkillsPage />}
+        {mainView === 'aippt' && <AipptPage />}
         {mainView === 'automations' && <AutomationsPage />}
         {/* 9.1.0：任务看板独立成页；对话页 = 会话列表 + 全宽聊天主区 */}
         {mainView === 'board' && <Board />}

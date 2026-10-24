@@ -30,13 +30,13 @@ const store = require('./store')
 const CONFIG = require('./config')
 const quota = require('./chaos-quota')
 
-/** 额度闸门：余额用尽就拒绝生成（提示每天的免费额度和兑换码出路） */
+/** 额度闸门：余额用尽就拒绝生成（提示每天的免费额度和手机号绑定出路） */
 function quotaGate() {
   if (quota.canUse()) return
   const u = quota.publicUsage()
   const err = new Error(
     `今日 Token 已用完（${u.usedToday}/${u.dailyFree}）。` +
-      '每天会自动重发 3000 万；或用兑换码兑换永久 Token（混沌面板 → Token 额度）。',
+      '每天会自动重发 3000 万；也可在混沌面板 → Token 额度里填手机号完成绑定。',
   )
   err.code = 'CHAOS_QUOTA_EXHAUSTED'
   throw err

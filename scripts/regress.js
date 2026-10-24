@@ -220,23 +220,26 @@ async function main() {
 
   /* ---- 9. 老库要能补上后来新增的岗位（鸿蒙从 1 个拆成 10 个） ---- */
   {
-    // 摆出「老库」的样子：只留下鸿蒙应用开发那一个 DevEco 岗位。
+    // 摆出「老库」的样子：只留下鸿蒙应用开发那一个岗位。
     // 这里必须绕过 store.deleteAgent 直接删行 —— 走 deleteAgent 会被记成
     // 「用户主动删过」，那正是后面那条断言要否定的行为。
+    // 9.3.8：seed 已全部切到 chaos 执行器 —— 按 role 删，断言补回到 seed 全集。
     const HARMONY_KEEP = 'HarmonyOS'
     for (const a of store.listAgents()) {
-      if (a.executor === 'deveco' && a.role !== HARMONY_KEEP) {
+      if (a.role !== HARMONY_KEEP) {
         dbMod.run('DELETE FROM agents WHERE id = ?', [a.id])
       }
     }
     const before = store.listAgents().length
     store.bootstrap()
     const rows = store.listAgents()
-    const deveco = rows.filter((a) => a.executor === 'deveco')
+    const expected = require('../server/seed').DEFAULT_AGENTS.length
+    const harmony = rows.filter((a) => a.role.startsWith('Harmony'))
+    const allChaos = rows.every((a) => a.executor === 'chaos')
     check(
-      '老库启动时补齐缺席的默认岗位（鸿蒙补到 10 个）',
-      deveco.length === 10,
-      `补前 ${before} 人 / 补后 ${rows.length} 人，DevEco ${deveco.length} 个`,
+      '老库启动时补齐缺席的默认岗位（补回到 seed 全集，全部混沌执行器）',
+      rows.length === expected && harmony.length === 10 && allChaos,
+      `补前 ${before} 人 / 补后 ${rows.length} 人（期望 ${expected}），鸿蒙 ${harmony.length} 个，全混沌=${allChaos}`,
     )
 
     // 只补不删不改：改过提示词的岗位不能被覆盖

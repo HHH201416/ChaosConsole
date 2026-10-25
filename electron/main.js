@@ -49,6 +49,58 @@ app.commandLine.appendSwitch('proxy-bypass-list', '127.0.0.1;localhost;<local>')
 // 打包后数据落在用户目录，Program Files 是只读的
 process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath('userData'), 'data')
 
+/**
+ * 9.6.1：把「装在安装目录里的旧数据」搬到用户目录。
+ *
+ * 背景：早期版本的 data/ 在 resources/app 下面，也就是**安装目录里**。
+ * 覆盖安装 / 卸载会把整块目录换掉，用户的对话、岗位、知识库就这么没了。
+ * 现在数据固定住 userData（%APPDATA%\chaos-console\data），升级只动程序不动数据；
+ * 这里再做一次单向搬运，让老用户装上新版后数据自动跟过来。
+ *
+ * 只在新位置没有库、或旧库更新时才搬（幂等，可以每次启动都跑）。
+ */
+function migrateLegacyData() {
+  try {
+    const targetDir = process.env.CHAOS_DATA_DIR
+    const legacyDir = path.join(__dirname, '..', 'data')
+    if (!targetDir || path.resolve(targetDir) === path.resolve(legacyDir)) return
+    const legacyDb = path.join(legacyDir, 'chaos.db')
+    if (!fs.existsSync(legacyDb)) return
+
+    const targetDb = path.join(targetDir, 'chaos.db')
+    const needCopy =
+      !fs.existsSync(targetDb) ||
+      fs.statSync(legacyDb).mtimeMs > fs.statSync(targetDb).mtimeMs + 1000
+    if (!needCopy) return
+
+    fs.mkdirSync(targetDir, { recursive: true })
+    // 递归复制，但目标已存在的“更新的”文件不覆盖
+    const walk = (from, to) => {
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        const src = path.join(from, entry.name)
+        const dst = path.join(to, entry.name)
+        if (entry.isDirectory()) {
+          fs.mkdirSync(dst, { recursive: true })
+          walk(src, dst)
+          continue
+        }
+        try {
+          if (fs.existsSync(dst) && fs.statSync(dst).mtimeMs >= fs.statSync(src).mtimeMs) continue
+          fs.copyFileSync(src, dst)
+        } catch (_) {
+          /* 单个文件失败不影响其它文件/启动 */
+        }
+      }
+    }
+    walk(legacyDir, targetDir)
+    console.log('[data] 已把安装目录里的旧数据搬到用户目录:', targetDir)
+  } catch (err) {
+    console.error('[data] 旧数据搬运失败（不阻塞启动）:', err.message)
+  }
+}
+
+migrateLegacyData()
+
 const serverModule = require('../server/index.js')
 const storeModule = require('../server/store.js')
 // 与 server/index.js 同进程，拿到的是同一个单例，用来判断「有没有任务在跑」
@@ -291,6 +343,10 @@ function checkForUpdates() {
         supported: true,
         status: 'available',
         version: info?.version,
+        releaseName: info?.releaseName || '',
+        releaseDate: info?.releaseDate || '',
+        // 9.7.0：把 Release 正文带上去，升级弹窗里显示「这次更了什么」
+        notes: typeof info?.releaseNotes === 'string' ? info.releaseNotes : '',
         message: `发现新版本 ${info?.version}，点击「下载」开始`,
       })
     const onNotAvailable = (info) =>
@@ -691,10 +747,10 @@ function installUpdate() {
 
 /** 判定节拍：只做轻量判断，几乎零成本 */
 const AUTO_TICK_MS = 60 * 1000
-/** 真正打 GitHub 的最小间隔：2 次/小时，远低于未认证 API 的 60 次/小时配额 */
-const AUTO_MIN_INTERVAL_MS = 30 * 60 * 1000
+/** 9.7.0：每 15 分钟检查一次（用户要求），远低于未认证 API 的 60 次/小时配额 */
+const AUTO_MIN_INTERVAL_MS = 15 * 60 * 1000
 /** 启动后先让应用喘口气，别和启动期抢资源 */
-const AUTO_BOOT_DELAY_MS = 90 * 1000
+const AUTO_BOOT_DELAY_MS = 30 * 1000
 
 let autoTimer = null
 let lastAutoCheckAt = 0
@@ -728,16 +784,15 @@ function autoUpdateEnabled() {
 
 async function maybeAutoUpdateWhenIdle() {
   if (!app.isPackaged || !updater) return
-  if (!autoUpdateEnabled()) return
   // 已经在下载 / 下好待装 / 安装中，都别插手
   if (['downloading', 'downloaded', 'installing'].includes(updateRuntime.status)) return
   if (Date.now() - lastAutoCheckAt < AUTO_MIN_INTERVAL_MS) return
-  if (!isBusinessIdle()) return
 
+  // 9.7.0：**检查**不再要求「空闲」也不再要求开着自动下载 ——
+  // 每 15 分钟查一次是用户明确要的；忙的时候查一下也不占什么资源。
+  // 但「自动下载」仍然只在用户开了开关且确实空闲时才做，不擅自动网络。
   lastAutoCheckAt = Date.now()
   const res = await checkForUpdates()
-  // 检查期间可能刚有任务起来 —— 再确认一次。
-  // 但一旦开始下载就不再打断：下到一半停下比下完更糟。
   if (res && res.status === 'available' && autoUpdateEnabled() && isBusinessIdle()) {
     await startDownload()
   }
@@ -1026,6 +1081,26 @@ ipcMain.handle('theme:set', (_event, mode) => {
   applyNativeTheme()
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackground())
   return safe
+})
+
+/**
+ * 9.6.1：让用户挑一个文件夹当工作区。
+ * 只返回路径，不落盘不存库 —— 存不存、存什么由服务端设置接口决定，
+ * 渲染进程拿到的永远只是一个字符串。
+ */
+ipcMain.handle('dialog:pick-dir', async () => {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  try {
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择工作区文件夹',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: '用这个文件夹',
+    })
+    if (r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true }
+    return { ok: true, path: r.filePaths[0] }
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) }
+  }
 })
 
 /** 把主题贴到某个窗口的 <html data-theme> 上。走 executeJavaScript，不受页面 CSP 限制。 */

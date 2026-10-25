@@ -46,33 +46,49 @@ export function HomePage() {
   const greet = hour < 6 ? '夜深了' : hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
   const running = tasks.filter((t) => t.runState === 'running').length
 
-  /** 9.3.8：自修改 —— 建一个 cwd=应用自身源码目录的任务并立刻开跑，
-      混沌用本地工具（读/写文件）直接改造这个应用自己的功能与页面。 */
-  const selfModify = async () => {
+  /**
+   * 9.3.8：自修改 —— 建一个 cwd=应用自身源码目录的任务并立刻开跑，
+   * 混沌用本地工具（读/写文件）直接改造这个应用自己的功能与页面。
+   *
+   * 9.7.0：不再用 window.prompt —— Electron 里没有实现它，一点就抛
+   * 「界面脚本出错」。改成应用内的小弹窗（见下面的 SelfModifyDialog）。
+   */
+  const [modifyOpen, setModifyOpen] = useState(false)
+  const [modifyBusy, setModifyBusy] = useState(false)
+
+  const selfModify = () => {
     const root = system?.appRoot
     if (!root) {
       openModal('task')
       return
     }
-    const what = window.prompt(
-      '让混沌改这个应用的什么？（直接描述，比如：把技能页加一个搜索框）',
-      '优化对话页的视觉细节',
-    )
-    if (!what || !what.trim()) return
-    const created = await createTask({
-      title: `🔧 自修改：${what.trim().slice(0, 30)}`,
-      description:
-        `【自修改任务】ChaosConsole 要改造它自己。\n\n目标：${what.trim()}\n\n` +
-        `这是本应用的源码目录，你可以用 list_files / read_file / write_file 工具直接查看与修改：\n` +
-        `- 界面在 src/components/（React + Tailwind）\n` +
-        `- 后端在 server/（Express）\n` +
-        `- 改完先保证改动最小、不破坏现有功能；用户会重启应用来生效。\n` +
-        `请先 read_file 看清相关文件再动手；完成后总结你改了哪些文件、各改了什么。`,
-      tags: ['自修改'],
-      cwd: root,
-      executor: 'chaos',
-    })
-    if (created) await startTask(created.id)
+    setModifyOpen(true)
+  }
+
+  const runSelfModify = async (raw) => {
+    const what = String(raw || '').trim()
+    const root = system?.appRoot
+    if (!what || !root) return
+    setModifyBusy(true)
+    try {
+      const created = await createTask({
+        title: `🔧 自修改：${what.slice(0, 30)}`,
+        description:
+          `【自修改任务】ChaosConsole 要改造它自己。\n\n目标：${what}\n\n` +
+          `这是本应用的源码目录，你可以用 list_files / read_file / write_file 工具直接查看与修改：\n` +
+          `- 界面在 src/components/（React + Tailwind）\n` +
+          `- 后端在 server/（Express）\n` +
+          `- 改完先保证改动最小、不破坏现有功能；用户会重启应用来生效。\n` +
+          `请先 read_file 看清相关文件再动手；完成后总结你改了哪些文件、各改了什么。`,
+        tags: ['自修改'],
+        cwd: root,
+        executor: 'chaos',
+      })
+      if (created) await startTask(created.id)
+      setModifyOpen(false)
+    } finally {
+      setModifyBusy(false)
+    }
   }
 
   const quickActions = [
@@ -148,7 +164,76 @@ export function HomePage() {
       {/* 兜底引用，避免 chaosStatus 未用时被裁 */}
       <span className="hidden">{chaosStatus ? '' : ''}</span>
       <button className="hidden" onClick={openPalette} />
+
+      {modifyOpen && (
+        <SelfModifyDialog
+          appRoot={system?.appRoot || ''}
+          busy={modifyBusy}
+          onClose={() => setModifyOpen(false)}
+          onSubmit={runSelfModify}
+        />
+      )}
     </PageShell>
+  )
+}
+
+/**
+ * 9.7.0：应用内输入框，替代 window.prompt。
+ * Electron 没有实现 prompt()，调用会直接抛异常 —— 之前「自修改」一点就报
+ * 「界面脚本出错」就是这个原因。
+ */
+function SelfModifyDialog({ appRoot, busy, onClose, onSubmit }) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-xl border border-ink-500 bg-ink-800 p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-base">🔧</span>
+          <h3 className="text-[13.5px] font-semibold text-slate-100">让混沌改造这个应用</h3>
+          <button className="ml-auto text-slate-500 hover:text-slate-200" onClick={onClose} title="关闭">
+            ✕
+          </button>
+        </div>
+        <p className="mb-2 text-[10.5px] leading-relaxed text-slate-500">
+          混沌会以「自修改」任务运行，直接在源码目录里读写文件。改完需要重启应用才生效。
+        </p>
+        <textarea
+          autoFocus
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={3}
+          placeholder="想改什么？例如：把技能页加一个搜索框"
+          className="field w-full resize-none text-[12.5px]"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onSubmit(text)
+          }}
+        />
+        <p className="mt-1 break-all font-mono text-[9.5px] text-slate-600">源码目录：{appRoot || '—'}</p>
+        <div className="mt-3 flex justify-end gap-2">
+          <button className="btn-ghost px-3 py-1.5 text-[12px]" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button
+            className="btn-primary px-3 py-1.5 text-[12px]"
+            disabled={busy || !text.trim()}
+            onClick={() => onSubmit(text)}
+          >
+            {busy ? '创建中…' : '开始改造（Ctrl+Enter）'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

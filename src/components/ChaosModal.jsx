@@ -24,7 +24,7 @@ function TokenCard() {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[12.5px] font-medium text-slate-200">🎟️ Token 额度</span>
         {q.unlimited ? (
-          <span className="chip bg-emerald-500/15 text-emerald-300">永久 Token · 不限量</span>
+          <span className="chip bg-emerald-500/15 text-emerald-300">额度不限量</span>
         ) : (
           <>
             <span className="chip">今日剩余 {Number(q.remaining).toLocaleString()}</span>
@@ -44,7 +44,7 @@ function TokenCard() {
         </div>
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
-        每天 0 点自动重发 3000 万 token。填入手机号完成绑定 —— 每个手机号每天 3000 万 token。
+        手机号是必填项：绑定后每天 3000 万 token（0 点自动恢复）。换号直接填新号，旧号保留登记。
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input
@@ -55,7 +55,7 @@ function TokenCard() {
               if (bindChaosPhone(phone.trim())) setPhone('')
             }
           }}
-          placeholder="输入手机号"
+          placeholder={q.phone ? `当前 ${String(q.phone).replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2")}，换号请填新号码` : "输入手机号（必填）"}
           inputMode="numeric"
           maxLength={14}
           className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
@@ -67,7 +67,7 @@ function TokenCard() {
             if (await bindChaosPhone(phone.trim())) setPhone('')
           }}
         >
-          绑定
+          {q.phone ? '换号' : '绑定'}
         </button>
       </div>
     </div>

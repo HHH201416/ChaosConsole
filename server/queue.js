@@ -517,7 +517,7 @@ function composeBrief(task, { from, to, reason, queued = [], stages = [], stage 
     parts.push('', '## 老板的补充指令（尚未处理）', clipText(queued.join('\n'), 600))
   }
 
-  parts.push('', '## 工作目录', task.cwd || CONFIG.DEFAULT_CWD)
+  parts.push('', '## 工作目录', task.cwd || CONFIG.workspaceDir())
   parts.push('', '请接着往下做，不要重复已完成的部分。')
   return clipText(parts.join('\n'), BRIEF_MAX_CHARS)
 }

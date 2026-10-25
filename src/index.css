@@ -774,7 +774,7 @@ html[data-theme='light'][data-accent='emerald'] {
     /* 熄下来的状态：只动透明度，不动 box-shadow —— 9.5.4 E2E 调试发现
        box-shadow 逐帧动画会让合成器每帧重绘整屏模糊层（截图工具都被拖垮），
        改成「静态光晕 + opacity 呼吸」走 GPU 合成，零重绘。 */
-    opacity: 0.32;
+    opacity: 0.5;
   }
   50% {
     opacity: 1;
@@ -788,17 +788,19 @@ html[data-theme='light'][data-accent='emerald'] {
   pointer-events: none;
   /* 光层铺满窗口、外发光会被窗口边界裁掉，所以氛围光做「从窗框向内晕开」：
      负 spread 拉掉硬内边，大 blur 让光像从边框渗进来的雾状渐变。阴影静态
-     只栅格化一次，呼吸感由上面的 opacity 动画承担。 */
+     只栅格化一次，呼吸感由上面的 opacity 动画承担。
+     9.6.1：整体调亮约一倍 —— 用户要「更明显一点」，近处边缘更亮、远处雾更厚。 */
   box-shadow:
-    inset 0 0 70px -10px rgb(34 197 94 / 0.26),
-    inset 0 0 170px -36px rgb(34 197 94 / 0.13);
-  animation: breathe-glow 5.5s ease-in-out infinite;
+    inset 0 0 46px -4px rgb(34 197 94 / 0.5),
+    inset 0 0 110px -18px rgb(34 197 94 / 0.3),
+    inset 0 0 240px -60px rgb(34 197 94 / 0.18);
+  animation: breathe-glow 3s ease-in-out infinite;
   will-change: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .breathing-border {
     animation: none;
-    opacity: 0.7;
+    opacity: 0.85;
   }
 }

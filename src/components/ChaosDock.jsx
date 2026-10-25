@@ -311,7 +311,7 @@ function DashboardPanel({ task, messages, events, onClose }) {
             k="Token 额度"
             v={
               quota.unlimited
-                ? '永久 Token · 不限量'
+                ? '不限量' + (quota.phone ? ` · ${String(quota.phone).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')}` : '')
                 : `今日剩余 ${Number(quota.remaining).toLocaleString()} / ${Number(quota.dailyFree).toLocaleString()}`
             }
           />

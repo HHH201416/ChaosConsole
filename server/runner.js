@@ -318,7 +318,7 @@ function composePrompt({
     if (task.description && task.description.trim()) {
       push(`\n## 详细说明\n${task.description.trim()}`)
     }
-    push(`\n## 工作目录\n${task.cwd || CONFIG.DEFAULT_CWD}`)
+    push(`\n## 工作目录\n${task.cwd || CONFIG.workspaceDir()}`)
   }
 
   if (kb) push(`\n${kb}`)
@@ -682,10 +682,10 @@ function runMock({ taskId, task, agent, extraInstruction }) {
     { delay: 300, kind: 'event', type: 'system', name: '模拟模式', content: '未检测到可用的 CLI，本次以模拟方式演示执行流程。' },
     { delay: 500, kind: 'event', type: 'tool_use', name: 'Bash', content: 'ls -la' },
     { delay: 700, kind: 'event', type: 'tool_result', name: '', content: 'total 24\ndrwxr-xr-x  5 boss boss 4096 .\n-rw-r--r--  1 boss boss  128 package.json' },
-    { delay: 600, kind: 'event', type: 'tool_use', name: 'Read', content: path.join(task.cwd || CONFIG.DEFAULT_CWD, 'package.json') },
+    { delay: 600, kind: 'event', type: 'tool_use', name: 'Read', content: path.join(task.cwd || CONFIG.workspaceDir(), 'package.json') },
     { delay: 600, kind: 'message', text: `「${who}」已接手：**${task.title}**。` },
     { delay: 700, kind: 'message', text: extraInstruction ? `收到补充指令：${extraInstruction}` : '正在分析现有代码结构，确认改动范围。' },
-    { delay: 800, kind: 'event', type: 'tool_use', name: 'Edit', content: path.join(task.cwd || CONFIG.DEFAULT_CWD, 'src', 'index.js') },
+    { delay: 800, kind: 'event', type: 'tool_use', name: 'Edit', content: path.join(task.cwd || CONFIG.workspaceDir(), 'src', 'index.js') },
     { delay: 600, kind: 'event', type: 'tool_result', name: '', content: '已应用 1 处修改' },
     { delay: 700, kind: 'message', text: '改动已完成，正在自检。' },
     { delay: 600, kind: 'event', type: 'tool_use', name: 'Bash', content: 'npm test' },

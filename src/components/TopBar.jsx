@@ -58,8 +58,13 @@ function UpdateControl({ onInstallUpdate }) {
 
   if (status === 'available') {
     return (
-      <button className="btn-primary" onClick={() => downloadUpdate()} title={update.message}>
-        ↓ {t('topbar.download', { version: update.version })}
+      // 9.7.0：先弹「本次更新了哪些」，由用户确认后再下载升级
+      <button
+        className="btn-primary"
+        onClick={() => useStore.getState().openModal('update')}
+        title={`发现新版本 v${update.version}，点开看更新内容并升级`}
+      >
+        ↑ {t('topbar.download', { version: update.version })}
       </button>
     )
   }
@@ -239,9 +244,7 @@ export default function TopBar({
 
         <ThemeToggle />
 
-        <button className="btn-ghost" onClick={onSettings} title={t('topbar.settings')}>
-          ⚙
-        </button>
+        {/* 9.6.1：设置入口只保留左侧导航底部的 ⚙️，顶栏这个去掉 */}
         <button className="btn-ghost" onClick={logout} title={t('topbar.logout')}>
           {t('topbar.logout')}
         </button>

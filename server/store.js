@@ -343,7 +343,7 @@ function createTask({ title, description, tags, cwd, agentId, status, executor, 
       TASK_STATUSES.includes(status) ? status : 'backlog',
       agentId || null,
       JSON.stringify(Array.isArray(tags) ? tags : []),
-      cwd || CONFIG.DEFAULT_CWD,
+      cwd || CONFIG.workspaceDir(),
       executor || '',
       model || '',
       // 任务级流水线覆盖。空 = 跟随岗位/执行器默认（见 pipeline.resolve）

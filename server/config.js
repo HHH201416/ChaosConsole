@@ -94,6 +94,28 @@ const CONFIG = {
   /** 强制使用模拟执行（不真正调用 claude CLI） */
   FORCE_MOCK: process.env.CHAOS_FORCE_MOCK === '1',
 
+  /**
+   * 9.6.1：用户自定义工作区。
+   *
+   * 「工作区」= Agent 干活、落文件的根目录。以前写死成 ~/ChaosWorkspace，
+   * 现在允许在 设置 → 工作区 里自选。取值优先级：
+   *   settings.workspaceDir（用户在界面里设的）> CHAOS_DEFAULT_CWD > ~/ChaosWorkspace
+   *
+   * 这里用延迟 require 拿 store：config 是几乎所有模块的第一依赖，
+   * 启动期直接 require('./store') 会绕成环。
+   */
+  workspaceDir() {
+    try {
+      // eslint-disable-next-line global-require
+      const store = require('./store')
+      const v = String(store.getSetting('workspaceDir', '') || '').trim()
+      if (v) return v
+    } catch (_) {
+      /* store 还没就绪就退回默认值 */
+    }
+    return CONFIG.DEFAULT_CWD
+  },
+
   ensureDirs,
 }
 

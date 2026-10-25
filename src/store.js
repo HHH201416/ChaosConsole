@@ -165,7 +165,8 @@ export const useStore = create((set, get) => ({
 
   /* 9.0.0：主工作区当前页面 —— WorkBuddy 式左侧导航栏切换。
      chat = 对话工作台（岗位栏+看板+聊天），其余为独立功能页 */
-  mainView: 'chat',
+  // 9.6.1：每次打开应用默认落在工作台（而不是上次的对话页）
+  mainView: 'home',
 
   /* 9.3.8：右侧预览面板（文件 / 知识库），对话页里可开关 */
   previewOpen: initialPrefs.previewOpen,
@@ -177,10 +178,17 @@ export const useStore = create((set, get) => ({
   wattPromptOpen: false,
 
   /* ---------------- 提示条 ---------------- */
+  /* 9.7.0：报错停留 10 秒（够看清），其余 4.2 秒。以前一律 4.2 秒，
+     错误信息还没读完就消失了，用户报过好几次「报错看不清」。 */
   toast(text, kind = 'info') {
     const id = Math.random().toString(36).slice(2)
-    set((s) => ({ toasts: [...s.toasts, { id, text, kind }] }))
-    setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 4200)
+    const ms = kind === 'error' ? 10000 : 4200
+    set((s) => ({ toasts: [...s.toasts, { id, text, kind, ms }] }))
+    setTimeout(() => get().dismissToast(id), ms)
+  },
+
+  dismissToast(id) {
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
   },
 
   /* ---------------- 面板折叠 ---------------- */
@@ -289,6 +297,23 @@ export const useStore = create((set, get) => ({
         ...(updRes?.data ? { update: updRes.data } : {}),
       })
 
+      // 9.6.1：混沌就绪时对话默认就用混沌模型（但**不**自动改岗位执行器 ——
+      // 岗位挂什么由用户自己决定）。只在用户还没选过时补默认值，不覆盖已有偏好。
+      const chaosExec = asArr(sys.executors).find((e) => e.id === 'chaos')
+      const chaosModels = asArr(chaosExec?.models)
+      const preferModel =
+        chaosModels.find((m) => m.installed && m.recommended)?.id ||
+        chaosModels.find((m) => m.installed)?.id ||
+        chaosModels[0]?.id ||
+        ''
+      const patchDraft = {}
+      if (!get().draftExecutor) patchDraft.draftExecutor = 'chaos'
+      if (!get().draftModel && preferModel) patchDraft.draftModel = preferModel
+      if (Object.keys(patchDraft).length) {
+        set(patchDraft)
+        saveUiPrefs(patchDraft)
+      }
+
       // 恢复上次退出时正在看的对话。放在这里是因为这是登录与自动登录两条路唯一
       // 都经过的点（login() 内部也调 bootstrap），而且上面 401 分支会提前 return，
       // 不会出现「token 已失效、却在登录页背后悄悄恢复了选中态」。
@@ -296,6 +321,8 @@ export const useStore = create((set, get) => ({
       const saved = loadUiPrefs().selectedTaskId
       if (saved && !get().selectedTaskId && asArr(stateRes.data?.tasks).some((t) => t.id === saved)) {
         get().selectTask(saved)
+        // 9.6.1：恢复上次的会话但不把用户带到对话页 —— 每次打开都从工作台开始
+        set({ mainView: 'home' })
       }
     } catch (err) {
       if (err.status === 401) {

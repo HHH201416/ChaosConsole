@@ -64,6 +64,17 @@ function canUse() {
   return u.permanent || u.remaining > 0
 }
 
+/** 9.7.0：是否已经绑定手机号（未绑定 = 不能用这个应用） */
+function hasPhone() {
+  return Boolean(usage().phone)
+}
+
+/** 打码展示：138****5678 */
+function maskedPhone() {
+  const p = usage().phone
+  return p ? `${p.slice(0, 3)}****${p.slice(7)}` : ''
+}
+
 /** 记一笔消耗。tokens 拿不到时传 undefined，按 字数/2 估。 */
 function consume(tokens, fallbackChars = 0) {
   const n = Math.max(1, Math.round(Number(tokens) || Math.ceil(fallbackChars / 2)))
@@ -120,6 +131,8 @@ module.exports = {
   usage,
   publicUsage,
   canUse,
+  hasPhone,
+  maskedPhone,
   consume,
   bindPhone,
   normalizePhone,

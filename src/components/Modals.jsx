@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { api } from '../lib/api'
 import { ROLE_PRESETS, fmtBytes } from '../lib/meta'
+import { LATEST_NOTES, notesFor, plainLines } from '../lib/changelog'
 import { useT } from '../lib/useT'
 import PipelineEditor from './PipelineEditor'
 
@@ -1114,6 +1115,87 @@ function SecurityField() {
   )
 }
 
+/**
+ * 9.6.1：工作区 —— Agent 干活、落文件的根目录。
+ * Electron 里走系统选目录对话框；浏览器里就手填绝对路径（服务端会校验并创建）。
+ */
+function WorkspaceField() {
+  const system = useStore((s) => s.system)
+  const current = system?.workspaceDir || system?.defaultCwd || ''
+  const isCustom = Boolean(system?.workspaceDirCustom)
+  const [value, setValue] = useState(current)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setValue(current)
+  }, [current])
+
+  const canPick = typeof window !== 'undefined' && window.chaos && typeof window.chaos.pickDirectory === 'function'
+
+  const pick = async () => {
+    try {
+      const r = await window.chaos.pickDirectory()
+      if (r && r.ok && r.path) setValue(r.path)
+    } catch (_) {
+      useStore.getState().toast('打开目录选择框失败，可以直接手动粘贴路径', 'error')
+    }
+  }
+
+  const save = async (next) => {
+    setBusy(true)
+    try {
+      const res = await api.setSettings({ workspaceDir: next })
+      if (!res.ok) throw new Error(res.error || '保存失败')
+      useStore
+        .getState()
+        .toast(next ? `工作区已切换到 ${next}` : '已恢复默认工作区', 'success')
+      await useStore.getState().refreshSystem()
+    } catch (err) {
+      useStore.getState().toast(err.message, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-[12px] font-medium text-slate-200">📁 工作区</span>
+        {isCustom ? (
+          <span className="chip bg-emerald-500/15 text-emerald-300">自定义</span>
+        ) : (
+          <span className="chip">默认</span>
+        )}
+      </div>
+      <p className="text-[10.5px] leading-relaxed text-slate-500">
+        Agent 干活、写文件、跑命令都从这个目录开始；不填任务路径时，新任务默认落在这里。
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="D:\\Projects（留空 = 用默认目录）"
+        />
+        {canPick && (
+          <button className="btn-ghost shrink-0 px-2 py-1 text-[11.5px]" disabled={busy} onClick={pick}>
+            📂 选择…
+          </button>
+        )}
+        <button className="btn-primary shrink-0 px-3 py-1 text-[11.5px]" disabled={busy} onClick={() => save(value.trim())}>
+          {busy ? '保存中…' : '应用'}
+        </button>
+        {isCustom && (
+          <button className="btn-ghost shrink-0 px-2 py-1 text-[11.5px]" disabled={busy} onClick={() => save('')}>
+            恢复默认
+          </button>
+        )}
+      </div>
+      <p className="break-all font-mono text-[9.5px] text-slate-600">当前生效：{current || '—'}</p>
+    </div>
+  )
+}
+
 export function SettingsModal({ onClose }) {
   const t = useT()
   const system = useStore((s) => s.system)
@@ -1164,6 +1246,9 @@ export function SettingsModal({ onClose }) {
 
         {/* 9.3.8：安全锁屏 PIN */}
         <SecurityField />
+
+        {/* 9.6.1：自定义工作区（Agent 干活的根目录） */}
+        <WorkspaceField />
 
         {/* 9.5.4：允许 Agent 操作电脑（run_command / open_path 工具总闸） */}
         <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-ink-500 bg-ink-900 p-3">
@@ -1566,45 +1651,110 @@ export function InstallUpdateModal({ onClose }) {
   const update = useStore((s) => s.update)
   const system = useStore((s) => s.system)
   const installUpdate = useStore((s) => s.installUpdate)
+  const downloadUpdate = useStore((s) => s.downloadUpdate)
   const running = useStore((s) => s.tasks.filter((t) => t.runState === 'running').length)
   const [busy, setBusy] = useState(false)
 
+  const status = update?.status || 'idle'
+  const target = update?.version || system?.version || '?'
+  // 9.7.0：线上 Release 正文优先，拿不到就用内置的版本简介（离线也能说清更了什么）
+  const online = plainLines(update?.notes)
+  const local = notesFor(target) || LATEST_NOTES
+  const lines = online.length ? online : local.items
+  const pct = Math.max(0, Math.min(100, Number(update?.percent) || 0))
+
   return (
     <Shell
-      title="安装更新"
-      subtitle={`v${system?.version ?? '?'} → v${update?.version ?? '?'}`}
+      title={status === 'downloaded' ? '安装更新' : '版本更新'}
+      subtitle={`v${system?.version ?? '?'} → v${target}`}
       onClose={onClose}
     >
       <div className="space-y-3 text-[12px]">
-        <p className="leading-relaxed text-slate-400">
-          安装包已下载完成{update?.total ? `（${fmtBytes(update.total)}）` : ''}。点「安装并重启」后
-          应用会退出并<b className="text-slate-300">静默安装</b>
-          （不会再弹安装向导，屏幕上会安静十几秒），装完<b className="text-slate-300">自动重新打开</b>，
-          不需要你再点任何东西。
-        </p>
+        {/* 本次更新内容 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-[12px] font-medium text-slate-200">🆕 本次更新了哪些</span>
+            <span className="chip">{local.title || '新版本简介'}</span>
+          </div>
+          <ul className="max-h-56 space-y-1 overflow-y-auto pr-1">
+            {lines.map((l, i) => (
+              <li key={i} className="flex gap-1.5 text-[11px] leading-relaxed text-slate-400">
+                <span className="shrink-0 text-boss-strong">·</span>
+                <span className="min-w-0 flex-1">{l}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
 
-        {running > 0 && (
-          <p className="rounded-lg border border-rose-600/60 bg-rose-900/30 px-3 py-2 leading-relaxed text-rose-200">
-            当前有 <b>{running}</b> 个任务正在执行，安装会中断它们。建议等任务跑完再来。
+        {status === 'downloading' && (
+          <div>
+            <div className="mb-1 flex items-center gap-2 text-[11.5px] text-sky-300">
+              <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-sky-400" />
+              正在下载升级包… {pct}%
+              {update?.total ? <span className="text-slate-500">（{fmtBytes(update.total)}）</span> : null}
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-700">
+              <span className="block h-full rounded-full bg-sky-400 transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <p className="mt-1 text-[10.5px] text-slate-500">下载期间可以继续用，下完再问你装不装。</p>
+          </div>
+        )}
+
+        {status === 'downloaded' && (
+          <>
+            <p className="leading-relaxed text-slate-400">
+              安装包已下载完成{update?.total ? `（${fmtBytes(update.total)}）` : ''}。点「安装并重启」后
+              应用会退出并<b className="text-slate-300">静默安装</b>
+              （不会再弹安装向导，屏幕上会安静十几秒），装完<b className="text-slate-300">自动重新打开</b>，
+              不需要你再点任何东西。
+            </p>
+            <p className="rounded-lg border border-emerald-600/40 bg-emerald-900/20 px-3 py-2 text-[11px] leading-relaxed text-emerald-200/90">
+              🔐 你的数据、岗位、对话、知识库都保存在用户目录里，升级不会动它们。
+            </p>
+            {running > 0 && (
+              <p className="rounded-lg border border-rose-600/60 bg-rose-900/30 px-3 py-2 leading-relaxed text-rose-200">
+                当前有 <b>{running}</b> 个任务正在执行，安装会中断它们。建议等任务跑完再来。
+              </p>
+            )}
+          </>
+        )}
+
+        {(status === 'available' || status === 'idle' || status === 'latest') && (
+          <p className="leading-relaxed text-slate-400">
+            下载和安装都不会动你的数据。点下面的按钮开始升级，下载完会让你确认一次再安装。
           </p>
         )}
       </div>
 
       <div className="mt-5 flex justify-end gap-2">
         <button className="btn-ghost" onClick={onClose} disabled={busy}>
-          稍后
+          {status === 'downloading' ? '后台继续' : '稍后'}
         </button>
-        <button
-          className="btn-success"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true)
-            await installUpdate()
-            onClose()
-          }}
-        >
-          安装并重启
-        </button>
+        {status === 'downloaded' ? (
+          <button
+            className="btn-success"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              await installUpdate()
+              onClose()
+            }}
+          >
+            安装并重启
+          </button>
+        ) : (
+          <button
+            className="btn-primary"
+            disabled={busy || status === 'downloading'}
+            onClick={async () => {
+              setBusy(true)
+              await downloadUpdate()
+              setBusy(false)
+            }}
+          >
+            {status === 'downloading' ? `下载中 ${pct}%` : `↓ 下载并升级到 v${target}`}
+          </button>
+        )}
       </div>
     </Shell>
   )

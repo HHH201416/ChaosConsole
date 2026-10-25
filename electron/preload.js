@@ -84,4 +84,10 @@ contextBridge.exposeInMainWorld('chaos', {
    * 只写一个偏好，不传任何业务数据；主进程侧会校验取值。
    */
   setTheme: (mode) => ipcRenderer.invoke('theme:set', mode),
+  /**
+   * 9.6.1：原生「选择文件夹」对话框，给 设置 → 工作区 用。
+   * 只回一个路径字符串，能不能用由服务端设置接口再校验一次。
+   * 浏览器里跑（非 Electron）时这个函数不存在，调用方要自己兜底成手填。
+   */
+  pickDirectory: () => ipcRenderer.invoke('dialog:pick-dir'),
 })

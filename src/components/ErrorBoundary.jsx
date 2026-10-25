@@ -66,7 +66,7 @@ export default class ErrorBoundary extends Component {
           {message}
         </p>
         {stack && (
-          <pre className="max-h-40 w-full max-w-[42rem] overflow-auto rounded-lg border border-ink-600 bg-ink-950 p-2.5 font-mono text-[9.5px] leading-relaxed text-slate-600">
+          <pre className="max-h-40 w-full max-w-[42rem] overflow-auto rounded-lg border border-ink-600 bg-ink-900 p-2.5 font-mono text-[9.5px] leading-relaxed text-slate-600">
             {stack}
           </pre>
         )}

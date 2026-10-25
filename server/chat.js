@@ -117,7 +117,7 @@ async function send({ conversationId, text, cwd, executor, model, agentId }) {
     title: summarizeTitle(content),
     description: content,
     tags: [],
-    cwd: cwd || CONFIG.DEFAULT_CWD,
+    cwd: cwd || CONFIG.workspaceDir(),
     agentId: target.id,
     executor: useExecutor,
     model: useModel,

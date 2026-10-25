@@ -188,6 +188,10 @@ export const api = {
   // 9.5.4：AIPPT（主题 + 页数 + 语气 → 本地 .pptx）
   aipptList: () => get('/api/aippt/list'),
   aipptGenerate: (payload) => post('/api/aippt/generate', payload),
+  // 9.6.1：改完大纲直接重渲染 / 读回大纲 / 删除产物
+  aipptRender: (payload) => post('/api/aippt/render', payload),
+  aipptOutline: (id) => get(`/api/aippt/outline?id=${encodeURIComponent(id)}`),
+  aipptDelete: (id) => del(`/api/aippt/file?id=${encodeURIComponent(id)}`),
   workspaceTree: (root) => get(`/api/workspace/tree?root=${encodeURIComponent(root)}`),
   workspaceFile: (root, p) => get(`/api/workspace/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(p)}`),
   // 9.3.8：安全 —— 本地锁屏解锁校验

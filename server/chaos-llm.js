@@ -32,11 +32,16 @@ const quota = require('./chaos-quota')
 
 /** 额度闸门：余额用尽就拒绝生成（提示每天的免费额度和手机号绑定出路） */
 function quotaGate() {
+  // 9.7.0：没绑手机号就不给用 —— 额度是按号算的，没号就没有额度
+  if (!quota.hasPhone()) {
+    const err = new Error('请先绑定手机号：每个手机号每天 3000 万 token，绑定后即可使用。')
+    err.code = 'CHAOS_PHONE_REQUIRED'
+    throw err
+  }
   if (quota.canUse()) return
   const u = quota.publicUsage()
   const err = new Error(
-    `今日 Token 已用完（${u.usedToday}/${u.dailyFree}）。` +
-      '每天会自动重发 3000 万；也可在混沌面板 → Token 额度里填手机号完成绑定。',
+    `今日 Token 已用完（${u.usedToday}/${u.dailyFree}）。` + '每天会自动重发 3000 万。',
   )
   err.code = 'CHAOS_QUOTA_EXHAUSTED'
   throw err

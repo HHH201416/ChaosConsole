@@ -121,10 +121,16 @@ app.get('/api/system', requireAuth, (_req, res) => {
       validPermissionModes: CONFIG.VALID_PERMISSION_MODES,
       devecoAutoApprove: store.getSetting('devecoAutoApprove', '0') === '1',
       autoUpdateWhenIdle: store.getSetting('autoUpdateWhenIdle', '0') === '1',
+      // 9.6.1：后台每 15 分钟自动检查一次更新（界面上只读展示）
+      updateAutoCheckMinutes: 15,
       // 下载加速镜像：服务端定（默认启用），界面只显示开没开
       downloadMirror: store.getSetting('downloadMirror', CONFIG.DOWNLOAD_MIRROR),
       downloadMirrorDefault: CONFIG.DOWNLOAD_MIRROR_DEFAULT,
-      defaultCwd: CONFIG.DEFAULT_CWD,
+      defaultCwd: CONFIG.workspaceDir(),
+      // 9.6.1：自定义工作区（设置 → 工作区）。custom=false 表示还吃默认值
+      workspaceDir: CONFIG.workspaceDir(),
+      workspaceDirCustom: Boolean(String(store.getSetting('workspaceDir', '') || '').trim()),
+      workspaceDirDefault: CONFIG.DEFAULT_CWD,
       platform: process.platform,
       runningTaskIds: runner.runningTaskIds(),
       isElectron: Boolean(process.versions.electron),
@@ -168,6 +174,9 @@ app.get('/api/system', requireAuth, (_req, res) => {
       appRoot: CONFIG.ROOT,
       // 9.3.8：安全 —— 是否已设置锁屏 PIN（不回传 PIN 本身）
       hasPin: Boolean(String(store.getSetting('appPin', '') || '').trim()),
+      // 9.7.0：必须绑定手机号才能用（额度按号算）
+      phoneBound: quota.hasPhone(),
+      phoneMasked: quota.maskedPhone(),
       // 9.5.4：是否允许 Agent 操作电脑（run_command / open_path 工具总闸，默认开）
       agentComputerUse: store.getSetting('agentComputerUse', '1') === '1',
     },
@@ -204,6 +213,7 @@ app.post('/api/settings', requireAuth, (req, res) => {
     apiModel,
     appPin,
     agentComputerUse,
+    workspaceDir,
   } = req.body || {}
   if (permissionMode !== undefined) {
     if (!CONFIG.isValidPermissionMode(permissionMode)) {
@@ -214,6 +224,28 @@ app.post('/api/settings', requireAuth, (req, res) => {
   // 9.5.4：允许 Agent 操作电脑（run_command / open_path 工具总闸，默认开）
   if (agentComputerUse !== undefined) {
     store.setSetting('agentComputerUse', agentComputerUse ? '1' : '0')
+  }
+  // 9.6.1：自定义工作区。空串 = 恢复默认；非空必须是绝对路径并且能建出来。
+  if (workspaceDir !== undefined) {
+    const raw = String(workspaceDir || '').trim()
+    if (!raw) {
+      store.setSetting('workspaceDir', '')
+    } else {
+      // 注意：必须先校验 raw，再 resolve —— resolve 会把相对路径补成绝对路径，
+      // 放在 resolve 之后就永远为真，等于没校验（9.6.1 的漏网 bug）。
+      if (!path.isAbsolute(raw)) {
+        return res.status(400).json({ ok: false, error: '工作区必须是绝对路径，例如 D:\\Projects' })
+      }
+      const abs = path.resolve(raw)
+      try {
+        fs.mkdirSync(abs, { recursive: true })
+        fs.accessSync(abs, fs.constants.W_OK)
+      } catch (_) {
+        return res.status(400).json({ ok: false, error: `这个目录建不出来或没有写权限：${abs}` })
+      }
+      store.setSetting('workspaceDir', abs)
+    }
+    store.bus.emit('system:changed', { reason: 'workspace' })
   }
   if (devecoAutoApprove !== undefined) {
     store.setSetting('devecoAutoApprove', devecoAutoApprove ? '1' : '0')
@@ -1050,6 +1082,10 @@ app.post('/api/aippt/generate', requireAuth, async (req, res) => {
       topic: req.body?.topic,
       pages: req.body?.pages,
       tone: req.body?.tone,
+      theme: req.body?.theme,
+      language: req.body?.language,
+      audience: req.body?.audience,
+      withToc: req.body?.withToc,
       model: req.body?.model,
     })
     if (!r.ok) return res.status(400).json(r)
@@ -1058,6 +1094,35 @@ app.post('/api/aippt/generate', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
   }
+})
+
+/* 9.6.1：改完大纲直接重渲染（不再跑一次模型） */
+app.post('/api/aippt/render', requireAuth, async (req, res) => {
+  try {
+    const r = await aippt.render({
+      id: req.body?.id,
+      outline: req.body?.outline,
+      theme: req.body?.theme,
+      withToc: req.body?.withToc,
+    })
+    if (!r.ok) return res.status(400).json(r)
+    store.bus.emit('chaos:changed', { reason: 'aippt-rendered' })
+    res.json({ ok: true, data: r })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+/* 9.6.1：读回历史产物的大纲（载入后可以改字重渲染） */
+app.get('/api/aippt/outline', requireAuth, (req, res) => {
+  const r = aippt.getOutline(req.query?.id)
+  res.status(r.ok ? 200 : 404).json(r)
+})
+
+/* 9.6.1：删除一份产物 */
+app.delete('/api/aippt/file', requireAuth, (req, res) => {
+  const r = aippt.deleteFile(req.query?.id || req.body?.id)
+  res.status(r.ok ? 200 : 404).json(r)
 })
 
 app.get('/api/aippt/file', requireAuth, (req, res) => {
@@ -1677,17 +1742,10 @@ async function start() {
   // 后台预热 deveco 模型列表：这个命令要起一个 node 进程，放在请求路径上会拖慢首屏
   executors.warmup()
 
-  // 9.3.8：把所有岗位一次性迁到混沌执行器（claude/deveco 已下线）。
-  // 只跑一次，用户手动改过的单个岗位仍可在岗位页自由改回。
-  if (store.getSetting('chaosAgentsMigrated', '0') !== '1') {
-    try {
-      const n = store.migrateAgentsToChaos()
-      if (n > 0) console.log(`[migrate] 已把 ${n} 个岗位切换到混沌执行器`)
-    } catch (err) {
-      console.error('[migrate] 岗位迁移失败（不阻塞启动）:', err.message)
-    }
-    store.setSetting('chaosAgentsMigrated', '1')
-  }
+  // 9.6.1：**不再自动把岗位迁到混沌**。
+  // 用户明确要求：混沌就绪时对话默认用混沌就行，别自己去按「挂载混沌到所有岗位」
+  // 那个按钮 —— 岗位该用什么执行器是用户自己决定的，想批量切就去混沌面板手动点。
+  // （旧的 chaosAgentsMigrated 标记保留置位，避免老版本回退时又跑一遍迁移。）
   // 9.3.8：老库补种「任务调度」岗位（新库 seed 里自带）
   try {
     if (store.ensureDispatcherAgent() === 1) console.log('[migrate] 已补种「任务调度」岗位')
@@ -1697,6 +1755,9 @@ async function start() {
 
   // 8.0.2：把启用的混沌定时自动化重新排上（服务重启不丢日程）
   chaosLlm.scheduleAllAutomations()
+
+  // 9.7.0：自动检查更新放在 Electron 主进程（每 15 分钟一次，见 electron/main.js 的
+  // maybeAutoUpdateWhenIdle）——那里本来就有调度器，服务端不再重复起一个。
 
   queue.recoverOnStartup()
 

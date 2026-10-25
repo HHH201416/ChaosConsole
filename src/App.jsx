@@ -27,6 +27,7 @@ import {
 import { BootScreen, ShutdownOverlay, shouldSkipBoot } from './components/LifecycleFx'
 import { QuickOverlay } from './components/ChaosDock'
 import NavRail from './components/NavRail'
+import PhoneGate from './components/PhoneGate'
 import { HomePage, ExpertsPage, SkillsPage, AutomationsPage } from './components/ChaosPages'
 import AipptPage from './components/AipptPage'
 
@@ -229,21 +230,30 @@ function QuickPage() {
 
 function Toasts() {
   const toasts = useStore((s) => s.toasts)
+  const dismiss = useStore((s) => s.dismissToast)
   const styles = {
     info: 'border-ink-500 bg-ink-700 text-slate-200',
     success: 'border-emerald-600/60 bg-emerald-900/40 text-emerald-200',
     error: 'border-rose-600/60 bg-rose-900/40 text-rose-200',
   }
   return (
-    <div className="pointer-events-none fixed bottom-5 left-1/2 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
+    <div className="pointer-events-none fixed bottom-5 left-1/2 z-[99] flex -translate-x-1/2 flex-col items-center gap-2">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`animate-slideUp rounded-lg border px-4 py-2 text-[12px] shadow-xl backdrop-blur ${
+          className={`animate-slideUp pointer-events-auto flex max-w-[min(46rem,90vw)] items-start gap-2 rounded-lg border px-4 py-2 text-[12px] leading-relaxed shadow-xl backdrop-blur ${
             styles[t.kind] || styles.info
           }`}
         >
-          {t.text}
+          {/* 9.7.0：报错会贴长文本（堆栈 / 接口原文），允许换行并且可以手动关掉 */}
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{t.text}</span>
+          <button
+            className="mt-0.5 shrink-0 opacity-50 transition hover:opacity-100"
+            title={t.kind === 'error' ? '关闭（10 秒后自动消失）' : '关闭'}
+            onClick={() => dismiss(t.id)}
+          >
+            ✕
+          </button>
         </div>
       ))}
     </div>
@@ -539,6 +549,10 @@ export default function App() {
       {/* 9.5.1：绿色呼吸边框（纯装饰，不挡点击） */}
       <div className="breathing-border" aria-hidden="true" />
       <LockOverlay />
+      {/* 9.7.0：手机号必填闸门 —— 没绑定就进不了界面。
+          只用 system.phoneBound 判断（后端 /api/system 里算的），
+          system 还没拉下来时不渲染，避免闪一下遮罩又消失 */}
+      {system && !system.phoneBound && <PhoneGate />}
       <ShutdownOverlay />
     </div>
   )

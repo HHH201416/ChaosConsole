@@ -72,7 +72,7 @@ export default function NavRail() {
       {quota?.unlimited && (
         <span
           className="mb-1 rounded-md bg-emerald-900/60 px-1.5 py-0.5 font-mono text-[8.5px] text-emerald-300"
-          title="已兑换永久 Token，不限量"
+          title="已绑定手机号 · 额度不限量"
         >
           ∞
         </span>

@@ -76,6 +76,9 @@ function usage() {
     usedToday,
     remaining: q.permanent === true ? Infinity : Math.max(0, DAILY_FREE - usedToday),
     totalUsed: Number(q.totalUsed) || 0,
+    /* 9.9.7：图片 / PPT 等生成任务也计入任务数量 */
+    tasks: Number(q.tasks) || 0,
+    tasksToday: q.taskDay === day ? Number(q.tasksToday) || 0 : 0,
   }
 }
 
@@ -119,6 +122,26 @@ function consume(tokens, fallbackChars = 0) {
     }),
   )
   return n
+}
+
+/* 9.9.7：图片、PPT 这类非文本生成任务计入任务数量（按天 + 累计），
+ * 并按固定 token 当量扣进免费总量 —— 所有 AI 任务统一计量 */
+function bumpTask(kind = 'task', tokenEquivalent = 0) {
+  const q = rawQuota()
+  const day = today()
+  store.setSetting(
+    QUOTA_KEY,
+    JSON.stringify({
+      ...q,
+      taskDay: day,
+      tasks: (Number(q.tasks) || 0) + 1,
+      tasksToday: (q.taskDay === day ? Number(q.tasksToday) || 0 : 0) + 1,
+      lastTaskKind: String(kind),
+      // 图片生成本身不产生 token，按固定当量计入免费总量（1 张 ≈ 1500 token）
+      usedToday: (q.day === day ? Number(q.usedToday) || 0 : 0) + Math.max(0, Math.round(tokenEquivalent)),
+      totalUsed: (Number(q.totalUsed) || 0) + Math.max(0, Math.round(tokenEquivalent)),
+    }),
+  )
 }
 
 /* ---------------- 手机号绑定（9.5.4：原「兑换码」改为填手机号） ---------------- */
@@ -202,6 +225,7 @@ module.exports = {
   REDEEM_CODES,
   usage,
   publicUsage,
+  bumpTask,
   canUse,
   hasPhone,
   maskedPhone,

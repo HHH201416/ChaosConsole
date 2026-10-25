@@ -21,6 +21,8 @@ const path = require('path')
 const zlib = require('zlib')
 const crypto = require('crypto')
 const CONFIG = require('./config')
+/* 9.9.7：每张 AI 生成图 = 1 个任务 + 1500 token 当量，统一计入免费总量 */
+const quota = require('./chaos-quota')
 
 const IMG_DIR = path.join(CONFIG.DATA_DIR, 'aippt', 'img')
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true })
@@ -329,6 +331,7 @@ async function generateOne({ prompt, seed = 1, accent = '22C55E', deep = '0F172A
         const buf = await enqueueOnline(() => fetchOnline(styled, { seed, timeoutMs: 45000 }))
         const file = path.join(IMG_DIR, `${key}.jpg`)
         fs.writeFileSync(file, buf)
+        quota.bumpTask('image', 1500)
         return { ok: true, file, ext: 'jpg', name: `${key}.jpg`, source: 'ai' }
       } catch (err) {
         if (err instanceof RateLimited) {

@@ -18,6 +18,8 @@
 
 const fs = require('fs')
 const path = require('path')
+/* 9.9.7：所有 AI 任务（含 PPT、配图）统一计入任务数量与免费 token 总量 */
+const quota = require('./chaos-quota')
 const crypto = require('crypto')
 const PptxGenJS = require('pptxgenjs')
 const CONFIG = require('./config')
@@ -2285,6 +2287,9 @@ async function generate(opts = {}, emit = null) {
     elapsedMs: Date.now() - t0,
     createdAt: Date.now(),
   })
+
+  /* 9.9.7：一份 PPT = 1 个任务，计进任务数量 */
+  quota.bumpTask('ppt')
 
   const result = {
     ok: true,

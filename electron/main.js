@@ -18,8 +18,6 @@ const net = require('net')
 const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
-const dm = require('../server/download-mirror.js')
-const CONFIG = require('../server/config.js')
 const { spawn } = require('child_process')
 const {
   app,
@@ -38,6 +36,19 @@ const {
   net: electronNet,
 } = require('electron')
 
+/**
+ * 9.7.0：数据目录必须**在 require 业务模块之前**定下来。
+ *
+ * server/config.js 在模块加载时就把 DATA_DIR 算成常量了（`process.env.CHAOS_DATA_DIR
+ * || ROOT/data`）。9.6.1 把这几行放在文件后半段，等于 config 已经按「安装目录」算完
+ * 才去改环境变量 —— 结果升级后数据还是写进 resources/app/data，重装就丢。
+ * 所以：先定环境变量，再 require server/*。
+ */
+process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath('userData'), 'data')
+
+const dm = require('../server/download-mirror.js')
+const CONFIG = require('../server/config.js')
+
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'
 const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
 
@@ -45,9 +56,6 @@ const DEV_URL = process.env.CHAOS_DEV_URL || 'http://127.0.0.1:5173'
 // 代理吞掉就会「深色空白进不去」。这里强制 127.0.0.1/localhost 直连，
 // 外部请求（检查更新、下载模型）照常走系统代理。
 app.commandLine.appendSwitch('proxy-bypass-list', '127.0.0.1;localhost;<local>')
-
-// 打包后数据落在用户目录，Program Files 是只读的
-process.env.CHAOS_DATA_DIR = process.env.CHAOS_DATA_DIR || path.join(app.getPath('userData'), 'data')
 
 /**
  * 9.6.1：把「装在安装目录里的旧数据」搬到用户目录。

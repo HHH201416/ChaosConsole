@@ -229,6 +229,22 @@ mustNot('src/components/ChaosModal.jsx', /永久 Token/, '额度区不再出现�
 mustNot('src/components/ChaosDock.jsx', /兑换码/, '额度区不再出现兑换码文案')
 mustNot('src/App.jsx', /ink-950/, '不用未定义的 ink-950 色阶（会变成透明）')
 mustNot('src/components/PhoneGate.jsx', /bg-ink-950/, '手机号闸门遮罩色阶有效')
+{
+  // 9.7.0 的坑：server/config.js 在加载时就把 DATA_DIR 算成常量，
+  // 所以 CHAOS_DATA_DIR 必须在那之前赋值，否则数据还会写在安装目录里
+  const src = read('electron/main.js')
+  const envAt = src.indexOf('process.env.CHAOS_DATA_DIR =')
+  const reqAt = src.indexOf("require('../server/config.js')")
+  const ok = envAt > -1 && reqAt > -1 && envAt < reqAt
+  if (ok) {
+    pass++
+    console.log('  ✓ CHAOS_DATA_DIR 在 require 配置之前赋值（数据落 userData）')
+  } else {
+    fail++
+    failures.push('CHAOS_DATA_DIR 赋值晚于 require(config)')
+    console.log(`  ✗ CHAOS_DATA_DIR 赋值晚于 require(config)  (env=${envAt} req=${reqAt})`)
+  }
+}
 
 console.log(`\n=== 结果：${pass}/${pass + fail} 通过 ===`)
 if (fail) {

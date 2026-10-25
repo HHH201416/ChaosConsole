@@ -263,12 +263,13 @@ function Toasts() {
 }
 
 /** 9.8.2：氛围灯 —— 平时绿色呼吸；任何地方报错 / 实时连接断开时变红色脉冲。
- *  errorFlashUntil 由 store.triggerErrorFlash() 触发（toast error、任务出错、
- *  错误事件），10 秒后自动复原。 */
+ *  9.9.0 起红灯是闩锁式的：errorLatched 由 store.triggerErrorFlash() 置位
+ *  （toast error、任务出错、错误事件），亮了就不自动灭，直到修复信号
+ *  （成功操作 / 任务跑完 / ws 重连）或用户点顶栏徽标清除。 */
 function AmbientBorder() {
-  const errFlash = useStore((s) => s.errorFlashUntil > Date.now())
+  const errLatched = useStore((s) => s.errorLatched)
   const conn = useStore((s) => s.conn)
-  const red = errFlash || conn === 'closed'
+  const red = errLatched || conn === 'closed'
   return <div className={`breathing-border${red ? ' breathing-error' : ''}`} aria-hidden="true" />
 }
 

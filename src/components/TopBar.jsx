@@ -84,10 +84,12 @@ function UpdateControl({ onInstallUpdate }) {
 
 function ConnBadge({ conn }) {
   const t = useT()
-  /* 9.8.2：应用任何地方报错时，实时连接徽标同步显示「发生错误」（红色），
-     10 秒后随 errorFlashUntil 自动复原；连接真正断开也常驻错误态 */
-  const errFlash = useStore((s) => s.errorFlashUntil > Date.now())
-  const error = errFlash || conn === 'closed'
+  /* 9.8.2：应用任何地方报错时，实时连接徽标同步显示「发生错误」（红色）。
+     9.9.0 起红灯是闩锁式的：亮了不自动灭，直到有修复信号，或用户点这里手动清掉；
+     连接真正断开也常驻错误态（那种情况清除没意义，重连成功自然翻绿） */
+  const errLatched = useStore((s) => s.errorLatched)
+  const clearErrorFlash = useStore((s) => s.clearErrorFlash)
+  const error = errLatched || conn === 'closed'
   const map = {
     open: { cls: 'bg-emerald-500', text: t('topbar.connected'), textCls: 'text-emerald-400' },
     connecting: { cls: 'bg-boss animate-pulseDot', text: t('topbar.connecting'), textCls: 'text-boss-strong' },
@@ -96,8 +98,16 @@ function ConnBadge({ conn }) {
   }
   const m = error ? map.error : map[conn] || map.closed
   return (
-    <div className="flex items-center gap-1.5" title={`WebSocket: ${conn}${errFlash ? ' · error' : ''}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${m.cls} ${errFlash ? 'animate-pulseDot' : ''}`} />
+    <div
+      className={`flex items-center gap-1.5${errLatched ? ' cursor-pointer' : ''}`}
+      title={
+        errLatched
+          ? '错误提示常亮中，点这里清除（连接已断开时以重连为准）'
+          : `WebSocket: ${conn}`
+      }
+      onClick={() => errLatched && clearErrorFlash()}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${m.cls} ${errLatched ? 'animate-pulseDot' : ''}`} />
       <span className={`text-[11px] ${m.textCls}`}>{m.text}</span>
     </div>
   )

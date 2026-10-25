@@ -1045,6 +1045,23 @@ const CHAOS_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description:
+        '精准编辑工作区里的一个文本文件：把 oldText 原样替换成 newText（只改这一处）。改大文件必须用它，不要整文件重写。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '相对工作区的文件路径' },
+          oldText: { type: 'string', description: '要被替换的原文（必须与文件里的内容逐字一致，含缩进）' },
+          newText: { type: 'string', description: '替换后的新文本' },
+        },
+        required: ['path', 'oldText', 'newText'],
+      },
+    },
+  },
 ]
 
 /* 9.5.4：操作电脑工具（设置开关「允许 Agent 操作电脑」控制，默认开）。
@@ -1209,6 +1226,28 @@ async function runChaosTool(cwd, call) {
       fs.mkdirSync(path.dirname(target), { recursive: true })
       fs.writeFileSync(target, content, 'utf8')
       return `已写入 ${path.relative(path.resolve(cwd), target)}（${Buffer.byteLength(content, 'utf8')} 字节）`
+    }
+
+    /* 9.9.7：精准编辑 —— 自修改的关键。小模型整文件重写大文件必然截断，
+     * 「旧串→新串」单点替换才是它能可靠完成的操作。找不到原文 / 命中多处
+     * 都不动文件，把原文片段回给模型让它修正后重试。 */
+    if (name === 'edit_file') {
+      const ext = path.extname(target).slice(1).toLowerCase()
+      if (ext && !TOOL_TEXT_EXT.has(ext)) return `错误：不支持编辑 .${ext} 类型的文件`
+      if (!fs.existsSync(target)) return '错误：文件不存在，先用 read_file 确认路径'
+      const oldText = String(args.oldText ?? '')
+      const newText = String(args.newText ?? '')
+      if (!oldText) return '错误：oldText 不能为空'
+      const src = fs.readFileSync(target, 'utf8')
+      const count = src.split(oldText).length - 1
+      if (count === 0) {
+        return '错误：oldText 在文件里没有逐字命中（注意缩进和换行要完全一致）。从 read_file 的输出里原样复制一段再试'
+      }
+      if (count > 1) {
+        return `错误：oldText 命中了 ${count} 处，为避免改错地方请多带上下文让它只命中一处`
+      }
+      fs.writeFileSync(target, src.replace(oldText, newText), 'utf8')
+      return `已编辑 ${path.relative(path.resolve(cwd), target)}（替换 ${Buffer.byteLength(oldText, 'utf8')} → ${Buffer.byteLength(newText, 'utf8')} 字节）`
     }
 
     return `错误：未知工具 ${name}`

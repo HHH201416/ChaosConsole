@@ -85,6 +85,9 @@ const SOURCE_TITLE =
 /** 标题党素材行：「月赚8万」「日入过千」这种只会让整份稿子掉价 */
 const CLICKBAIT = /(月赚|日入|稳赚|暴利|轻松月入|躺赚|一手货源|招代理)/
 
+/** 9.9.7：few-shot 示例主题词（咖啡店效率案例）——出现在用户稿子里就是抄示例 */
+const FEWSHOT_LEAK = /(咖啡|出杯|动线|取料|备料|店员)/
+
 /** 空话要点：没有数字、没有具体名词，只在讲「更有效 / 很重要」 */
 const VAGUE_POINT = /^(数据|技术|方法|方式|手段|理念|策略|模式)?(驱动|导向|赋能)?(.{0,8}?)(更|非常|十分|尤为)?(重要|关键|必要|有效|显著|突出)$/
 
@@ -186,6 +189,14 @@ function checkSlide(slide, ctx, index) {
     : []
   for (const line of body) {
     if (SOURCE_TITLE.test(line) || CLICKBAIT.test(line)) {
+      issues.push({ type: 'copied-material', level: 'fix', detail: line })
+      continue
+    }
+    /* 9.9.7：「动线」「出杯」这些词只存在于 few-shot 示例（咖啡主题）里，
+     * 用户主题是餐饮时出现就是照抄示例 —— 实测 1.5b 会整句搬。
+     * 主题本身含这个词时不判（人家真的在讲咖啡）。 */
+    const leakHit = FEWSHOT_LEAK.exec(line)
+    if (leakHit && !topic.includes(leakHit[1])) {
       issues.push({ type: 'copied-material', level: 'fix', detail: line })
       continue
     }

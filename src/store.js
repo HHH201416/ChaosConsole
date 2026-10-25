@@ -23,6 +23,10 @@ let manualClose = false
 /* 9.9.5：错误闩锁 —— 亮了就不自动灭，直到有「修复」信号（成功的操作、
  * 任务跑完、ws 重连）或用户在顶栏徽标上点掉 */
 let errorLatched = false
+/* 9.9.7：系统状态是否已首次拉到（用于「设了 PIN 每次打开都要解锁」只触发一次） */
+let systemLoadedOnce = false
+let warnTimer = null
+let errorAutoTimer = null
 
 function wsUrl(token) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -106,6 +110,14 @@ export const useStore = create((set, get) => ({
      氛围灯立刻变红、实时连接徽标显示「发生错误」——亮了就不自动灭，
      直到出现修复信号（成功的操作 / 任务跑完 / ws 重连）或用户点掉 */
   errorLatched: false,
+
+  /* 9.9.7：警告黄灯 —— toast warn（非致命提醒）时氛围灯变黄 8 秒；
+     任务在跑（思考中）也常亮黄灯，见 App.jsx AmbientBorder */
+  warnUntil: 0,
+
+  /* 9.9.7：轻微错误的红灯只亮 15 秒自动变绿；严重错误（模型错误等）
+     走 errorLatched 闩锁常亮 */
+  errorAutoUntil: 0,
 
   /* 侧栏 / 对话面板的折叠开关。跨重启保留（见 lib/prefs.js）。
      注意：它一旦持久化，就会改变 scripts/e2e-check.js 与 scripts/responsive-check.js
@@ -194,25 +206,52 @@ export const useStore = create((set, get) => ({
     const ms = kind === 'error' ? 10000 : 4200
     /* 9.8.2：报错即触发全局错误闪光（氛围灯变红 + 连接徽标显示错误） */
     if (kind === 'error') get().triggerErrorFlash()
+    /* 9.9.7：警告（非致命）→ 氛围灯变黄 8 秒 */
+    if (kind === 'warn') {
+      if (warnTimer) clearTimeout(warnTimer)
+      useStore.setState({ warnUntil: Date.now() + 8000 })
+      warnTimer = setTimeout(() => {
+        warnTimer = null
+        useStore.setState({ warnUntil: 0 })
+      }, 8000)
+    }
     /* 9.9.5：有操作成功了 = 问题已修复，熄灭错误红灯 */
     if (kind === 'success') get().clearErrorFlash()
     set((s) => ({ toasts: [...s.toasts, { id, text, kind, ms }] }))
     setTimeout(() => get().dismissToast(id), ms)
   },
 
-  /* 9.9.5：触发全局错误红灯（闩锁式，不自动灭；清除见 clearErrorFlash） */
-  triggerErrorFlash() {
-    if (!errorLatched) {
+  /* 9.9.7：触发全局错误红灯。severe（模型错误、页面脚本错误等严重问题）
+   * 闩锁常亮；普通操作失败这类轻微错误 15 秒后自动变绿 */
+  triggerErrorFlash({ severe = false } = {}) {
+    if (severe) {
+      if (errorAutoTimer) {
+        clearTimeout(errorAutoTimer)
+        errorAutoTimer = null
+      }
       errorLatched = true
-      useStore.setState({ errorLatched: true })
+      useStore.setState({ errorLatched: true, errorAutoUntil: 0 })
+      return
     }
+    if (errorAutoTimer) clearTimeout(errorAutoTimer)
+    useStore.setState({ errorAutoUntil: Date.now() + 15000 })
+    errorAutoTimer = setTimeout(() => {
+      errorAutoTimer = null
+      useStore.setState({ errorAutoUntil: 0 })
+    }, 15000)
   },
 
   /* 清除错误红灯：修复信号（成功 toast / 任务跑完 / ws 重连）或用户点徽标 */
   clearErrorFlash() {
+    if (errorAutoTimer) {
+      clearTimeout(errorAutoTimer)
+      errorAutoTimer = null
+    }
     if (errorLatched) {
       errorLatched = false
-      useStore.setState({ errorLatched: false })
+      useStore.setState({ errorLatched: false, errorAutoUntil: 0 })
+    } else if (useStore.getState().errorAutoUntil) {
+      useStore.setState({ errorAutoUntil: 0 })
     }
   },
 
@@ -377,6 +416,13 @@ export const useStore = create((set, get) => ({
     try {
       const res = await api.system()
       set({ system: res.data })
+      /* 9.9.7：设了 PIN 的应用，每次打开都要先输 PIN 才能进入 ——
+       * 只在本次会话第一次拉到系统状态时生效；解锁过就不再自动锁
+       * （手动锁 🔒 / Ctrl+L 不受影响） */
+      if (!systemLoadedOnce) {
+        systemLoadedOnce = true
+        if (res.data?.hasPin) set({ locked: true })
+      }
     } catch (_) {
       /* ignore */
     }
@@ -1621,8 +1667,8 @@ function handleServerMessageRaw(msg) {
           ? state.tasks.map((t) => (t.id === payload.id ? payload : t))
           : [payload, ...state.tasks],
       })
-      /* 9.8.2：任务出错 → 全局错误闪光（氛围灯变红） */
-      if (payload?.error) useStore.getState().triggerErrorFlash()
+      /* 9.8.2：任务出错 → 红灯；模型/执行层面的错误是严重错误，闩锁常亮 */
+      if (payload?.error) useStore.getState().triggerErrorFlash({ severe: true })
       /* 9.9.5：任务跑完 = 修复信号，熄灭错误红灯 */
       if (payload?.status === 'done') useStore.getState().clearErrorFlash()
       // 换岗提示：靠 handoffAt 的跃迁判断（**不新增 WS 事件类型** —— 前端

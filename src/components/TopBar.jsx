@@ -88,8 +88,9 @@ function ConnBadge({ conn }) {
      9.9.5 起红灯是闩锁式的：亮了不自动灭，直到有修复信号，或用户点这里手动清掉；
      连接真正断开也常驻错误态（那种情况清除没意义，重连成功自然翻绿） */
   const errLatched = useStore((s) => s.errorLatched)
+  const errAuto = useStore((s) => s.errorAutoUntil > Date.now())
   const clearErrorFlash = useStore((s) => s.clearErrorFlash)
-  const error = errLatched || conn === 'closed'
+  const error = errLatched || errAuto || conn === 'closed'
   const map = {
     open: { cls: 'bg-emerald-500', text: t('topbar.connected'), textCls: 'text-emerald-400' },
     connecting: { cls: 'bg-boss animate-pulseDot', text: t('topbar.connecting'), textCls: 'text-boss-strong' },

@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.9\.5"/, '版本为 9.9.5')
+must('package.json', /"version": "9\.9\.7"/, '版本为 9.9.7')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -325,7 +325,7 @@ must('src/components/AipptPage.jsx', /THEMES\.map\(\(th\) => \(/, '模板选择�
 must('src/components/AipptPage.jsx', /kind === 'stats'/, '预览按页型渲染（数据卡）')
 must('src/components/AipptPage.jsx', /自动配图（按内容决定张数）/, '有配图开关')
 must('src/lib/changelog.js', /AIPPT 自动配图/, '9.8.0 版本简介写了配图能力')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '9\.9\.5'/, '更新日志首条是 9.9.5')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '9\.9\.7'/, '更新日志首条是 9.9.7')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

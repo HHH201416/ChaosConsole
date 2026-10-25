@@ -262,15 +262,31 @@ function Toasts() {
   )
 }
 
-/** 9.8.2：氛围灯 —— 平时绿色呼吸；任何地方报错 / 实时连接断开时变红色脉冲。
+/** 9.8.2：氛围灯 —— 平时绿色呼吸。
  *  9.9.5 起红灯是闩锁式的：errorLatched 由 store.triggerErrorFlash() 置位
  *  （toast error、任务出错、错误事件），亮了就不自动灭，直到修复信号
- *  （成功操作 / 任务跑完 / ws 重连）或用户点顶栏徽标清除。 */
+ *  （成功操作 / 任务跑完 / ws 重连）或用户点顶栏徽标清除。
+ *  9.9.7：任务在跑（思考中）或出现警告 toast 时变黄色脉冲；红色优先。 */
 function AmbientBorder() {
   const errLatched = useStore((s) => s.errorLatched)
+  const errAuto = useStore((s) => s.errorAutoUntil > Date.now())
+  const warnUntil = useStore((s) => s.warnUntil)
+  const busy = useStore((s) =>
+    (s.tasks || []).some((t) => t.runState === 'running' || t.runState === 'queued'),
+  )
   const conn = useStore((s) => s.conn)
-  const red = errLatched || conn === 'closed'
-  return <div className={`breathing-border${red ? ' breathing-error' : ''}`} aria-hidden="true" />
+  const mode =
+    errLatched || errAuto || conn === 'closed'
+      ? 'error'
+      : busy || warnUntil > Date.now()
+        ? 'busy'
+        : ''
+  return (
+    <div
+      className={`breathing-border${mode === 'error' ? ' breathing-error' : mode === 'busy' ? ' breathing-busy' : ''}`}
+      aria-hidden="true"
+    />
+  )
 }
 
 /** 8.0.2：速答小窗走独立路由（Electron 的 quick 窗口加载 ?quick=1） */

@@ -626,6 +626,28 @@ export default function ChatPanel() {
           </span>
         </div>
 
+        {/* 9.9.7：推荐答案 —— 混沌在回复里问了问题时，输入框上方给出几个
+            快捷回答；点一条填进输入框（可再改），输入框照常手打 */}
+        {(() => {
+          const lastA = [...messages].reverse().find((m) => m.role === 'assistant')
+          const q = String(lastA?.content || '').trim()
+          if (isRunning || !q || !/[?？]\s*$/.test(q.split('\n').filter(Boolean).pop() || '')) return null
+          const chips = ['好的，就这样做', '继续', '换个方案试试']
+          return (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {chips.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setDraft(c)}
+                  className="rounded-full border border-ink-500 bg-ink-700/60 px-2.5 py-1 text-[11px] text-slate-300 transition-colors hover:border-boss hover:text-boss-strong"
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          )
+        })()}
+
         <div className="flex items-end gap-2">
           {voiceSupported && (
             <button

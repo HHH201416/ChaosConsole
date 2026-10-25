@@ -211,12 +211,13 @@ async function main() {
   const problems = []
   /* 9.9.0：时长阈值按页数与配图放宽 —— CPU 推理 8 页 + 双图本来就要 3 分钟多，
      硬卡 180s 会把「慢但完整」误判成失败 */
-  const timeLimit = PAGES >= 8 ? 300000 : 180000
+  /* 9.9.7：页数硬保证会多一轮模型补页（缺页时），CPU 上 7b 一轮约 60-90s，
+     8 页阈值放宽到 7 分钟；页数优先于速度（用户点名「要几页出几页」） */
+  const timeLimit = PAGES >= 8 ? 420000 : 240000
   if (totalMs > timeLimit) problems.push(`总耗时 ${(totalMs / 1000).toFixed(0)}s 超过 ${timeLimit / 1000}s`)
-  /* 9.9.0：允许到 75% 页数 —— 空页兜底宁可删页也不注水，删掉占位页是
-     有意设计；75% 以下才说明补页真的失败了 */
-  if (slides.length < Math.ceil(PAGES * 0.75))
-    problems.push(`页数不足（${slides.length}/${PAGES}）`)
+  /* 9.9.7：页数必须严格一致 —— 用户要几页成品就几页（含自动加的目录页）；
+     outline 页数 = 成品 - 目录（withToc 时），服务端按 askN 折算 */
+  if (done.pages !== PAGES) problems.push(`页数不符（成品 ${done.pages}/${PAGES}）`)
   if (filler.length) problems.push('出现空话词')
   if (leak.length) problems.push('抄了示例内容')
   if (desc.length) problems.push('页头是描述词')

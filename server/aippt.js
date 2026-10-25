@@ -1777,6 +1777,11 @@ async function generate(opts = {}, emit = null) {
 
   const t0 = Date.now()
   const n = clampPages(pages, 6)
+  /* 9.9.7：页数语义 = 成品 pptx 的页数（用户要几页就拿到几页）。
+   * 渲染时满足条件会自动加一页目录（toc = withToc && slides.length >= 5），
+   * 所以让模型写的大纲要少一页，否则成品会比用户要的多一页。 */
+  const tocPlanned = Boolean(withToc) && n >= 6
+  const askN = tocPlanned ? n - 1 : n
   const topicClean = String(topic || '').trim()
   if (!topicClean) return { ok: false, error: '请先填写 PPT 主题' }
   const toneDesc = TONES[tone] ? TONES[tone] : TONES.formal
@@ -1971,7 +1976,7 @@ async function generate(opts = {}, emit = null) {
           },
           {
             role: 'user',
-            content: outlinePrompt({ topic: topicClean, n, toneDesc, audience: audienceClean, lang, plan, hasResearch }),
+            content: outlinePrompt({ topic: topicClean, n: askN, toneDesc, audience: audienceClean, lang, plan, hasResearch }),
           },
         ],
         onDelta: (d) => {
@@ -2009,7 +2014,7 @@ async function generate(opts = {}, emit = null) {
   data = await completeDeck({
     data,
     topic: topicClean,
-    n,
+    n: askN,
     model: outlineModel,
     fastModel,
     opts: outlineOpts,
@@ -2083,6 +2088,89 @@ async function generate(opts = {}, emit = null) {
     const kept2 = outline.slides.filter((x) => !isHole(x))
     if (kept2.length >= Math.min(4, n)) outline = { ...outline, slides: kept2 }
   }
+
+  /* ---- 9.9.7：页数硬保证（WPS 式体验：用户要几页就出几页）----
+   * 闸门和兜底都可能删页，这里把页数拉回 n：
+   *  - 缺页：先用素材补（fillFromPlan 会开新页），补出来的页必须再过闸门；
+   *    素材见底就把内容最厚的一页拆成两页 —— 用真实内容凑数，不放空壳。
+   *  - 超页：从尾部裁，封面（第 1 页）和结尾页（E）不动。 */
+  try {
+    /* 缺页先让模型按原大纲口径再续写一轮 —— 模型写的话比拼素材行像话；
+     * completeDeck 会先试素材、不够才调模型，只补一轮有预算兜底 */
+    if ((outline.slides || []).length < n) {
+      try {
+        await completeDeck({
+          data: { ...data, slides: outline.slides },
+          topic: topicClean,
+          n: askN,
+          model: outlineModel,
+          fastModel,
+          opts: outlineOpts,
+          lang,
+          plan: planRows || plan,
+          send,
+        })
+      } catch (_) { /* 续写失败走后面的素材补页/拆页兜底 */ }
+    }
+    /* 9.9.7：页数硬保证各阶段的观测点（e2e 只显示 notice，用它诊断补页链路） */
+    send({ type: 'notice', reason: 'page-count', field: `model-fill=${(outline.slides || []).length}` })
+    let guardPg = 0
+    while ((outline.slides || []).length < askN && guardPg++ < 3) {
+      const before = (outline.slides || []).length
+      const patched = fillFromPlan({ ...data, slides: outline.slides }, askN, planRows || plan)
+      outline = { ...outline, slides: patched.slides }
+      if ((outline.slides || []).length === before) break
+    }
+    /* 补出来的页是照抄素材行，必须再过一遍规则闸门（老坑：绕过检查） */
+    try {
+      outline = quality.auditDeck(outline, { topic: topicClean, research }).deck
+    } catch (_) { /* 闸门故障不能连累出片 */ }
+    const kept3 = outline.slides.filter((x) => !isHole(x))
+    if (kept3.length >= Math.min(2, askN)) outline = { ...outline, slides: kept3 }
+    send({ type: 'notice', reason: 'page-count', field: `material-fill=${(outline.slides || []).length}` })
+
+    /* 素材见底还缺页：拆最厚的内容页（正文 ≥4 行才值得拆），插到结尾页前面 */
+    guardPg = 0
+    while ((outline.slides || []).length < askN && guardPg++ < 6) {
+      let best = -1
+      let bestLen = 0
+      outline.slides.forEach((s, i) => {
+        if (s.kind === 'cover' || s.kind === 'closing' || s.kind === 'quote') return
+        const len = (s.body || []).length + (s.extra || []).length
+        if (len > bestLen) {
+          bestLen = len
+          best = i
+        }
+      })
+      if (best < 0 || bestLen < 4) break // 没有可拆的厚页了，只能认命
+      const s = outline.slides[best]
+      const lines = [...(s.body || []), ...(s.extra || [])]
+      const half = Math.ceil(lines.length / 2)
+      outline.slides[best] = { ...s, body: lines.slice(0, half), extra: [] }
+      const tailLines = lines.slice(half)
+      const newPage = {
+        kind: 'bullets',
+        title: titleFromLine(tailLines[0] || s.title),
+        body: tailLines.slice(0, 3),
+        extra: [],
+        stats: [],
+        note: '',
+        image: '',
+      }
+      const ci = outline.slides.findIndex((x) => x.kind === 'closing')
+      outline.slides.splice(ci >= 0 ? ci : outline.slides.length, 0, newPage)
+    }
+
+    /* 超页：从尾部裁，结尾页压轴不动 */
+    while ((outline.slides || []).length > askN && outline.slides.length > 2) {
+      const last = outline.slides.length - 1
+      const dropAt = outline.slides[last]?.kind === 'closing' ? last - 1 : last
+      if (dropAt <= 0) break
+      outline.slides.splice(dropAt, 1)
+    }
+  } catch (_) { /* 页数校正出问题不能连累出片 */ }
+
+  send({ type: 'notice', reason: 'page-count', field: `final=${(outline.slides || []).length}(askN=${askN})` })
 
   send({ type: 'outline', outline, elapsed: Date.now() - t0 })
 

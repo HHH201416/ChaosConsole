@@ -263,7 +263,7 @@ function Toasts() {
 }
 
 /** 9.8.2：氛围灯 —— 平时绿色呼吸；任何地方报错 / 实时连接断开时变红色脉冲。
- *  9.9.0 起红灯是闩锁式的：errorLatched 由 store.triggerErrorFlash() 置位
+ *  9.9.5 起红灯是闩锁式的：errorLatched 由 store.triggerErrorFlash() 置位
  *  （toast error、任务出错、错误事件），亮了就不自动灭，直到修复信号
  *  （成功操作 / 任务跑完 / ws 重连）或用户点顶栏徽标清除。 */
 function AmbientBorder() {

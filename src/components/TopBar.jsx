@@ -85,7 +85,7 @@ function UpdateControl({ onInstallUpdate }) {
 function ConnBadge({ conn }) {
   const t = useT()
   /* 9.8.2：应用任何地方报错时，实时连接徽标同步显示「发生错误」（红色）。
-     9.9.0 起红灯是闩锁式的：亮了不自动灭，直到有修复信号，或用户点这里手动清掉；
+     9.9.5 起红灯是闩锁式的：亮了不自动灭，直到有修复信号，或用户点这里手动清掉；
      连接真正断开也常驻错误态（那种情况清除没意义，重连成功自然翻绿） */
   const errLatched = useStore((s) => s.errorLatched)
   const clearErrorFlash = useStore((s) => s.clearErrorFlash)

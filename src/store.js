@@ -20,7 +20,7 @@ let reconnectTimer = null
 let reconnectDelay = 800
 let manualClose = false
 /* 9.8.2：全局错误闪光计时器（非序列化状态，放模块级） */
-/* 9.9.0：错误闩锁 —— 亮了就不自动灭，直到有「修复」信号（成功的操作、
+/* 9.9.5：错误闩锁 —— 亮了就不自动灭，直到有「修复」信号（成功的操作、
  * 任务跑完、ws 重连）或用户在顶栏徽标上点掉 */
 let errorLatched = false
 
@@ -102,7 +102,7 @@ export const useStore = create((set, get) => ({
 
   toasts: [],
 
-  /* 9.9.0：全局错误红灯。任何地方报错（toast error / 任务出错 / 错误事件），
+  /* 9.9.5：全局错误红灯。任何地方报错（toast error / 任务出错 / 错误事件），
      氛围灯立刻变红、实时连接徽标显示「发生错误」——亮了就不自动灭，
      直到出现修复信号（成功的操作 / 任务跑完 / ws 重连）或用户点掉 */
   errorLatched: false,
@@ -194,13 +194,13 @@ export const useStore = create((set, get) => ({
     const ms = kind === 'error' ? 10000 : 4200
     /* 9.8.2：报错即触发全局错误闪光（氛围灯变红 + 连接徽标显示错误） */
     if (kind === 'error') get().triggerErrorFlash()
-    /* 9.9.0：有操作成功了 = 问题已修复，熄灭错误红灯 */
+    /* 9.9.5：有操作成功了 = 问题已修复，熄灭错误红灯 */
     if (kind === 'success') get().clearErrorFlash()
     set((s) => ({ toasts: [...s.toasts, { id, text, kind, ms }] }))
     setTimeout(() => get().dismissToast(id), ms)
   },
 
-  /* 9.9.0：触发全局错误红灯（闩锁式，不自动灭；清除见 clearErrorFlash） */
+  /* 9.9.5：触发全局错误红灯（闩锁式，不自动灭；清除见 clearErrorFlash） */
   triggerErrorFlash() {
     if (!errorLatched) {
       errorLatched = true
@@ -1518,7 +1518,7 @@ function connectSocket() {
 
   ws.onopen = () => {
     reconnectDelay = 800
-    /* 9.9.0：连接恢复 = 连接类错误已修复，熄灭错误红灯 */
+    /* 9.9.5：连接恢复 = 连接类错误已修复，熄灭错误红灯 */
     useStore.getState().clearErrorFlash()
     useStore.setState({ conn: 'open' })
     // 9.8.2：重连成功立刻同步一次系统快照 —— 修「引擎已启动卡片还显示未启动」
@@ -1623,7 +1623,7 @@ function handleServerMessageRaw(msg) {
       })
       /* 9.8.2：任务出错 → 全局错误闪光（氛围灯变红） */
       if (payload?.error) useStore.getState().triggerErrorFlash()
-      /* 9.9.0：任务跑完 = 修复信号，熄灭错误红灯 */
+      /* 9.9.5：任务跑完 = 修复信号，熄灭错误红灯 */
       if (payload?.status === 'done') useStore.getState().clearErrorFlash()
       // 换岗提示：靠 handoffAt 的跃迁判断（**不新增 WS 事件类型** —— 前端
       // handleServerMessage 的 switch 没有 default 报错，漏一个 case 就是静默

@@ -127,6 +127,74 @@ function clip(text, max = MAX_EVENT_CHARS) {
   return s.length > max ? s.slice(0, max) + `\n…（已截断，共 ${s.length} 字符）` : s
 }
 
+/**
+ * 9.8.0：思考内容**不截断**。
+ *
+ * 用户明确要求「深度思考中生成的内容都要显示」—— 以前这里按 1500 字裁掉，
+ * 思辨模型跑长推理时后半段全丢了。现在原文完整保存，只留一个 20 万字符的
+ * 安全上限（正常推理不可能到，纯粹防止异常输出把数据库撑爆）。
+ */
+const THINK_MAX_CHARS = 200000
+
+function keepThink(text) {
+  const s = typeof text === 'string' ? text : text == null ? '' : String(text)
+  if (!s) return ''
+  return s.length > THINK_MAX_CHARS ? `${s.slice(0, THINK_MAX_CHARS)}\n…（超过 20 万字符上限，已截断）` : s
+}
+
+/**
+ * 9.8.0：执行看门狗。
+ *
+ * 用户要求「我让他做一个任务，它要完成后再停止」—— 所以默认**没有总时长上限**：
+ * 只要任务还在产出就一直跑，跑到它自己结束为止。
+ *
+ * 真正保留的兜底是「空闲超时」：连续 IDLE 毫秒连一个字都没有，才判定卡死。
+ * 每收到一行输出 / 一段增量就 arm() 一次续期，所以慢任务不会被误杀。
+ *
+ * hardMs 是可选的总时长上限（只有显式设置 CHAOS_RUN_TIMEOUT 时才生效）。
+ */
+function createWatchdog(taskId, { hardMs = 0, idleMs = 0 } = {}, onFire) {
+  let hardTimer = null
+  let idleTimer = null
+  let done = false
+
+  const fire = (reasonText) => {
+    if (done) return
+    done = true
+    clearTimeout(hardTimer)
+    clearTimeout(idleTimer)
+    stopIntent.set(taskId, 'timeout')
+    store.addEvent(taskId, { type: 'error', name: '超时', content: reasonText })
+    onFire()
+  }
+
+  const arm = () => {
+    if (done || !idleMs || idleMs <= 0) return
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(
+      () => fire(`连续 ${Math.round(idleMs / 60000)} 分钟没有任何输出，判定卡住并结束本次执行。`),
+      idleMs,
+    )
+  }
+
+  if (hardMs > 0) {
+    hardTimer = setTimeout(() => fire(`执行超过 ${Math.round(hardMs / 60000)} 分钟，已按上限强制结束。`), hardMs)
+  }
+  arm()
+
+  return {
+    arm,
+    clear() {
+      done = true
+      clearTimeout(hardTimer)
+      clearTimeout(idleTimer)
+    },
+    get enabled() {
+      return (idleMs > 0 || hardMs > 0) && !done
+    },
+  }
+}
+
 /** 把工具调用参数压成一行可读摘要 */
 function summarizeToolInput(name, input) {
   if (!input || typeof input !== 'object') return ''
@@ -361,7 +429,7 @@ function createClaudeParser(taskId) {
           content: summarizeToolInput(block.name, block.input),
         })
       } else if (block.type === 'thinking' && block.thinking) {
-        store.addEvent(taskId, { type: 'thinking', name: '思考', content: clip(block.thinking, 1500) })
+        store.addEvent(taskId, { type: 'thinking', name: '思考', content: keepThink(block.thinking) })
       }
     }
   }
@@ -557,7 +625,7 @@ function createDevecoParser(taskId) {
         break
 
       case 'reasoning':
-        if (part.text) store.addEvent(taskId, { type: 'thinking', name: '思考', content: clip(part.text, 1500) })
+        if (part.text) store.addEvent(taskId, { type: 'thinking', name: '思考', content: keepThink(part.text) })
         break
 
       case 'step_finish': {
@@ -780,25 +848,23 @@ function runReal({ taskId, bin, args, prompt, parser, cwd, label, extraEnv = {} 
   let settled = false
 
   const promise = new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      stopIntent.set(taskId, 'timeout')
-      store.addEvent(taskId, {
-        type: 'error',
-        name: '超时',
-        content: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束。`,
-      })
-      killTree(child)
-    }, CONFIG.RUN_TIMEOUT)
+    // 9.8.0：不再用固定总时长 —— 任务要跑完才停（见 createWatchdog 注释）
+    const watchdog = createWatchdog(
+      taskId,
+      { hardMs: CONFIG.RUN_TIMEOUT, idleMs: CONFIG.RUN_IDLE_TIMEOUT },
+      () => killTree(child),
+    )
 
     const finish = (payload) => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      watchdog.clear()
       resolve(payload)
     }
 
     const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity })
     rl.on('line', (line) => {
+      watchdog.arm() // 有输出就续期
       try {
         parser.handleLine(line)
       } catch (err) {
@@ -837,7 +903,7 @@ function runReal({ taskId, bin, args, prompt, parser, cwd, label, extraEnv = {} 
         finish({
           ok: false,
           timedOut: true,
-          error: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束`,
+          error: '长时间没有任何输出，判定卡住并结束（任务本身没有时长上限）',
           sessionId: parser.state.sessionId,
           toolNames: [...parser.state.toolNames],
         })
@@ -1210,15 +1276,13 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
     return { ok: false, cancelled: true, handoff: intent === 'handoff' }
   }
 
-  const timer = setTimeout(() => {
-    stopIntent.set(taskId, 'timeout')
-    store.addEvent(taskId, {
-      type: 'error',
-      name: '超时',
-      content: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束。`,
-    })
-    controller.abort()
-  }, CONFIG.RUN_TIMEOUT)
+  // 9.8.0：任务跑完才停 —— 固定总时长默认关闭（CONFIG.RUN_TIMEOUT=0），
+  // 只在连续无输出时兜底（见 createWatchdog）
+  const watchdog = createWatchdog(
+    taskId,
+    { hardMs: CONFIG.RUN_TIMEOUT, idleMs: CONFIG.RUN_IDLE_TIMEOUT },
+    () => controller.abort(),
+  )
 
   try {
     // 9.5.0：岗位挂了混沌就一路用混沌 —— 引擎没起不报错取消，自动拉起再试一次
@@ -1320,7 +1384,7 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
         model,
         messages,
         signal: controller.signal,
-        onDelta: () => {},
+        onDelta: () => watchdog.arm(),
       }))
     }
 
@@ -1333,7 +1397,7 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
       })
       const contMessages = [...messages, { role: 'assistant', content: String(text || '') }, { role: 'user', content: '继续。从断掉的地方无缝接着写，不要重复已有内容，写完自然收尾。' }]
       try {
-        const cont = await chaosLlm.chat({ model, messages: contMessages, signal: controller.signal, onDelta: () => {} })
+        const cont = await chaosLlm.chat({ model, messages: contMessages, signal: controller.signal, onDelta: () => watchdog.arm() })
         if (cont.text) {
           text = `${String(text || '').trimEnd()}\n${cont.text.trimStart()}`
           evalCount += cont.evalCount
@@ -1417,7 +1481,7 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
     }
     return { ok: false, error: msg, sessionId: resumeSessionId || `chaos-${taskId}` }
   } finally {
-    clearTimeout(timer)
+    watchdog.clear()
     if (running.get(taskId) === handle) running.delete(taskId)
     stopIntent.delete(taskId)
   }
@@ -1441,15 +1505,13 @@ async function runApi({ taskId, task, agent, prompt, extraInstruction, resumeSes
     return { ok: false, cancelled: true, handoff: intent === 'handoff' }
   }
 
-  const timer = setTimeout(() => {
-    stopIntent.set(taskId, 'timeout')
-    store.addEvent(taskId, {
-      type: 'error',
-      name: '超时',
-      content: `执行超过 ${Math.round(CONFIG.RUN_TIMEOUT / 60000)} 分钟，已强制结束。`,
-    })
-    controller.abort()
-  }, CONFIG.RUN_TIMEOUT)
+  // 9.8.0：任务跑完才停 —— 固定总时长默认关闭（CONFIG.RUN_TIMEOUT=0），
+  // 只在连续无输出时兜底（见 createWatchdog）
+  const watchdog = createWatchdog(
+    taskId,
+    { hardMs: CONFIG.RUN_TIMEOUT, idleMs: CONFIG.RUN_IDLE_TIMEOUT },
+    () => controller.abort(),
+  )
 
   try {
     const cfg = executors.apiConfig()
@@ -1560,7 +1622,7 @@ async function runApi({ taskId, task, agent, prompt, extraInstruction, resumeSes
     store.addEvent(taskId, { type: 'error', name: '第三方 API 执行失败', content: clip(msg, 1500) })
     return { ok: false, error: msg, sessionId: resumeSessionId || `api-${taskId}` }
   } finally {
-    clearTimeout(timer)
+    watchdog.clear()
     if (running.get(taskId) === handle) running.delete(taskId)
     stopIntent.delete(taskId)
   }

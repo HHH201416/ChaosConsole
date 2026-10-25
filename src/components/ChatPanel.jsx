@@ -25,7 +25,10 @@ function splitThink(content) {
 }
 
 function ThinkBlock({ text }) {
-  const [open, setOpen] = useState(false)
+  // 9.8.0：默认展开 —— 用户要求「深度思考中生成的内容都要显示」，
+  // 所以不再折叠、也不再限制高度，推理草稿原样铺开（内容本身服务端已不截断）
+  const [open, setOpen] = useState(true)
+  const chars = String(text || '').length
   // 9.6.1：思考草稿统一用灰色（原来紫色太抢眼，抢了正文的注意力）
   return (
     <div className="mb-1.5 rounded-lg border border-ink-500 bg-ink-700/40">
@@ -33,11 +36,12 @@ function ThinkBlock({ text }) {
         className="flex w-full items-center gap-1.5 px-2 py-1 text-[10.5px] text-slate-400 hover:text-slate-300"
         onClick={() => setOpen((v) => !v)}
       >
-        🧠 思考过程（点开看推理草稿）
+        🧠 思考过程
+        <span className="font-mono text-[9.5px] text-slate-600">{chars} 字</span>
         <span className="ml-auto">{open ? '收起' : '展开'}</span>
       </button>
       {open && (
-        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words border-t border-ink-500 px-2 py-1.5 font-mono text-[10.5px] leading-snug text-slate-500">
+        <pre className="whitespace-pre-wrap break-words border-t border-ink-500 px-2 py-1.5 font-mono text-[10.5px] leading-snug text-slate-500">
           {text.trim()}
         </pre>
       )}

@@ -68,8 +68,7 @@ const put = (p, b) => request('PUT', p, b ?? {})
 const patch = (p, b) => request('PATCH', p, b ?? {})
 const del = (p) => request('DELETE', p)
 
-/** 下载文件（导出 JSON / 诊断包）。返回 { blob, filename } */
-async function download(path) {
+/** 下载文件（导出 JSON / 诊断包）。返回 { blob, filename } */async function download(path) {
   const headers = {}
   if (TOKEN) headers['x-chaos-token'] = TOKEN
   const res = await fetch(path, { headers })
@@ -77,6 +76,79 @@ async function download(path) {
   const disposition = res.headers.get('content-disposition') || ''
   const m = disposition.match(/filename=\"?([^\";]+)\"?/i)
   return { blob: await res.blob(), filename: m ? m[1] : 'chaos-export.json' }
+}
+
+/**
+ * 9.8.0：SSE 流式请求（AIPPT 用）。
+ * onEvent(ev) 逐条回调；signal 用来中途取消。
+ * 返回 { ok, error } —— 出错不抛，交给调用方决定怎么提示。
+ */
+export async function streamPost(path, body, onEvent, signal) {
+  const headers = { 'Content-Type': 'application/json' }
+  if (TOKEN) headers['x-chaos-token'] = TOKEN
+
+  let res
+  try {
+    res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body ?? {}), signal })
+  } catch (err) {
+    if (err?.name === 'AbortError') return { ok: false, aborted: true }
+    return { ok: false, error: `无法连接后端服务：${err.message}` }
+  }
+
+  if (!res.ok || !res.body) {
+    let detail = ''
+    try {
+      const j = await res.json()
+      detail = String(j?.error || '')
+    } catch (_) {
+      /* ignore */
+    }
+    return { ok: false, error: detail || `请求失败（HTTP ${res.status}）` }
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let result = null
+  let failure = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let cut
+      while ((cut = buf.indexOf('\n\n')) !== -1) {
+        const chunk = buf.slice(0, cut)
+        buf = buf.slice(cut + 2)
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const raw = line.slice(5).trim()
+          if (!raw) continue
+          let ev = null
+          try {
+            ev = JSON.parse(raw)
+          } catch (_) {
+            continue
+          }
+          if (ev.type === 'done') result = ev.result
+          if (ev.type === 'error') failure = ev.error || '生成失败'
+          try {
+            onEvent(ev)
+          } catch (_) {
+            /* 渲染回调异常不该打断流 */
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') return { ok: false, aborted: true }
+    return { ok: false, error: `读取生成流失败：${err.message}` }
+  }
+
+  if (failure) return { ok: false, error: failure }
+  if (!result) return { ok: false, error: '生成流意外结束，没有拿到成品' }
+  return { ok: true, result }
 }
 
 export const api = {
@@ -159,6 +231,8 @@ export const api = {
   deleteKb: (id) => del(`/api/kb/${id}`),
   kbDocs: (id) => get(`/api/kb/${id}/docs`),
   addKbDoc: (id, data) => post(`/api/kb/${id}/docs`, data),
+  // 9.8.0：应用内编辑文档
+  updateKbDoc: (id, docId, data) => patch(`/api/kb/${id}/docs/${docId}`, data),
   deleteKbDoc: (id, docId) => del(`/api/kb/${id}/docs/${docId}`),
   exportKb: (id, format) => download(`/api/kb/${id}/export?format=${format || 'json'}`),
   importKb: (data) => post('/api/kb/import', data),
@@ -183,11 +257,15 @@ export const api = {
   // 8.0.2：Token 额度（每日 3000 万免费；9.5.4 起填手机号绑定激活）
   chaosQuota: () => get('/api/chaos/quota'),
   chaosBindPhone: (phone) => post('/api/chaos/phone', { phone }),
+  // 9.8.0：兑换码（手机号下方那一格，可选）
+  chaosRedeem: (code) => post('/api/chaos/redeem', { code }),
   // 9.3.8：全部岗位一键切混沌 + 工作区预览（文件 / 知识库侧栏）
   chaosSwitchAllAgents: () => post('/api/agents/migrate-chaos'),
   // 9.5.4：AIPPT（主题 + 页数 + 语气 → 本地 .pptx）
   aipptList: () => get('/api/aippt/list'),
   aipptGenerate: (payload) => post('/api/aippt/generate', payload),
+  // 9.8.0：流式生成走 streamPost（导出函数），不走 api 对象
+  aipptImageUrl: (name) => `/api/aippt/image?name=${encodeURIComponent(name)}&token=${encodeURIComponent(getToken() || '')}`,
   // 9.6.1：改完大纲直接重渲染 / 读回大纲 / 删除产物
   aipptRender: (payload) => post('/api/aippt/render', payload),
   aipptOutline: (id) => get(`/api/aippt/outline?id=${encodeURIComponent(id)}`),

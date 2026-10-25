@@ -20,6 +20,28 @@ const QUOTA_KEY = 'chaosQuota'
 const DAILY_FREE = 30_000_000
 const PER_PHONE_DAILY = 30_000_000
 
+/**
+ * 9.8.0：兑换码重新回来了 —— 手机号仍然是必填的（额度按号算），
+ * 兑换码是「可选的加档」：填了就把当天的封顶去掉。
+ *
+ * 码表写死在服务端，前端只负责收集字符串，不做任何本地判定，
+ * 免得有人改前端就把自己变成不限量。
+ */
+const REDEEM_CODES = {
+  HY2014: {
+    label: '内测不限量',
+    permanent: true,
+    note: '已解锁不限量额度，不再受每日上限约束',
+  },
+}
+
+/** 码的比对规则：去空格、转大写（用户手打容易带空格或小写） */
+function normalizeCode(raw) {
+  return String(raw || '')
+    .replace(/[\s-]/g, '')
+    .toUpperCase()
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -43,7 +65,9 @@ function usage() {
   const usedToday = q.day === day ? Number(q.usedToday) || 0 : 0
   return {
     dailyFree: DAILY_FREE,
-    permanent: q.permanent === true, // 9.5.3 前用兑换码升过级的存量用户，继续 honoring
+    permanent: q.permanent === true, // 兑换码（HY2014 等）解锁的存量用户，继续 honoring
+    redeemCode: typeof q.redeemCode === 'string' ? q.redeemCode : null,
+    redeemedAt: Number(q.redeemedAt) || 0,
     phone: typeof q.activePhone === 'string' && q.activePhone ? q.activePhone : null,
     phoneCount: q.phones && typeof q.phones === 'object' ? Object.keys(q.phones).length : 0,
     day,
@@ -125,9 +149,55 @@ function bindPhone(raw) {
   return { ok: true, data: { phone: clean, already, dailyFree: PER_PHONE_DAILY } }
 }
 
+/* ---------------- 9.8.0：兑换码（手机号下方那一格，可选） ---------------- */
+
+/**
+ * 兑换。前置条件：必须先绑手机号 —— 用户的要求是「用混沌必须填手机号」，
+ * 兑换码只是额外的额度加档，不能绕过手机号。
+ */
+function redeem(raw) {
+  const code = normalizeCode(raw)
+  if (!code) return { ok: false, error: '请输入兑换码' }
+  if (!hasPhone()) {
+    return { ok: false, error: '请先在上面填写手机号，再兑换', code: 'CHAOS_PHONE_REQUIRED' }
+  }
+  const hit = REDEEM_CODES[code]
+  if (!hit) return { ok: false, error: `兑换码「${code}」无效或已过期` }
+
+  const q = rawQuota()
+  const repeat = q.redeemCode === code && q.permanent === true
+  store.setSetting(
+    QUOTA_KEY,
+    JSON.stringify({
+      ...q,
+      permanent: hit.permanent === true,
+      redeemCode: code,
+      redeemedAt: repeat ? Number(q.redeemedAt) || Date.now() : Date.now(),
+    }),
+  )
+  store.bus.emit('chaos:changed', { reason: 'redeemed' })
+  return {
+    ok: true,
+    data: {
+      code,
+      label: hit.label,
+      note: hit.note,
+      repeat,
+      unlimited: true,
+      usage: publicUsage(),
+    },
+  }
+}
+
+/** 是否已经用兑换码升过级 */
+function hasRedeem() {
+  return usage().permanent === true
+}
+
 module.exports = {
   DAILY_FREE,
   PER_PHONE_DAILY,
+  REDEEM_CODES,
   usage,
   publicUsage,
   canUse,
@@ -136,4 +206,7 @@ module.exports = {
   consume,
   bindPhone,
   normalizePhone,
+  redeem,
+  normalizeCode,
+  hasRedeem,
 }

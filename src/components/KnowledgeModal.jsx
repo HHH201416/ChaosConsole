@@ -28,6 +28,9 @@ export default function KnowledgeModal({ onClose }) {
   const [docTitle, setDocTitle] = useState('')
   const [docContent, setDocContent] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  // 9.8.0：应用内编辑已有文档
+  const [editing, setEditing] = useState(null)
+  const [saving, setSaving] = useState(false)
   const [hits, setHits] = useState(null)
   const [query, setQuery] = useState('')
   const fileRef = useRef(null)
@@ -71,6 +74,7 @@ export default function KnowledgeModal({ onClose }) {
     setHits(null)
     setQuery('')
     setShowAdd(false)
+    setEditing(null)
     loadDocs(activeId)
   }, [activeId, loadDocs])
 
@@ -133,6 +137,32 @@ export default function KnowledgeModal({ onClose }) {
       await Promise.all([loadDocs(activeId), loadBases()])
     } catch (err) {
       toast(err.message, 'error')
+    }
+  }
+
+  /* ---- 9.8.0：应用内编辑文档 ---- */
+
+  const openEditor = (doc) => {
+    setShowAdd(false)
+    setEditing({ id: doc.id, title: doc.title || '', content: doc.content || '' })
+  }
+
+  const saveEditing = async () => {
+    if (!activeId || !editing || saving) return
+    if (!editing.title.trim()) {
+      toast('标题不能为空', 'error')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.updateKbDoc(activeId, editing.id, { title: editing.title, content: editing.content })
+      toast('已保存', 'success')
+      setEditing(null)
+      await Promise.all([loadDocs(activeId), loadBases()])
+    } catch (err) {
+      toast(err.message, 'error')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -373,6 +403,52 @@ export default function KnowledgeModal({ onClose }) {
                     </div>
                   )}
 
+                  {/* 9.8.0：编辑面板 —— 直接在应用内改标题和正文，Ctrl+S 保存 */}
+                  {editing && (
+                    <div className="mb-3 rounded-lg border border-boss/50 bg-ink-900 p-3">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-[11px] text-boss-strong">✏️ 编辑文档</span>
+                        <span className="font-mono text-[10px] text-slate-600">
+                          {editing.content.length.toLocaleString()} 字符
+                        </span>
+                        <button className="ml-auto text-[10.5px] text-slate-500 hover:text-slate-300" onClick={() => setEditing(null)}>
+                          关闭
+                        </button>
+                      </div>
+                      <input
+                        className="field mb-2 w-full"
+                        placeholder={t('kb.docTitle')}
+                        value={editing.title}
+                        onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+                        autoFocus
+                      />
+                      <textarea
+                        className="field mb-2 h-64 w-full resize-y font-mono text-[11.5px] leading-relaxed"
+                        placeholder={t('kb.docContent')}
+                        value={editing.content}
+                        onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+                        onKeyDown={(e) => {
+                          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                            e.preventDefault()
+                            saveEditing()
+                          }
+                          if (e.key === 'Escape') setEditing(null)
+                        }}
+                      />
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-600">Ctrl+S 保存 · Esc 取消</span>
+                        <div className="ml-auto flex gap-2">
+                          <button className="btn-ghost" onClick={() => setEditing(null)}>
+                            {t('common.cancel')}
+                          </button>
+                          <button className="btn-primary" disabled={saving || !editing.title.trim()} onClick={saveEditing}>
+                            {saving ? '保存中…' : '保存'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {hits ? (
                     hits.length ? (
                       hits.map((h) => (
@@ -398,19 +474,38 @@ export default function KnowledgeModal({ onClose }) {
                     docs.map((d) => (
                       <div key={d.id} className="group mb-2 rounded-lg border border-ink-500 bg-ink-900 p-3">
                         <div className="flex items-center gap-2">
-                          <span className="truncate text-[12.5px] text-slate-200">{d.title}</span>
+                          <button
+                            className="min-w-0 truncate text-left text-[12.5px] text-slate-200 hover:text-boss-strong"
+                            title="点击编辑"
+                            onClick={() => openEditor(d)}
+                          >
+                            {d.title}
+                          </button>
                           <span className="ml-auto shrink-0 text-[10px] text-slate-600">{fmtChars(d.chars)}</span>
                           <button
-                            className="shrink-0 text-[11px] text-slate-600 opacity-0 transition group-hover:opacity-100 hover:text-rose-400"
+                            className="shrink-0 text-[11px] text-slate-500 hover:text-boss-strong"
+                            title="编辑这篇文档"
+                            onClick={() => openEditor(d)}
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            className="shrink-0 text-[11px] text-slate-600 hover:text-rose-400"
                             onClick={() => deleteDoc(d)}
                             title={t('common.delete')}
                           >
                             ✕
                           </button>
                         </div>
-                        <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-500">
-                          {d.content?.slice(0, 300)}
-                        </p>
+                        <button
+                          className="mt-1 block w-full text-left"
+                          onClick={() => openEditor(d)}
+                          title="点击编辑"
+                        >
+                          <p className="line-clamp-2 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-500">
+                            {d.content?.slice(0, 300)}
+                          </p>
+                        </button>
                       </div>
                     ))
                   )}

@@ -86,7 +86,16 @@ const CONFIG = {
   DOWNLOAD_MIRROR_DEFAULT,
 
   /** 单次运行的超时（毫秒），默认 20 分钟 */
-  RUN_TIMEOUT: Number(process.env.CHAOS_RUN_TIMEOUT || 20 * 60 * 1000),
+  /**
+   * 9.8.0：任务总时长上限默认**取消**（用户要求「让它做一个任务，完成后再停止」）。
+   * 0 / 负数 = 不限时长，任务跑到自己结束为止；
+   * 真正的兜底改成下面的「空闲看门狗」：连续 RUN_IDLE_TIMEOUT 没有任何输出才判卡死。
+   * 想恢复旧行为可以设环境变量 CHAOS_RUN_TIMEOUT（毫秒）。
+   */
+  RUN_TIMEOUT: Number(process.env.CHAOS_RUN_TIMEOUT || 0),
+
+  /** 连续多久没有任何输出判定卡死（默认 15 分钟）。0 = 连这个都不管 */
+  RUN_IDLE_TIMEOUT: Number(process.env.CHAOS_RUN_IDLE_TIMEOUT || 15 * 60 * 1000),
 
   /** 任务默认执行路径 */
   DEFAULT_CWD: process.env.CHAOS_DEFAULT_CWD || path.join(os.homedir(), 'ChaosWorkspace'),

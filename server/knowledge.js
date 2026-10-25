@@ -147,6 +147,34 @@ function addDoc(kbId, { title, content, source = '' } = {}) {
   return { ok: true, data: rowToDoc(db.get('SELECT * FROM knowledge_docs WHERE id = ?', [doc.id])) }
 }
 
+/**
+ * 9.8.0：在应用内编辑已有文档（用户要求「知识库要可以创建编辑文件在应用内」）。
+ * 只改传进来的字段；标题/内容都要过和新建一样的校验。
+ */
+function updateDoc(kbId, docId, { title, content, source } = {}) {
+  const row = db.get('SELECT * FROM knowledge_docs WHERE id = ? AND kb_id = ?', [docId, kbId])
+  if (!row) return { ok: false, error: '文档不存在' }
+
+  const nextTitle = title !== undefined ? String(title || '').trim().slice(0, 200) : row.title
+  if (!nextTitle) return { ok: false, error: '请填写文档标题' }
+  const nextContent = content !== undefined ? String(content || '') : row.content
+  if (!nextContent.trim()) return { ok: false, error: '文档内容不能为空' }
+  if (nextContent.length > MAX_DOC_CHARS) {
+    return { ok: false, error: `单篇文档不能超过 ${Math.round(MAX_DOC_CHARS / 1024)} KB` }
+  }
+  const nextSource = source !== undefined ? String(source || '').slice(0, 200) : row.source
+
+  db.run('UPDATE knowledge_docs SET title = ?, content = ?, source = ? WHERE id = ?', [
+    nextTitle,
+    nextContent,
+    nextSource,
+    docId,
+  ])
+  db.run('UPDATE knowledge_bases SET updated_at = ? WHERE id = ?', [now(), kbId])
+  emitChanged()
+  return { ok: true, data: rowToDoc(db.get('SELECT * FROM knowledge_docs WHERE id = ?', [docId])) }
+}
+
 function deleteDoc(kbId, docId) {
   const r = db.get('SELECT * FROM knowledge_docs WHERE id = ? AND kb_id = ?', [docId, kbId])
   if (!r) return { ok: false, error: '文档不存在' }
@@ -371,6 +399,7 @@ module.exports = {
   deleteKb,
   listDocs,
   addDoc,
+  updateDoc,
   deleteDoc,
   importKb,
   exportKb,

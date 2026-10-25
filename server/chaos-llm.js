@@ -981,6 +981,72 @@ async function ensureUp() {
   return ensureServerUp({}, ollamaBin())
 }
 
+/**
+ * 9.8.0：**开机自动就绪**（用户要求：每次打开应用，混沌要自动就绪）。
+ *
+ * 三步：
+ *   1. 引擎没在跑 → detached 拉起 `ollama serve`
+ *   2. 挑一个已安装的模型，已经驻留就跳过
+ *   3. 发一个 1 token 的极小请求把它**预加载进内存**（keep_alive 2h），
+ *      这样用户第一次提问不用再等几十秒的冷启动
+ *
+ * 不计量 token（这不是用户请求），也不自动下载模型（4.7G 不能替用户决定）。
+ * 返回 { ok, model, warm, skipped, reason, ms } —— 调用方只用来打日志/发事件。
+ */
+async function warmUp({ keepAlive = '2h', timeoutMs = 300000 } = {}) {
+  const t0 = Date.now()
+  try {
+    // 注意：probe() 只回 { up, models, version }，**不含 installed** ——
+    // 引擎有没有装要看 ollamaBin()（9.8.0 第一版在这里误判成「未安装」直接跳过）
+    const bin = ollamaBin()
+    if (!bin) return { ok: false, skipped: true, reason: 'engine-not-installed', ms: Date.now() - t0 }
+
+    const s = await probe({ force: true })
+    let up = Boolean(s.up)
+    if (!up) up = await ensureServerUp({}, bin)
+    if (!up) return { ok: false, reason: 'serve-failed', ms: Date.now() - t0 }
+
+    // snapshot().models 只有 {id,size}，installed 标志是 catalogFor 才加的 ——
+    // 所以这里用 catalogFor(s.models) 找已安装的，别再去看 .installed（9.8.0 踩过）
+    const model = catalogFor(s.models).find((m) => m.installed)?.id
+    if (!model) return { ok: false, skipped: true, reason: 'no-model', ms: Date.now() - t0 }
+
+    // 已经在内存里就别重复加载
+    try {
+      const res = await fetch(`${baseUrl()}/api/ps`)
+      const body = await res.json()
+      const loaded = (body?.models || []).some((m) => m?.name === model || m?.model === model)
+      if (loaded) return { ok: true, model, reused: true, ms: Date.now() - t0 }
+    } catch (_) {
+      /* /api/ps 拿不到就继续走预加载 */
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(`${baseUrl()}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt: 'ok',
+          stream: false,
+          keep_alive: keepAlive,
+          options: { num_predict: 1 },
+        }),
+        signal: controller.signal,
+      })
+      if (!res.ok) return { ok: false, model, error: `HTTP ${res.status}`, ms: Date.now() - t0 }
+      await res.json()
+      return { ok: true, model, warm: true, ms: Date.now() - t0 }
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch (err) {
+    return { ok: false, error: err.message, ms: Date.now() - t0 }
+  }
+}
+
 module.exports = {
   CATALOG,
   DEFAULT_PULL,
@@ -996,6 +1062,7 @@ module.exports = {
   chat,
   chatWithTools,
   ensureUp,
+  warmUp,
   quickAnswer,
   rewritePrompt,
   arena,

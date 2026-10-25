@@ -3,6 +3,7 @@ import { useStore } from '../store'
 
 /**
  * 9.7.0：手机号绑定闸门。
+ * 9.8.0：手机号下面多了一格兑换码（可选，HY2014）—— 号是必填，码是加档。
  *
  * 用户要求「手机号是必须填了才能用这个应用」—— 所以这是一层**不可关闭**的全屏遮罩：
  * 没绑定之前界面进不去，绑定成功后自动消失（store.bindChaosPhone 会 refreshSystem）。
@@ -11,7 +12,9 @@ import { useStore } from '../store'
  */
 export default function PhoneGate() {
   const bindChaosPhone = useStore((s) => s.bindChaosPhone)
+  const redeemChaosCode = useStore((s) => s.redeemChaosCode)
   const [phone, setPhone] = useState('')
+  const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const inputRef = useRef(null)
@@ -31,7 +34,16 @@ export default function PhoneGate() {
       // 失败时 store 里已经弹了 toast，这里再留一条常驻提示，
       // 免得 10 秒后 toast 消失、用户以为点空了
       const ok = await bindChaosPhone(phone.trim())
-      if (!ok) setErr('绑定没成功，检查一下号码或稍后再试')
+      if (!ok) {
+        setErr('绑定没成功，检查一下号码或稍后再试')
+        return
+      }
+      // 填了兑换码就顺手兑掉；兑失败只提示，不影响已经生效的手机号
+      const c = code.trim()
+      if (c) {
+        const ok2 = await redeemChaosCode(c)
+        if (!ok2) setErr('手机号已绑定，但兑换码没生效，可以在设置里重新兑换')
+      }
     } finally {
       setBusy(false)
     }
@@ -57,21 +69,31 @@ export default function PhoneGate() {
           onKeyDown={(e) => {
             if (e.key === 'Enter') submit()
           }}
-          placeholder="输入手机号（11 位）"
+          placeholder="输入手机号（11 位，必填）"
           inputMode="tel"
           className="field w-full py-2 text-center font-mono text-[14px] tracking-[0.15em]"
         />
 
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 24))}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit()
+          }}
+          placeholder="兑换码（可选）"
+          className="field mt-2 w-full py-2 text-center font-mono text-[13px] tracking-[0.2em]"
+        />
+
         <button className="btn-primary mt-3 w-full py-2" disabled={!valid || busy} onClick={submit}>
-          {busy ? '绑定中…' : '绑定并开始使用'}
+          {busy ? '提交中…' : code.trim() ? '绑定并兑换' : '绑定并开始使用'}
         </button>
 
         {err && <p className="mt-2 text-center text-[11px] text-rose-400">{err}</p>}
 
         <ul className="mt-3 space-y-1 text-[10.5px] leading-relaxed text-slate-500">
-          <li>· 每个手机号每天 3000 万 token，跨天自动恢复</li>
+          <li>· 手机号必填：每个号每天 3000 万 token，跨天自动恢复</li>
+          <li>· 兑换码选填：HY2014 可解锁不限量额度</li>
           <li>· 号码只保存在本机数据库，不上传任何服务器</li>
-          <li>· 换电脑重新绑定同一个号即可，额度按号计算</li>
         </ul>
       </div>
     </div>

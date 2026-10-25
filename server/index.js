@@ -160,7 +160,9 @@ app.get('/api/system', requireAuth, (_req, res) => {
       // 知识库与混沌本地大模型
       kb: knowledge.summary(),
       kbInjectEnabled: store.getSetting('kbInjectEnabled', '1') === '1',
-      chaos: chaosLlm.summary(),
+      // 9.8.0：专家中心页读的是 system.chaos.experts —— 以前 summary() 里没有这个字段，
+      // 于是「专家中心」永远显示「先把混沌装好」，点哪个都没反应（用户报的 bug）。
+      chaos: { ...chaosLlm.summary(), experts: chaosLlm.EXPERTS.map((e) => ({ id: e.id, label: e.label, emoji: e.emoji, prompt: e.prompt })) },
       chaosExpert: store.getSetting('chaosExpert', 'default'),
       chaosGuideDone: store.getSetting('chaosGuideDone', '0') === '1',
       // 9.3.8：第三方 API（OpenAI 兼容）配置状态 —— 密钥不回传，只给「配没配」
@@ -909,6 +911,13 @@ app.delete('/api/kb/:id/docs/:docId', requireAuth, (req, res) => {
   res.json(r)
 })
 
+/* 9.8.0：在应用内改文档（标题 / 正文），不用导出再导入 */
+app.patch('/api/kb/:id/docs/:docId', requireAuth, (req, res) => {
+  const r = knowledge.updateDoc(req.params.id, req.params.docId, req.body || {})
+  if (!r.ok) return res.status(r.error === '文档不存在' ? 404 : 400).json(r)
+  res.json(r)
+})
+
 /** 导出：?format=json|md。走 download() 的 content-disposition 通道 */
 app.get('/api/kb/:id/export', requireAuth, (req, res) => {
   const r = knowledge.exportKb(req.params.id, req.query.format === 'md' ? 'md' : 'json')
@@ -1054,16 +1063,18 @@ app.get('/api/chaos/quota', requireAuth, (_req, res) => {
   res.json({ ok: true, data: quota.publicUsage() })
 })
 
-/* 9.5.4：原「兑换码」接口改为手机号绑定（每个手机号每天 3000 万 token）。
-   旧路径保留别名接受 phone，兼容还没更新的调用方。 */
+/* 9.5.4：填手机号激活额度（每个手机号每天 3000 万 token）。 */
 app.post('/api/chaos/phone', requireAuth, (req, res) => {
   const r = quota.bindPhone(req.body?.phone)
   if (!r.ok) return res.status(400).json(r)
   res.json(r)
 })
 
+/* 9.8.0：兑换码回来了 —— 手机号下方那一格（可选）。
+   前置仍是手机号：没绑号不允许兑换，避免绕过「必须填手机号」。
+   码表在 server/chaos-quota.js 的 REDEEM_CODES，前端不参与判定。 */
 app.post('/api/chaos/redeem', requireAuth, (req, res) => {
-  const r = quota.bindPhone(req.body?.phone || req.body?.code)
+  const r = quota.redeem(req.body?.code)
   if (!r.ok) return res.status(400).json(r)
   res.json(r)
 })
@@ -1071,6 +1082,7 @@ app.post('/api/chaos/redeem', requireAuth, (req, res) => {
 /* ---- 9.5.4：AIPPT（主题 + 页数 + 语气 → 本地生成 .pptx） ---- */
 
 const aippt = require('./aippt')
+const aipptImage = require('./aippt-image')
 
 app.get('/api/aippt/list', requireAuth, (_req, res) => {
   res.json({ ok: true, data: aippt.listFiles() })
@@ -1086,6 +1098,7 @@ app.post('/api/aippt/generate', requireAuth, async (req, res) => {
       language: req.body?.language,
       audience: req.body?.audience,
       withToc: req.body?.withToc,
+      withImages: req.body?.withImages !== false,
       model: req.body?.model,
     })
     if (!r.ok) return res.status(400).json(r)
@@ -1094,6 +1107,86 @@ app.post('/api/aippt/generate', requireAuth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
   }
+})
+
+/**
+ * 9.8.0：流式生成（SSE）。
+ *
+ * 前端用 fetch + ReadableStream 读，事件形如：
+ *   {type:'phase', phase:'plan'|'outline'|'image'|'render', label}
+ *   {type:'delta', phase, text}          推理 / JSON 的增量文本
+ *   {type:'progress', done, total}       配图进度
+ *   {type:'outline', outline}            大纲成形（可以先渲染出来给用户看）
+ *   {type:'done', result} / {type:'error', error}
+ *
+ * 为什么要 SSE 而不是 WebSocket：这条流是「一次请求一段输出」的单向流，
+ * SSE 天生就是干这个的，断线也不会影响别的页面（ws 是全站广播，容易串台）。
+ */
+app.post('/api/aippt/stream', requireAuth, async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.write(': ok\n\n')
+
+  let closed = false
+  // 注意：这里必须监听 **res** 的 close，不能监听 req 的 close。
+  // POST 的请求体被 body-parser 读完之后 req 就会 emit 'close'，
+  // 监听 req 会在生成还没开始时就置 closed=true，后面所有事件全被吞掉、
+  // 连接也不 end —— 前端表现为「一直转圈，什么都不显示」（9.8.0 踩过）。
+  res.on('close', () => {
+    closed = true
+  })
+  req.on('aborted', () => {
+    closed = true
+  })
+  const write = (ev) => {
+    if (closed) return
+    try {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`)
+    } catch (_) {
+      closed = true
+    }
+  }
+  // 心跳：模型冷启动可能几十秒没输出，防止中间层把连接掐掉
+  const hb = setInterval(() => {
+    if (!closed) res.write(': ping\n\n')
+  }, 15000)
+
+  try {
+    const r = await aippt.generate(
+      {
+        topic: req.body?.topic,
+        pages: req.body?.pages,
+        tone: req.body?.tone,
+        theme: req.body?.theme,
+        language: req.body?.language,
+        audience: req.body?.audience,
+        withToc: req.body?.withToc,
+        withImages: req.body?.withImages !== false,
+        model: req.body?.model,
+      },
+      write,
+    )
+    if (r.ok) store.bus.emit('chaos:changed', { reason: 'aippt-generated' })
+    else write({ type: 'error', error: r.error || '生成失败', code: r.code })
+  } catch (err) {
+    write({ type: 'error', error: err.message })
+  } finally {
+    clearInterval(hb)
+    if (!closed) res.end()
+  }
+})
+
+/* 9.8.0：配图文件（前端预览 + 可能的模板缩略图） */
+app.get('/api/aippt/image', requireAuth, (req, res) => {
+  const hit = aipptImage.resolveImage(req.query?.name)
+  if (!hit) return res.status(404).json({ ok: false, error: '图片不存在' })
+  res.setHeader('Content-Type', hit.type)
+  res.setHeader('Cache-Control', 'public, max-age=604800')
+  res.send(fs.readFileSync(hit.file))
 })
 
 /* 9.6.1：改完大纲直接重渲染（不再跑一次模型） */
@@ -1760,6 +1853,29 @@ async function start() {
   // maybeAutoUpdateWhenIdle）——那里本来就有调度器，服务端不再重复起一个。
 
   queue.recoverOnStartup()
+
+  /**
+   * 9.8.0：打开应用就让混沌自动就绪（用户要求）。
+   *
+   * 延后 5 秒是为了不跟首屏抢资源：引擎没起就 detached 拉起 serve，
+   * 再把已安装的首选模型预加载进内存（keep_alive 2h）。
+   * 没装引擎 / 没下模型都安静跳过 —— 绝不替用户下载几个 G 的东西。
+   */
+  setTimeout(() => {
+    chaosLlm
+      .warmUp()
+      .then((r) => {
+        if (r?.ok) {
+          console.log(`[chaos] 已就绪：${r.model}${r.warm ? '（本轮预加载）' : '（已在内存）'} ${r.ms}ms`)
+          store.bus.emit('chaos:changed', { reason: 'chaos-warm', model: r.model })
+        } else if (r?.skipped) {
+          console.log(`[chaos] 跳过自动就绪：${r.reason}`)
+        } else {
+          console.log(`[chaos] 自动就绪未完成：${r?.reason || r?.error || 'unknown'}`)
+        }
+      })
+      .catch((err) => console.error('[chaos] 自动就绪异常:', err.message))
+  }, 5000)
 
   // 启动后的 MCP 维护（都不阻塞、都不装包）：
   //  1. 清理上次崩溃留下的运行期配置

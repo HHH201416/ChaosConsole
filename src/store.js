@@ -1329,6 +1329,30 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /* ---- 9.8.0：兑换码（手机号下方那一格，可选） ---- */
+  async redeemChaosCode(code) {
+    const c = String(code || '').trim()
+    if (!c) {
+      get().toast('请输入兑换码', 'error')
+      return false
+    }
+    try {
+      const res = await api.chaosRedeem(c)
+      if (!res.ok) throw new Error(res.error || '兑换失败')
+      const d = res.data || {}
+      get().toast(
+        d.repeat ? `兑换码 ${d.code} 已经用过了，额度继续不限量` : `兑换成功：${d.label || d.code} · ${d.note || '额度已升级'}`,
+        'success',
+      )
+      await get().loadChaosStatus()
+      await get().refreshSystem()
+      return true
+    } catch (err) {
+      get().toast(err.message, 'error')
+      return false
+    }
+  },
+
   /* ---- 混沌 · 本地大模型 ---- */
   async loadChaosStatus() {
     try {
@@ -1718,6 +1742,8 @@ function handleServerMessageRaw(msg) {
       // 8.0.2：记忆/自动化被别处（比如自动化自己开跑了新对话）改动时保持同步
       useStore.getState().loadChaosMemory()
       useStore.getState().loadChaosAutomations()
+      // 9.8.0：开机自动就绪 / 兑换码 / 绑定手机号都会推这个事件，顺手刷引擎状态
+      useStore.getState().loadChaosStatus()
       if (payload?.reason === 'automation-fired') {
         useStore.getState().refreshConversations()
         useStore.getState().toast(`定时自动化「${payload.name || ''}」已自动开跑`, 'info')

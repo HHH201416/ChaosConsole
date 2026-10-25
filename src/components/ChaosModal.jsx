@@ -6,18 +6,23 @@ import { useT } from '../lib/useT'
 /**
  * 8.0.2：Token 额度卡片。
  * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
- * 9.5.4：原「兑换码」改为填手机号 —— 每个手机号每天 3000 万 token。
+ * 9.5.4：填手机号激活（每个手机号每天 3000 万 token）。
+ * 9.8.0：手机号下面补回兑换码（可选，HY2014 解锁不限量）—— 号是必填，码是加档。
  */
 function TokenCard() {
   const status = useStore((s) => s.chaosStatus)
   const bindChaosPhone = useStore((s) => s.bindChaosPhone)
+  const redeemChaosCode = useStore((s) => s.redeemChaosCode)
   const [phone, setPhone] = useState('')
+  const [code, setCode] = useState('')
 
   const q = status?.quota
   if (!q) return null
   const pct = q.unlimited ? 100 : Math.min(100, Math.round(((q.remaining || 0) / q.dailyFree) * 100))
   const digits = phone.replace(/\D/g, '')
   const canBind = /^1[3-9]\d{9}$/.test(digits)
+  const canRedeem = code.trim().length >= 4
+  const masked = (v) => String(v || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')
 
   return (
     <div className="mt-4 rounded-lg border border-ink-500 bg-ink-900 p-3">
@@ -32,10 +37,9 @@ function TokenCard() {
             <span className="chip">已用 {Number(q.usedToday).toLocaleString()}</span>
           </>
         )}
-        {q.phone && (
-          <span className="chip bg-sky-500/15 text-sky-300">
-            已绑定 {String(q.phone).replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')}
-          </span>
+        {q.phone && <span className="chip bg-sky-500/15 text-sky-300">已绑定 {masked(q.phone)}</span>}
+        {q.unlimited && q.redeemCode && (
+          <span className="chip bg-violet-500/15 text-violet-300">兑换码 {q.redeemCode}</span>
         )}
       </div>
       {!q.unlimited && (
@@ -45,7 +49,10 @@ function TokenCard() {
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
         手机号是必填项：绑定后每天 3000 万 token（0 点自动恢复）。换号直接填新号，旧号保留登记。
+        兑换码选填，填 HY2014 可解锁不限量。
       </p>
+
+      {/* 手机号 */}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input
           value={phone}
@@ -55,7 +62,7 @@ function TokenCard() {
               if (bindChaosPhone(phone.trim())) setPhone('')
             }
           }}
-          placeholder={q.phone ? `当前 ${String(q.phone).replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2")}，换号请填新号码` : "输入手机号（必填）"}
+          placeholder={q.phone ? `当前 ${masked(q.phone)}，换号请填新号码` : '输入手机号（必填）'}
           inputMode="numeric"
           maxLength={14}
           className="field min-w-0 flex-1 py-1 font-mono text-[11px]"
@@ -68,6 +75,30 @@ function TokenCard() {
           }}
         >
           {q.phone ? '换号' : '绑定'}
+        </button>
+      </div>
+
+      {/* 兑换码（手机号下方，可选） */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 24))}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && canRedeem) {
+              if (redeemChaosCode(code.trim())) setCode('')
+            }
+          }}
+          placeholder="兑换码（可选，HY2014）"
+          className="field min-w-0 flex-1 py-1 font-mono text-[11px] tracking-[0.1em]"
+        />
+        <button
+          className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
+          disabled={!canRedeem}
+          onClick={async () => {
+            if (await redeemChaosCode(code.trim())) setCode('')
+          }}
+        >
+          兑换
         </button>
       </div>
     </div>

@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.9\.7"/, '版本为 9.9.7')
+must('package.json', /"version": "10\.0\.0"/, '版本为 10.0.0')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -325,7 +325,17 @@ must('src/components/AipptPage.jsx', /THEMES\.map\(\(th\) => \(/, '模板选择�
 must('src/components/AipptPage.jsx', /kind === 'stats'/, '预览按页型渲染（数据卡）')
 must('src/components/AipptPage.jsx', /自动配图（按内容决定张数）/, '有配图开关')
 must('src/lib/changelog.js', /AIPPT 自动配图/, '9.8.0 版本简介写了配图能力')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '9\.9\.7'/, '更新日志首条是 9.9.7')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.0'/, '更新日志首条是 10.0.0')
+must('src/components/ImagePage.jsx', /imageDelete/, '生成的图片可以删除')
+must('src/components/ImagePage.jsx', /imageClear/, '生成的图片可以清空')
+must('src/components/ImagePage.jsx', /画质增强/, '绘图有画质增强开关（Sora 式扩写提示词）')
+must('server/index.js', /app\.post\('\/api\/image\/delete'/, '服务端有图片删除接口')
+must('server/aippt-image.js', /function deleteArt\(name\)/, '删除图片按白名单名字校验')
+must('server/aippt-image.js', /async function enhancePrompt/, '有 Sora 式提示词扩写')
+must('server/aippt.js', /sky:/, '模板扩到 10 套（含天空蓝）')
+must('src/components/ErrorBoundary.jsx', /triggerErrorFlash\(\{ severe: true \}\)/, '界面脚本出错触发红色闩锁')
+must('public/error-boot.js', /chaos:ui-error/, '全局脚本错误广播给氛围灯')
+must('server/aippt.js', /WPS 式行卡|行卡|数字章|页脚/, 'AIPPT 版式升级（行卡 / 目录卡 / 页脚）')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

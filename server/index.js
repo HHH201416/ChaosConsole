@@ -1290,6 +1290,8 @@ app.post('/api/image/generate', requireAuth, async (req, res) => {
       style: req.body?.style,
       ratio: req.body?.ratio,
       seed: Number(req.body?.seed) || Math.floor(Math.random() * 90000),
+      /* 10.0.0：画质增强（Sora 式扩写提示词），默认开 */
+      enhance: req.body?.enhance !== false,
     })
     if (!r.ok) return res.status(400).json({ ok: false, error: r.error })
     res.json({ ok: true, data: r })
@@ -1300,6 +1302,25 @@ app.post('/api/image/generate', requireAuth, async (req, res) => {
 
 app.get('/api/image/list', requireAuth, (_req, res) => {
   res.json({ ok: true, data: aipptImage.listArt(40) })
+})
+
+/* 10.0.0：删除生成的图片（单张 / 批量）—— 生成的照片要能删得掉 */
+app.post('/api/image/delete', requireAuth, (req, res) => {
+  const names = Array.isArray(req.body?.names) ? req.body.names : req.body?.name ? [req.body.name] : []
+  if (!names.length) return res.status(400).json({ ok: false, error: '没有指定要删除的图片' })
+  let removed = 0
+  const failed = []
+  for (const n of names.slice(0, 100)) {
+    const r = aipptImage.deleteArt(n)
+    if (r.ok) removed++
+    else failed.push({ name: n, error: r.error })
+  }
+  res.json({ ok: true, removed, failed })
+})
+
+/* 10.0.0：清空全部生成图（只清绘图历史，AIPPT 配图缓存不受影响） */
+app.post('/api/image/clear', requireAuth, (_req, res) => {
+  res.json({ ok: true, removed: aipptImage.clearArt() })
 })
 
 app.get('/api/image/file', requireAuth, (req, res) => {

@@ -158,6 +158,34 @@ const THEMES = {
     tocBg: 'FAFAFA',
     panel: 'F4F4F5',
   },
+  sky: {
+    label: '天空蓝',
+    desc: '清爽天蓝，年轻团队与产品介绍',
+    coverStyle: 'full',
+    coverBg: '082F49',
+    coverTitle: 'FFFFFF',
+    coverSub: 'BAE6FD',
+    pageBg: 'FFFFFF',
+    title: '0C4A6E',
+    text: '334155',
+    accent: '0EA5E9',
+    tocBg: 'F0F9FF',
+    panel: 'E0F2FE',
+  },
+  sand: {
+    label: '暖沙金',
+    desc: '大地暖调，文化与生活类内容',
+    coverStyle: 'split',
+    coverBg: '292018',
+    coverTitle: 'FFFFFF',
+    coverSub: 'FDE68A',
+    pageBg: 'FFFFFF',
+    title: '78350F',
+    text: '44403C',
+    accent: 'D97706',
+    tocBg: 'FFFBEB',
+    panel: 'FEF3C7',
+  },
 }
 
 const LANGS = { zh: '中文', en: 'English' }
@@ -738,6 +766,49 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
       s.addShape('rect', { x: 7.08, y: 0, w: 0.07, h: PAGE_H, fill: { color: T.accent } })
     }
 
+    /* 10.0.0：几何装饰 —— WPS 级封面的底子。右侧一组半透明同心圆 + 顶部细线，
+     * 没有配图时封面不再是一块纯色板；有图时压在图上也有层次 */
+    if (!split) {
+      s.addShape('ellipse', {
+        x: PAGE_W - 3.4,
+        y: -1.6,
+        w: 5.2,
+        h: 5.2,
+        fill: { color: T.accent, transparency: 88 },
+        line: { color: T.accent, width: 0.5, transparency: 70 },
+      })
+      s.addShape('ellipse', {
+        x: PAGE_W - 2.1,
+        y: 4.9,
+        w: 3.1,
+        h: 3.1,
+        fill: { color: T.accent, transparency: 82 },
+        line: { color: T.accent, width: 0.5, transparency: 60 },
+      })
+      s.addShape('ellipse', {
+        x: PAGE_W - 1.35,
+        y: 0.85,
+        w: 1.5,
+        h: 1.5,
+        fill: { color: T.accent, transparency: 62 },
+      })
+    }
+    /* 顶边强调线：细一条，压住整个版面 */
+    s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 0.07, fill: { color: T.accent } })
+
+    /* 封面眉标：小字注明演示文稿性质，WPS 模板的标配 */
+    s.addText(lang === 'en' ? 'PRESENTATION' : '演 示 文 稿', {
+      x: 1.22,
+      y: 1.52,
+      w: 3.5,
+      h: 0.32,
+      fontSize: 11,
+      bold: true,
+      color: T.accent,
+      charSpacing: 3,
+      fontFace: F,
+    })
+
     s.addShape('rect', { x: 0.85, y: 2.1, w: 0.16, h: 1.25, fill: { color: T.accent } })
     s.addText(outline.title || cover.title || '未命名演示文稿', {
       x: 1.2,
@@ -763,9 +834,11 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
         fit: 'shrink',
       })
     }
+    /* 底部信息行：日期 + 主题色小方块，收口 */
+    s.addShape('rect', { x: 1.24, y: 6.47, w: 0.26, h: 0.075, fill: { color: T.accent } })
     s.addText(new Date().toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN'), {
-      x: 1.24,
-      y: 6.35,
+      x: 1.6,
+      y: 6.28,
       w: 4,
       h: 0.4,
       fontSize: 11,
@@ -789,21 +862,66 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
       fontFace: F,
     })
     toc.addShape('rect', { x: 0.8, y: 1.5, w: 1.2, h: 0.06, fill: { color: T.accent } })
+    /* 右上角同心圆装饰，和封面呼应 */
+    toc.addShape('ellipse', {
+      x: PAGE_W - 1.5,
+      y: -0.9,
+      w: 2.6,
+      h: 2.6,
+      fill: { color: T.accent, transparency: 88 },
+      line: { color: T.accent, width: 0.5, transparency: 70 },
+    })
+
     const items = slides
       .slice(1, -1)
-      .map((s, i) => ({
-        text: `${String(i + 1).padStart(2, '0')}   ${s.title}`,
-        options: { breakLine: true, fontSize: 15, color: T.text, fontFace: F },
-      }))
-    toc.addText(items.length ? items : [{ text: '—', options: { fontSize: 15, color: T.text } }], {
-      x: 1.0,
-      y: 1.95,
-      w: 11,
-      h: 4.6,
-      lineSpacingMultiple: 1.75,
-      valign: 'top',
-      fit: 'shrink',
-    })
+      .map((s, i) => ({ no: String(i + 1).padStart(2, '0'), text: s.title }))
+    /* 10.0.0：目录改成 WPS 式双栏数字卡 —— 单列排超过 6 条就开始密得难读；
+     * 两栏 + 数字章，一眼能扫完 */
+    if (items.length) {
+      const twoCol = items.length > 4
+      const colW = twoCol ? 5.55 : 11.2
+      const perCol = twoCol ? Math.ceil(items.length / 2) : items.length
+      const rowH = Math.min(0.86, (PAGE_H - 2.2 - 0.4) / Math.max(perCol, 1))
+      items.forEach((it, k) => {
+        const col = twoCol ? Math.floor(k / perCol) : 0
+        const row = twoCol ? k % perCol : k
+        const x = 0.9 + col * (colW + 0.45)
+        const y = 1.95 + row * rowH
+        toc.addShape('rect', {
+          x,
+          y,
+          w: 0.52,
+          h: 0.52,
+          fill: { color: T.accent },
+          rectRadius: 0.08,
+        })
+        toc.addText(it.no, {
+          x,
+          y,
+          w: 0.52,
+          h: 0.52,
+          fontSize: 15,
+          bold: true,
+          color: 'FFFFFF',
+          align: 'center',
+          valign: 'middle',
+          fontFace: F,
+        })
+        toc.addText(it.text, {
+          x: x + 0.72,
+          y,
+          w: colW - 0.8,
+          h: 0.52,
+          fontSize: 14,
+          color: T.text,
+          valign: 'middle',
+          fontFace: F,
+          fit: 'shrink',
+        })
+      })
+    } else {
+      toc.addText('—', { x: 1.0, y: 1.95, w: 11, h: 4.6, fontSize: 15, color: T.text, fontFace: F })
+    }
   }
 
   /* ---------------- 内容页 ---------------- */
@@ -820,6 +938,25 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
         s.addImage({ path: pic, x: 0, y: 0, w: PAGE_W, h: PAGE_H })
         s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: PAGE_H, fill: { color: '000000', transparency: 55 } })
       }
+      /* 10.0.0：结尾页同款几何装饰 —— 与封面首尾呼应 */
+      if (!pic) {
+        s.addShape('ellipse', {
+          x: -1.7,
+          y: PAGE_H - 3.2,
+          w: 5,
+          h: 5,
+          fill: { color: T.accent, transparency: 88 },
+          line: { color: T.accent, width: 0.5, transparency: 70 },
+        })
+        s.addShape('ellipse', {
+          x: PAGE_W - 1.9,
+          y: -1.2,
+          w: 3.4,
+          h: 3.4,
+          fill: { color: T.accent, transparency: 84 },
+        })
+      }
+      s.addShape('rect', { x: 0, y: PAGE_H - 0.07, w: PAGE_W, h: 0.07, fill: { color: T.accent } })
       s.addShape('rect', { x: PAGE_W / 2 - 0.6, y: 2.35, w: 1.2, h: 0.06, fill: { color: T.accent } })
       s.addText(sl.title, {
         x: 1.2,
@@ -857,6 +994,11 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
     }
 
     s.background = { color: T.pageBg }
+
+    /* 10.0.0：右上角几何角标 —— 两小一大的主题色圆点，呼应封面装饰，
+     * 让内容页不再只是「白纸 + 黑字」 */
+    s.addShape('ellipse', { x: PAGE_W - 0.82, y: 0.42, w: 0.3, h: 0.3, fill: { color: T.accent, transparency: 55 } })
+    s.addShape('ellipse', { x: PAGE_W - 0.62, y: 0.78, w: 0.16, h: 0.16, fill: { color: T.accent, transparency: 30 } })
 
     /* 页眉：kicker + 标题 + 强调线 */
     if (sl.kicker) {
@@ -899,26 +1041,59 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
     if (sl.kind === 'bullets' || sl.kind === 'cover') {
       const twoCol = Boolean(pic)
       const textW = twoCol ? 6.0 : PAGE_W - 1.9
-      const items = (sl.body?.length ? sl.body : ['（本页暂无内容）']).map((t) => ({
-        text: t,
-        options: {
-          bullet: { code: '25CF' },
-          breakLine: true,
-          paraSpaceAfter: 10,
-          fontSize: sl.body.length <= 3 ? 18 : sl.body.length === 4 ? 16.5 : 15,
-          color: T.text,
-          fontFace: F,
-        },
-      }))
-      s.addText(items, {
-        x: 0.95,
-        y: bodyTop,
-        w: textW,
-        h: bodyH,
-        lineSpacingMultiple: 1.28,
-        valign: 'top',
-        fit: 'shrink',
-      })
+
+      /* 10.0.0：少要点 → WPS 式行卡。要点不超过 4 条且没配图时，
+       * 每条要点一张浅色圆角卡 + 左侧主题色竖条，比光秃秃的圆点列表高级得多 */
+      const rows = sl.body || []
+      if (!twoCol && rows.length >= 2 && rows.length <= 4) {
+        const gap = 0.22
+        const rowH = Math.min(1.15, (bodyH - gap * (rows.length - 1)) / rows.length)
+        rows.forEach((t, k) => {
+          const y = bodyTop + k * (rowH + gap)
+          s.addShape('rect', {
+            x: 0.9,
+            y,
+            w: PAGE_W - 1.8,
+            h: rowH,
+            fill: { color: T.panel },
+            line: { color: T.panel, width: 1 },
+            rectRadius: 0.07,
+          })
+          s.addShape('rect', { x: 0.9, y: y + 0.14, w: 0.07, h: rowH - 0.28, fill: { color: T.accent } })
+          s.addText(t, {
+            x: 1.24,
+            y,
+            w: PAGE_W - 2.5,
+            h: rowH,
+            fontSize: rows.length <= 3 ? 16.5 : 15,
+            color: T.text,
+            valign: 'middle',
+            fontFace: F,
+            fit: 'shrink',
+          })
+        })
+      } else {
+        const items = (rows.length ? rows : ['（本页暂无内容）']).map((t) => ({
+          text: t,
+          options: {
+            bullet: { code: '25CF' },
+            breakLine: true,
+            paraSpaceAfter: 10,
+            fontSize: rows.length <= 3 ? 18 : rows.length === 4 ? 16.5 : 15,
+            color: T.text,
+            fontFace: F,
+          },
+        }))
+        s.addText(items, {
+          x: 0.95,
+          y: bodyTop,
+          w: textW,
+          h: bodyH,
+          lineSpacingMultiple: 1.28,
+          valign: 'top',
+          fit: 'shrink',
+        })
+      }
       if (twoCol) {
         s.addImage({ path: pic, x: 7.35, y: bodyTop + 0.25, w: 5.25, h: 2.95 })
         s.addShape('rect', { x: 7.35, y: bodyTop + 3.35, w: 0.9, h: 0.045, fill: { color: T.accent } })
@@ -990,6 +1165,8 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
           line: { color: T.panel, width: 1 },
           rectRadius: 0.08,
         })
+        /* 10.0.0：卡片顶部主题色条 —— 数据卡的视觉锚点 */
+        s.addShape('rect', { x: x + 0.32, y: bodyTop + 0.15, w: cardW - 0.64, h: 0.06, fill: { color: T.accent } })
         s.addText(st.v, {
           x,
           y: bodyTop + 0.42,
@@ -1031,6 +1208,18 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
 
     /* ---- 版式 4：金句 ---- */
     if (sl.kind === 'quote') {
+      /* 10.0.0：巨型引号压底 —— 金句页的辨识度全靠它 */
+      s.addText('“', {
+        x: 0.72,
+        y: bodyTop - 0.35,
+        w: 2.2,
+        h: 2.2,
+        fontSize: 130,
+        bold: true,
+        color: T.accent,
+        transparency: 78,
+        fontFace: F,
+      })
       s.addShape('rect', { x: 0.9, y: bodyTop + 0.1, w: 0.14, h: 2.6, fill: { color: T.accent } })
       s.addText(sl.body?.[0] || sl.title, {
         x: 1.35,
@@ -1057,10 +1246,21 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
       }
     }
 
-    /* 页码 */
+    /* 10.0.0：页脚 —— 细分隔线 + 左侧稿题 + 右侧页码，WPS 模板的收尾标配 */
+    s.addShape('rect', { x: 0.75, y: PAGE_H - 0.5, w: PAGE_W - 1.5, h: 0.012, fill: { color: 'CBD5E1' } })
+    s.addText(outline.title || '', {
+      x: 0.75,
+      y: PAGE_H - 0.45,
+      w: 5.5,
+      h: 0.3,
+      fontSize: 8.5,
+      color: '94A3B8',
+      fontFace: F,
+      fit: 'shrink',
+    })
     s.addText(`${pageNo} / ${total}`, {
       x: PAGE_W - 1.5,
-      y: PAGE_H - 0.55,
+      y: PAGE_H - 0.45,
       w: 0.9,
       h: 0.3,
       fontSize: 9.5,

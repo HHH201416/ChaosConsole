@@ -36,6 +36,8 @@ const THEMES = [
   { id: 'ocean', label: '深海青', desc: '青蓝冷静', coverStyle: 'split', coverBg: '#042F2E', coverTitle: '#FFFFFF', coverSub: '#99F6E4', pageBg: '#FFFFFF', title: '#134E4A', text: '#334155', accent: '#0D9488', tocBg: '#F0FDFA', panel: '#E7F8F4' },
   { id: 'crimson', label: '玫瑰红', desc: '沉稳酒红', coverStyle: 'full', coverBg: '#2B0A14', coverTitle: '#FFFFFF', coverSub: '#FDA4AF', pageBg: '#FFFFFF', title: '#4C0519', text: '#3F3F46', accent: '#E11D48', tocBg: '#FFF1F2', panel: '#FFE4E6' },
   { id: 'graphite', label: '石墨灰', desc: '黑白灰最保险', coverStyle: 'band', coverBg: '#E4E4E7', coverTitle: '#18181B', coverSub: '#52525B', pageBg: '#FFFFFF', title: '#18181B', text: '#3F3F46', accent: '#18181B', tocBg: '#FAFAFA', panel: '#F4F4F5' },
+  { id: 'sky', label: '天空蓝', desc: '清爽天蓝，产品介绍', coverStyle: 'full', coverBg: '#082F49', coverTitle: '#FFFFFF', coverSub: '#BAE6FD', pageBg: '#FFFFFF', title: '#0C4A6E', text: '#334155', accent: '#0EA5E9', tocBg: '#F0F9FF', panel: '#E0F2FE' },
+  { id: 'sand', label: '暖沙金', desc: '大地暖调，文化生活', coverStyle: 'split', coverBg: '#292018', coverTitle: '#FFFFFF', coverSub: '#FDE68A', pageBg: '#FFFFFF', title: '#78350F', text: '#44403C', accent: '#D97706', tocBg: '#FFFBEB', panel: '#FEF3C7' },
 ]
 
 const EXAMPLES = ['新能源汽车行业分析', '鸿蒙应用开发入门', '季度工作总结汇报', 'AI 大模型技术演进']
@@ -705,7 +707,7 @@ export default function AipptPage() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-xl">🖼️</span>
           <h2 className="text-[15px] font-semibold text-slate-100">AIPPT · 一句话生成 PPT</h2>
-          <span className="chip">先推理再成稿 · 自动配图 · 8 套模板</span>
+          <span className="chip">先推理再成稿 · 自动配图 · 10 套模板</span>
         </div>
 
         {/* 9.8.2：预览框放大 —— 以前右栏只有 23rem，幻灯片小到看不清正文；

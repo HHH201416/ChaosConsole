@@ -1,4 +1,5 @@
 import { Component } from 'react'
+import { useStore } from '../store'
 
 /**
  * 9.5.5：渲染错误兜底（Error Boundary）。
@@ -26,6 +27,12 @@ export default class ErrorBoundary extends Component {
     this.setState({ stack })
     // 保留到控制台，方便排查；error-boot 的浮层同样会显示
     console.error('[ChaosConsole] 界面组件渲染失败：', error, '\n组件栈：', stack)
+    // 10.0.0：界面脚本出错 = 严重错误，氛围灯红色闩锁常亮直到修复
+    try {
+      useStore.getState().triggerErrorFlash({ severe: true })
+    } catch (_) {
+      /* 氛围灯失败不影响错误处理 */
+    }
     if (typeof this.props.onError === 'function') {
       try {
         this.props.onError(error, stack)

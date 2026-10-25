@@ -31,32 +31,51 @@ if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true })
 const W = 1280
 const H = 720
 
-/* 独立绘图（高质量单图）用的尺寸预设 */
+/* 独立绘图（高质量单图）用的尺寸预设。
+ * 10.0.0：分辨率全面上调 —— Sora 级画质的底线是「放大到全屏也不糊」，
+ * 16:9 从 1280×720 拉到 1536×864，方形/竖屏同步加码（flux 对这个尺寸段
+ * 出图稳定，再大反而容易超时）。 */
 const ART_DIR = path.join(CONFIG.DATA_DIR, 'art')
 if (!fs.existsSync(ART_DIR)) fs.mkdirSync(ART_DIR, { recursive: true })
 
 const RATIOS = {
-  '16:9': [1280, 720],
-  '4:3': [1152, 864],
-  '1:1': [1024, 1024],
-  '3:4': [864, 1152],
-  '9:16': [720, 1280],
+  '16:9': [1536, 864],
+  '4:3': [1440, 1080],
+  '1:1': [1152, 1152],
+  '3:4': [1080, 1440],
+  '9:16': [864, 1536],
 }
 
 /**
  * 风格词表。文生图模型对「photograph / cinematic」这类英文风格词的响应，
  * 明显好于中文形容词，所以这里统一翻成英文短语拼在提示词后面。
+ * 10.0.0：每条都补上光线 / 材质 / 构图细节 —— Sora 级画质的差距就在这些词上。
  */
 const ART_STYLES = {
-  photo: 'professional photograph, natural lighting, sharp focus, shallow depth of field, high detail',
-  illustration: 'flat modern vector illustration, soft gradient background, clean minimal composition, subtle geometric shapes',
-  cinematic: 'cinematic film still, dramatic volumetric lighting, anamorphic lens, high dynamic range',
-  threed: '3d render, soft studio lighting, glossy materials, subsurface scattering, octane style',
-  minimal: 'minimalist design, generous negative space, two-tone palette, crisp edges',
-  ink: 'traditional chinese ink painting, rice paper texture, elegant brush strokes, muted colors',
+  photo:
+    'professional photograph, natural lighting, sharp focus, shallow depth of field, ' +
+    'high detail, realistic skin and material textures, 35mm lens, balanced color grading',
+  illustration:
+    'flat modern vector illustration, soft gradient background, clean minimal composition, ' +
+    'subtle geometric shapes, harmonious color palette, crisp vector edges, poster-grade design',
+  cinematic:
+    'cinematic film still, dramatic volumetric lighting, anamorphic lens, high dynamic range, ' +
+    'teal-and-orange color grading, atmospheric haze, film grain, movie keyframe composition',
+  threed:
+    '3d render, soft studio lighting, glossy materials, subsurface scattering, octane style, ' +
+    'physically based materials, gentle ambient occlusion, product-photography polish',
+  minimal:
+    'minimalist design, generous negative space, two-tone palette, crisp edges, ' +
+    'swiss poster layout, precise geometry, museum-print cleanliness',
+  ink:
+    'traditional chinese ink painting, rice paper texture, elegant brush strokes, muted colors, ' +
+    'ink gradient wash, xieyi composition, generous empty space like a scroll painting',
 }
 
 const ART_NEGATIVE = 'no text, no letters, no watermark, no logo, no frame border'
+
+/* 10.0.0：画质兜底词 —— 每一条提示词末尾都带上，把「能看」拉到「能用」 */
+const ART_QUALITY = 'masterpiece quality, ultra detailed, professional composition, rich colors, fine texture detail'
 
 const MAGIC = {
   jpg: 'image/jpeg',
@@ -427,8 +446,53 @@ function clearCache() {
 
 const ART_RE = /^[a-f0-9]{20}\.(jpg|png|webp)$/
 
+/* 10.0.0：绘图元数据旁挂文件 —— 历史记录里能看到当时的描述/风格/画幅，
+ * 也让「删除单张」「清空全部」有的放矢。 */
+const ART_META = path.join(ART_DIR, 'meta.json')
+
+function readArtMeta() {
+  try {
+    const obj = JSON.parse(fs.readFileSync(ART_META, 'utf8'))
+    return obj && typeof obj === 'object' ? obj : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+function writeArtMeta(name, info) {
+  try {
+    const all = readArtMeta()
+    all[name] = { ...info, at: Date.now() }
+    // 元数据只留最近 200 条，别让它无限膨胀
+    const keys = Object.keys(all)
+    if (keys.length > 200) {
+      keys
+        .sort((a, b) => (all[a]?.at || 0) - (all[b]?.at || 0))
+        .slice(0, keys.length - 200)
+        .forEach((k) => delete all[k])
+    }
+    fs.writeFileSync(ART_META, JSON.stringify(all), 'utf8')
+  } catch (_) {
+    /* 元数据写不进去不影响出图 */
+  }
+}
+
+function dropArtMeta(name) {
+  try {
+    const all = readArtMeta()
+    if (all[name]) {
+      delete all[name]
+      fs.writeFileSync(ART_META, JSON.stringify(all), 'utf8')
+    }
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+/* 10.0.0：key 带上画质版本号 —— 分辨率/风格词升级后，旧缓存（720p 时代的图）
+ * 不能再被当成「同一张」返回，否则用户永远看不到新画质 */
 const artKeyOf = (prompt, style, ratio, seed) =>
-  crypto.createHash('sha1').update(`art:${prompt}|${style}|${ratio}|${seed}`).digest('hex').slice(0, 20)
+  crypto.createHash('sha1').update(`art2:${prompt}|${style}|${ratio}|${seed}`).digest('hex').slice(0, 20)
 
 function findArt(key) {
   for (const ext of ['jpg', 'png', 'webp']) {
@@ -442,7 +506,47 @@ function findArt(key) {
 function artPrompt(prompt, style) {
   const base = String(prompt || '').trim()
   const st = ART_STYLES[style] || ART_STYLES.photo
-  return `${base}, ${st}, highly detailed, professional quality, ${ART_NEGATIVE}`
+  return `${base}, ${st}, ${ART_QUALITY}, ${ART_NEGATIVE}`
+}
+
+/**
+ * 10.0.0：画质增强 —— 把用户一句短短的描述扩写成 Sora 式的完整分镜提示词。
+ * Sora / Flux 这类模型对「主体 + 环境 + 光线 + 镜头 + 氛围」的完整句子响应
+ * 远好于一句话名词堆。本地快模型几秒就能扩完，这笔换质量的钱值得花。
+ * 失败时静默退回原文 —— 扩写是加分项，不是闸门。
+ */
+async function enhancePrompt(text) {
+  const s = String(text || '').trim()
+  const L = llm()
+  if (!L || !s) return s
+  try {
+    const model = (typeof L.pickFastModel === 'function' && L.pickFastModel()) || undefined
+    const r = await L.chat({
+      model,
+      options: { num_ctx: 2048, temperature: 0.6, num_predict: 220 },
+      keepAlive: '30m',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Expand the user image description into a vivid detailed English prompt for a text-to-image model. ' +
+            'Add: environment details, lighting (time of day, direction, color), camera angle and lens feel, ' +
+            'atmosphere and mood. Keep every element the user mentioned. Under 110 words. ' +
+            'Output ONLY the English prompt text, no quotes, no explanation, no line breaks.',
+        },
+        { role: 'user', content: s },
+      ],
+    })
+    const out = String(r?.text || '')
+      .replace(/[`"']/g, '')
+      .replace(/\s*\n+\s*/g, ' ')
+      .trim()
+    // 扩写失败（给回中文 / 空串）就用原描述，宁可不出彩也不出错
+    if (!out || /[\u4e00-\u9fa5]{2,}/.test(out)) return s
+    return out.slice(0, 500)
+  } catch (_) {
+    return s
+  }
 }
 
 /**
@@ -503,8 +607,9 @@ async function toEnglish(text) {
  * 走和配图同一条限流队列（pollinations 免费额度是每 IP 每 45 秒 1 张），
  * 所以这里最多试 3 次、总等待不超过 150 秒，超时就如实报错，
  * 绝不返回一张「本地插画」冒充高质量出图。
+ * 10.0.0：enhance=true 时先由本地模型把描述扩写成完整分镜提示词（Sora 式）。
  */
-async function generateHQ({ prompt, style = 'photo', ratio = '16:9', seed = 1 } = {}) {
+async function generateHQ({ prompt, style = 'photo', ratio = '16:9', seed = 1, enhance = true } = {}) {
   const text = String(prompt || '').trim()
   if (!text) return { ok: false, error: '先写一下想画什么' }
   if (text.length > 600) return { ok: false, error: '提示词太长（上限 600 字）' }
@@ -514,7 +619,10 @@ async function generateHQ({ prompt, style = 'photo', ratio = '16:9', seed = 1 } 
   const hit = findArt(key)
   if (hit) return { ok: true, ...hit, width, height, source: 'cache' }
 
-  const en = await toEnglish(text)
+  /* 画质增强：短句（< 25 字）几乎必然单薄，扩写收益最大；长描述用户自己已经写细了 */
+  const shouldEnhance = enhance !== false && text.length < 120
+  const en0 = await toEnglish(text)
+  const en = shouldEnhance ? await enhancePrompt(en0) : en0
   const styled = artPrompt(en, style)
   const deadline = Date.now() + 150000
   let lastErr = '出图超时'
@@ -524,7 +632,8 @@ async function generateHQ({ prompt, style = 'photo', ratio = '16:9', seed = 1 } 
       const buf = await enqueueOnline(() => fetchOnline(styled, { seed, timeoutMs: 60000, width, height }))
       const file = path.join(ART_DIR, `${key}.jpg`)
       fs.writeFileSync(file, buf)
-      return { ok: true, file, ext: 'jpg', name: `${key}.jpg`, width, height, source: 'ai' }
+      writeArtMeta(`${key}.jpg`, { prompt: text, style, ratio, width, height, seed, enhanced: shouldEnhance })
+      return { ok: true, file, ext: 'jpg', name: `${key}.jpg`, width, height, source: 'ai', enhanced: shouldEnhance }
     } catch (err) {
       lastErr = err instanceof RateLimited ? '出图额度被占满了，稍等一会儿再试' : err.message
       if (err instanceof RateLimited) {
@@ -546,15 +655,26 @@ function resolveArt(name) {
   return { file, type: MAGIC[ext] || 'application/octet-stream' }
 }
 
-/** 最近的绘图记录（按修改时间倒序） */
+/** 最近的绘图记录（按修改时间倒序），附带当时的描述 / 风格 / 画幅元数据 */
 function listArt(limit = 30) {
+  const meta = readArtMeta()
   try {
     return fs
       .readdirSync(ART_DIR)
       .filter((f) => ART_RE.test(f))
       .map((f) => {
         const st = fs.statSync(path.join(ART_DIR, f))
-        return { name: f, at: st.mtimeMs, size: st.size }
+        const m = meta[f] || {}
+        return {
+          name: f,
+          at: st.mtimeMs,
+          size: st.size,
+          prompt: m.prompt || '',
+          style: m.style || '',
+          ratio: m.ratio || '',
+          width: m.width || 0,
+          height: m.height || 0,
+        }
       })
       .sort((a, b) => b.at - a.at)
       .slice(0, limit)
@@ -563,15 +683,61 @@ function listArt(limit = 30) {
   }
 }
 
+/**
+ * 10.0.0：删除一张生成过的图（元数据一并清掉）。
+ * 名字只认 sha1 命名，路径穿越在这里就被挡死。
+ */
+function deleteArt(name) {
+  const n = String(name || '')
+  if (!ART_RE.test(n)) return { ok: false, error: '非法的图片名' }
+  const file = path.join(ART_DIR, n)
+  if (!fs.existsSync(file)) return { ok: false, error: '图片不存在' }
+  try {
+    fs.unlinkSync(file)
+  } catch (err) {
+    return { ok: false, error: `删除失败：${err.message}` }
+  }
+  dropArtMeta(n)
+  return { ok: true, name: n }
+}
+
+/** 10.0.0：清空全部生成图（绘图历史用；AIPPT 配图缓存在另一个目录，不受影响） */
+function clearArt() {
+  let n = 0
+  try {
+    for (const f of fs.readdirSync(ART_DIR)) {
+      if (!ART_RE.test(f)) continue
+      try {
+        fs.unlinkSync(path.join(ART_DIR, f))
+        n++
+      } catch (_) {
+        /* 单个删不掉就跳过 */
+      }
+    }
+    // 元数据也一并清空
+    try {
+      fs.unlinkSync(ART_META)
+    } catch (_) {
+      /* 没有就当清干净了 */
+    }
+  } catch (_) {
+    /* 目录不存在 */
+  }
+  return n
+}
+
 module.exports = {
   W,
   H,
   RATIOS,
   ART_STYLES,
   generateHQ,
+  enhancePrompt,
   toEnglish,
   resolveArt,
   listArt,
+  deleteArt,
+  clearArt,
   generateOne,
   generateMany,
   resolveImage,

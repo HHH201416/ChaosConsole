@@ -1951,4 +1951,17 @@ function handleServerMessage(msg) {
    这里只让 React 侧的 resolvedTheme 跟上。 */
 rewatchTheme()
 
+/* 10.0.0：界面脚本出错 = 严重错误，氛围灯红色闩锁常亮。
+   public/error-boot.js 的全局兜底（uncaught error / Promise 拒绝 / 白屏探测）
+   在 store 就绪前就可能触发，所以它发自定义事件，这里统一接住变红。 */
+if (typeof window !== 'undefined') {
+  window.addEventListener('chaos:ui-error', () => {
+    try {
+      useStore.getState().triggerErrorFlash({ severe: true })
+    } catch (_) {
+      /* 氛围灯失败不影响错误本身的处理 */
+    }
+  })
+}
+
 export { connectSocket, closeSocket }

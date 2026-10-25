@@ -13,6 +13,9 @@ import { asArr } from '../lib/meta'
  * 出图走的是同一条限流通道（免费额度每 IP 每 45 秒一张），所以这里做两件事：
  *   1. 把「排队中 / 生成中」实时显示出来，而不是一个转圈让人以为卡死；
  *   2. 画完立刻落盘缓存，同一提示词再点一次是秒回，不浪费额度。
+ *
+ * 10.0.0：Sora 级画质三件套 —— 分辨率拉高、提示词自动扩写成完整分镜、
+ * 「换一张」一键换个演绎；生成过的图片可以单张删除也可以清空。
  */
 
 const STYLES = [
@@ -44,6 +47,7 @@ export default function ImagePage() {
   const [prompt, setPrompt] = useState('')
   const [style, setStyle] = useState('photo')
   const [ratio, setRatio] = useState('16:9')
+  const [enhance, setEnhance] = useState(true)
   const [busy, setBusy] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [stage, setStage] = useState('') // '' | 'queue' | 'draw'
@@ -66,7 +70,7 @@ export default function ImagePage() {
     return () => clearInterval(timer.current)
   }, [])
 
-  const draw = async () => {
+  const draw = async (seedOverride) => {
     if (!prompt.trim() || busy) return
     setBusy(true)
     setCurrent(null)
@@ -81,13 +85,20 @@ export default function ImagePage() {
     }, 500)
 
     try {
-      const res = await api.imageGenerate({ prompt: prompt.trim(), style, ratio })
+      const res = await api.imageGenerate({
+        prompt: prompt.trim(),
+        style,
+        ratio,
+        enhance,
+        /* 「换一张」走随机种子重画；缓存 key 含种子，所以必然是真重画 */
+        seed: seedOverride || Math.floor(Math.random() * 90000),
+      })
       if (!res.ok) {
         toast(res.error || '出图失败', 'error')
         return
       }
       setCurrent({ ...res.data, prompt: prompt.trim(), style, ratio })
-      toast('图生成好了', 'success')
+      toast(res.data?.enhanced ? '图生成好了（已按分镜增强画质）' : '图生成好了', 'success')
       refresh()
     } catch (err) {
       toast(err?.message || '出图失败', 'error')
@@ -95,6 +106,30 @@ export default function ImagePage() {
       clearInterval(timer.current)
       setBusy(false)
       setStage('')
+    }
+  }
+
+  const removeOne = async (name) => {
+    if (!window.confirm('删除这张图片？删除后不可恢复（同描述再生成一次即可得到新图）。')) return
+    try {
+      await api.imageDelete(name)
+      if (current?.name === name) setCurrent(null)
+      toast('已删除', 'success')
+      refresh()
+    } catch (err) {
+      toast(err?.message || '删除失败', 'error')
+    }
+  }
+
+  const clearAll = async () => {
+    if (!window.confirm(`清空全部 ${history.length} 张生成图？只清「AI 绘图」页的历史，PPT 配图不受影响，删除后不可恢复。`)) return
+    try {
+      const r = await api.imageClear()
+      setCurrent(null)
+      toast(`已清空 ${r.data?.removed ?? history.length} 张`, 'success')
+      refresh()
+    } catch (err) {
+      toast(err?.message || '清空失败', 'error')
     }
   }
 
@@ -185,12 +220,26 @@ export default function ImagePage() {
               ))}
             </div>
 
-            <button className="btn-primary mt-3 w-full" disabled={busy || !prompt.trim()} onClick={draw}>
+            {/* 10.0.0：画质增强开关 —— 默认开。短描述会被扩写成完整分镜提示词 */}
+            <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-ink-600 bg-ink-900/60 px-2 py-1.5">
+              <input
+                type="checkbox"
+                checked={enhance}
+                onChange={(e) => setEnhance(e.target.checked)}
+                className="mt-0.5 accent-sky-500"
+              />
+              <span className="text-[11px] leading-snug text-slate-300">
+                画质增强
+                <span className="ml-1 text-[10px] text-slate-500">AI 先把描述扩写成完整分镜（光线 / 镜头 / 氛围），画质明显更好，多花几秒</span>
+              </span>
+            </label>
+
+            <button className="btn-primary mt-3 w-full" disabled={busy || !prompt.trim()} onClick={() => draw()}>
               {busy ? `生成中… ${elapsed}s` : '🎨 生成图片'}
             </button>
             <p className="mt-1.5 text-[10px] leading-relaxed text-slate-600">
               中文描述会先自动翻成英文提示词（文生图模型对中文长句几乎不认），所以第一张要多等几秒；
-              同一段描述再点一次是秒回。免费额度出图右下角会带服务标识。
+              免费额度下每 45 秒能出一张。
             </p>
           </div>
         </section>
@@ -206,10 +255,21 @@ export default function ImagePage() {
                 </span>
               ) : null}
               <div className="ml-auto flex items-center gap-1.5">
-                {current ? (
-                  <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={() => download(current.name)}>
-                    下载
-                  </button>
+                {current && !busy ? (
+                  <>
+                    <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={() => draw()} title="换个种子重画一张">
+                      🔄 换一张
+                    </button>
+                    <button className="btn-ghost px-2 py-0.5 text-[11px]" onClick={() => download(current.name)}>
+                      保存
+                    </button>
+                    <button
+                      className="btn-ghost px-2 py-0.5 text-[11px] text-rose-400 hover:text-rose-300"
+                      onClick={() => removeOne(current.name)}
+                    >
+                      删除
+                    </button>
+                  </>
                 ) : null}
                 {busy ? (
                   <span className="font-mono text-[10px] text-slate-500">
@@ -249,20 +309,48 @@ export default function ImagePage() {
           </div>
 
           <div className="rounded-xl border border-ink-500 bg-ink-800 p-3">
-            <p className="mb-2 text-[11.5px] font-medium text-slate-300">
-              最近生成 {history.length ? `· ${history.length} 张` : ''}
-            </p>
+            <div className="mb-2 flex items-center gap-2">
+              <p className="text-[11.5px] font-medium text-slate-300">
+                最近生成 {history.length ? `· ${history.length} 张` : ''}
+              </p>
+              {history.length ? (
+                <button
+                  className="btn-ghost ml-auto px-2 py-0.5 text-[11px] text-rose-400 hover:text-rose-300"
+                  onClick={clearAll}
+                >
+                  清空全部
+                </button>
+              ) : null}
+            </div>
             {history.length ? (
               <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4">
                 {history.map((h) => (
-                  <button
-                    key={h.name}
-                    className="group relative overflow-hidden rounded-md border border-ink-600"
-                    onClick={() => setCurrent({ name: h.name, prompt: '（历史记录）', style, ratio: '16:9' })}
-                    title={new Date(h.at).toLocaleString()}
-                  >
-                    <img src={url(h.name)} alt="" className="aspect-video w-full object-cover" />
-                  </button>
+                  <div key={h.name} className="group relative">
+                    <button
+                      className="block w-full overflow-hidden rounded-md border border-ink-600"
+                      onClick={() =>
+                        setCurrent({
+                          name: h.name,
+                          prompt: h.prompt || '（历史记录）',
+                          style: h.style || style,
+                          ratio: h.ratio || '16:9',
+                          width: h.width,
+                          height: h.height,
+                        })
+                      }
+                      title={h.prompt ? `${h.prompt}\n${new Date(h.at).toLocaleString()}` : new Date(h.at).toLocaleString()}
+                    >
+                      <img src={url(h.name)} alt="" className="aspect-video w-full object-cover" />
+                    </button>
+                    {/* 悬停出现删除角标 —— 生成的照片要能删 */}
+                    <button
+                      className="absolute right-1 top-1 hidden h-5 w-5 items-center justify-center rounded-full bg-black/70 text-[11px] leading-none text-rose-300 group-hover:flex hover:bg-rose-500/80 hover:text-white"
+                      onClick={() => removeOne(h.name)}
+                      title="删除这张"
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : (

@@ -332,6 +332,9 @@ export const api = {
   // 9.8.2：独立绘图（高质量单图）
   imageGenerate: (payload) => post('/api/image/generate', payload),
   imageList: () => get('/api/image/list'),
+  /* 10.0.0：删除生成的图片（单张 name 或批量 names）+ 清空全部 */
+  imageDelete: (names) => post('/api/image/delete', { names: Array.isArray(names) ? names : [names] }),
+  imageClear: () => post('/api/image/clear', {}),
   imageUrl: (name) => `/api/image/file?name=${encodeURIComponent(name)}&token=${encodeURIComponent(getToken() || '')}`,
   workspaceTree: (root) => get(`/api/workspace/tree?root=${encodeURIComponent(root)}`),
   workspaceFile: (root, p) => get(`/api/workspace/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(p)}`),

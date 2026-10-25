@@ -6,6 +6,13 @@
 ;(function () {
   var shown = false
   function show(msg) {
+    /* 10.0.0：界面脚本出错 = 严重错误 —— 广播给氛围灯变红（闩锁常亮）。
+       放在 shown 判断之前：重复出错也要重新点亮红灯。 */
+    try {
+      window.dispatchEvent(new CustomEvent('chaos:ui-error', { detail: String(msg) }))
+    } catch (_) {
+      /* 事件发不出去就算了，浮层照常显示 */
+    }
     if (shown) return
     shown = true
     var paint = function () {

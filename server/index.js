@@ -101,7 +101,14 @@ app.post('/api/login', (req, res) => {
   res.json({ ok: true, token: issueToken() })
 })
 
-app.get('/api/system', requireAuth, (_req, res) => {
+app.get('/api/system', requireAuth, async (_req, res) => {
+  // 9.8.2：混沌引擎状态现查一遍（probe 有 30s 缓存，代价可忽略）——
+  // 以前用启动时缓存的 summary，引擎后启动的话首页卡片一直「未启动」
+  try {
+    await chaosLlm.probe()
+  } catch (_) {
+    /* probe 永不 reject，这里只是保险 */
+  }
   res.json({
     ok: true,
     data: {
@@ -968,6 +975,41 @@ app.post('/api/chaos/install', requireAuth, (req, res) => {
   res.json(r)
 })
 
+/* 9.8.2：卸载混沌引擎（在「下载混沌」弹窗里发起；模型目录默认保留） */
+app.post('/api/chaos/uninstall', requireAuth, (req, res) => {
+  const r = chaosLlm.startUninstall({
+    consent: req.body?.consent === true,
+    deleteModels: req.body?.deleteModels === true,
+  })
+  if (!r.ok) return res.status(400).json(r)
+  res.json(r)
+})
+
+/* 9.8.2：热更换默认模型 —— 设好后执行器默认/新对话/AIPPT 全部即时生效 */
+app.post('/api/chaos/default-model', requireAuth, async (req, res) => {
+  const id = String(req.body?.model || '').trim()
+  /* 现查一遍已装列表：snapshot 缓存可能是空的（刚启动还没探测过） */
+  const probe = await chaosLlm.probe({ force: true }).catch(() => ({ models: [] }))
+  const installed = (probe.models || []).map((m) => m.id)
+  if (!installed.includes(id)) return res.status(400).json({ ok: false, error: '该模型还没有下载' })
+  store.setSetting('chaosDefaultModel', id)
+  res.json({ ok: true, data: { model: id } })
+})
+
+/* 9.8.2：引擎起停翻转时广播，前端「混沌引擎」卡片/弹窗即时翻面 */
+let lastEngineUp = null
+setInterval(async () => {
+  try {
+    const s = await chaosLlm.probe()
+    if (lastEngineUp !== null && s.up !== lastEngineUp) {
+      store.bus.emit('chaos:changed', { reason: 'engine-up-flip', up: s.up })
+    }
+    lastEngineUp = s.up
+  } catch (_) {
+    /* probe 永不 reject */
+  }
+}, 20000).unref()
+
 app.post('/api/chaos/pull', requireAuth, (req, res) => {
   const r = chaosLlm.startPull(String(req.body?.model || ''))
   if (!r.ok) return res.status(400).json(r)
@@ -994,6 +1036,38 @@ app.post('/api/chaos/expert', requireAuth, (req, res) => {
   if (!chaosLlm.expertById(id)) return res.status(400).json({ ok: false, error: '未知的专家包' })
   store.setSetting('chaosExpert', id)
   res.json({ ok: true, data: { id } })
+})
+
+/* 9.8.2：速答流式版（SSE）—— 逐字推给速答浮层，体验与打字机一致 */
+app.post('/api/chaos/quick-stream', requireAuth, async (req, res) => {
+  const prompt = String(req.body?.prompt || '').trim()
+  if (!prompt) return res.status(400).json({ ok: false, error: '内容为空' })
+  const expert = chaosLlm.expertById(String(store.getSetting('chaosExpert', 'default') || 'default'))
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  const send = (obj) => {
+    try {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`)
+    } catch (_) {
+      /* 客户端断开 */
+    }
+  }
+  try {
+    const r = await chaosLlm.quickAnswer({
+      prompt,
+      model: String(req.body?.model || '') || undefined,
+      system: expert && expert.prompt ? expert.prompt : '',
+      onDelta: (d) => send({ type: 'delta', delta: String(d || '') }),
+    })
+    send({ type: 'done', data: r })
+  } catch (err) {
+    send({ type: 'error', error: String(err?.message || err) })
+  }
+  res.end()
 })
 
 /** 速答：一问一答，不进任务队列、不留对话记录（全局速答浮层 / 每日一句用） */
@@ -1083,6 +1157,7 @@ app.post('/api/chaos/redeem', requireAuth, (req, res) => {
 
 const aippt = require('./aippt')
 const aipptImage = require('./aippt-image')
+const aipptWeb = require('./aippt-webimage')
 
 app.get('/api/aippt/list', requireAuth, (_req, res) => {
   res.json({ ok: true, data: aippt.listFiles() })
@@ -1100,6 +1175,8 @@ app.post('/api/aippt/generate', requireAuth, async (req, res) => {
       withToc: req.body?.withToc,
       withImages: req.body?.withImages !== false,
       model: req.body?.model,
+      speed: req.body?.speed,
+      imageSource: req.body?.imageSource,
     })
     if (!r.ok) return res.status(400).json(r)
     store.bus.emit('chaos:changed', { reason: 'aippt-generated' })
@@ -1167,6 +1244,8 @@ app.post('/api/aippt/stream', requireAuth, async (req, res) => {
         withToc: req.body?.withToc,
         withImages: req.body?.withImages !== false,
         model: req.body?.model,
+        speed: req.body?.speed,
+        imageSource: req.body?.imageSource,
       },
       write,
     )
@@ -1178,6 +1257,57 @@ app.post('/api/aippt/stream', requireAuth, async (req, res) => {
     clearInterval(hb)
     if (!closed) res.end()
   }
+})
+
+/* 9.8.2：配图来源状态 + 图库 Key 设置
+ * 前端靠 ready 决定「联网查找照片」这一档能不能选；没有 Key 时该档仍可点，
+ * 但会即时提示「未配置 Key，将退回 AI 生成」—— 比直接把选项灰掉更好懂。 */
+app.get('/api/aippt/image-source', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: { webReady: aipptWeb.hasKey(), provider: 'pexels' } })
+})
+
+app.post('/api/aippt/image-source', requireAuth, (req, res) => {
+  try {
+    const raw = String(req.body?.key || '').trim()
+    // 只做长度/字符的粗校验：Key 是 40 位左右的十六进制串，挡掉明显粘错的内容
+    if (raw && !/^[A-Za-z0-9_-]{16,128}$/.test(raw)) {
+      return res.status(400).json({ ok: false, error: 'Key 格式不对，应为 16-128 位字母数字' })
+    }
+    const on = aipptWeb.setKey(raw)
+    res.json({ ok: true, data: { webReady: on } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+/* 9.8.2：独立绘图（高质量单图）
+ * 出图慢（免费额度每 IP 45 秒一张），所以用「先占位、后台画、前端轮询」的方式：
+ * POST /api/image/generate 同步等结果，但前端会先显示排队/生成中的实时状态。 */
+app.post('/api/image/generate', requireAuth, async (req, res) => {
+  try {
+    const r = await aipptImage.generateHQ({
+      prompt: req.body?.prompt,
+      style: req.body?.style,
+      ratio: req.body?.ratio,
+      seed: Number(req.body?.seed) || Math.floor(Math.random() * 90000),
+    })
+    if (!r.ok) return res.status(400).json({ ok: false, error: r.error })
+    res.json({ ok: true, data: r })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+app.get('/api/image/list', requireAuth, (_req, res) => {
+  res.json({ ok: true, data: aipptImage.listArt(40) })
+})
+
+app.get('/api/image/file', requireAuth, (req, res) => {
+  const hit = aipptImage.resolveArt(req.query?.name)
+  if (!hit) return res.status(404).json({ ok: false, error: '图片不存在' })
+  res.setHeader('Content-Type', hit.type)
+  res.setHeader('Cache-Control', 'public, max-age=604800')
+  res.send(fs.readFileSync(hit.file))
 })
 
 /* 9.8.0：配图文件（前端预览 + 可能的模板缩略图） */
@@ -1746,6 +1876,8 @@ const BRIDGED = [
   'task:updated',
   'task:deleted',
   'message:added',
+  /* 9.8.2：混沌回答逐字流式 —— 每个增量直接推给前端，边生成边显示 */
+  'message:delta',
   'event:added',
   'task:history-cleared',
   'tasks:cleared',

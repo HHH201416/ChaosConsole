@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { id: 'experts', icon: '🎭', label: '专家中心' },
   { id: 'skills', icon: '⚡', label: '技能' },
   { id: 'aippt', icon: '🖼️', label: 'AIPPT' },
+  { id: 'image', icon: '🎨', label: 'AI 绘图' },
   { id: 'automations', icon: '⏰', label: '自动化' },
   { id: 'library', icon: '📚', label: '知识库', modal: 'knowledge' },
   { id: 'chaos', icon: '🌀', label: '混沌中心', modal: 'chaos' },

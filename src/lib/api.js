@@ -31,6 +31,60 @@ export function getToken() {
   return TOKEN
 }
 
+/* 9.8.2：混沌速答流式（SSE）—— 逐字回调，返回最终完整结果 */
+export async function chaosQuickStream(prompt, { model = '', onDelta = null, signal } = {}) {
+  const headers = { 'Content-Type': 'application/json' }
+  if (TOKEN) headers['x-chaos-token'] = TOKEN
+  let res
+  try {
+    res = await fetch('/api/chaos/quick-stream', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ prompt, model }),
+      signal,
+    })
+  } catch (_) {
+    throw new Error('无法连接后端服务')
+  }
+  if (!res.ok || !res.body) {
+    let msg = `请求失败（HTTP ${res.status}）`
+    try {
+      const j = await res.json()
+      msg = j?.error || msg
+    } catch (_) {
+      /* ignore */
+    }
+    throw new Error(msg)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let final = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, i)
+      buf = buf.slice(i + 2)
+      const line = frame.split('\n').find((l) => l.startsWith('data: '))
+      if (!line) continue
+      let ev
+      try {
+        ev = JSON.parse(line.slice(6))
+      } catch (_) {
+        continue
+      }
+      if (ev.type === 'delta' && onDelta) onDelta(ev.delta)
+      else if (ev.type === 'done') final = ev.data
+      else if (ev.type === 'error') throw new Error(ev.error)
+    }
+  }
+  if (!final) throw new Error('混沌返回了空回复')
+  return final
+}
+
 async function request(method, path, body) {
   const headers = {}
   if (TOKEN) headers['x-chaos-token'] = TOKEN
@@ -241,6 +295,8 @@ export const api = {
   // 混沌 · 本地大模型
   chaosStatus: () => get('/api/chaos/status'),
   chaosInstall: () => post('/api/chaos/install', { consent: true }),
+  chaosUninstall: (deleteModels) => post('/api/chaos/uninstall', { consent: true, deleteModels: !!deleteModels }),
+  chaosSetDefaultModel: (model) => post('/api/chaos/default-model', { model }),
   chaosPull: (model) => post('/api/chaos/pull', { model }),
   chaosCancel: (jobId) => post('/api/chaos/cancel', { jobId }),
   chaosGuideDone: () => post('/api/chaos/guide-done'),
@@ -270,6 +326,13 @@ export const api = {
   aipptRender: (payload) => post('/api/aippt/render', payload),
   aipptOutline: (id) => get(`/api/aippt/outline?id=${encodeURIComponent(id)}`),
   aipptDelete: (id) => del(`/api/aippt/file?id=${encodeURIComponent(id)}`),
+  // 9.8.2：配图来源（联网找真实照片需要 Pexels Key）
+  aipptImageSource: () => get('/api/aippt/image-source'),
+  aipptSetImageKey: (key) => post('/api/aippt/image-source', { key }),
+  // 9.8.2：独立绘图（高质量单图）
+  imageGenerate: (payload) => post('/api/image/generate', payload),
+  imageList: () => get('/api/image/list'),
+  imageUrl: (name) => `/api/image/file?name=${encodeURIComponent(name)}&token=${encodeURIComponent(getToken() || '')}`,
   workspaceTree: (root) => get(`/api/workspace/tree?root=${encodeURIComponent(root)}`),
   workspaceFile: (root, p) => get(`/api/workspace/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(p)}`),
   // 9.3.8：安全 —— 本地锁屏解锁校验

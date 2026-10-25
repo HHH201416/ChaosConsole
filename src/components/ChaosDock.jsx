@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
+import { chaosQuickStream } from '../lib/api'
 
 /* ------------------------------------------------------------------ *
  * 8.0.2：混沌工具坞 —— WorkBuddy 式的「一排小图标 + 弹出面板」。
@@ -636,8 +637,11 @@ export function QuickOverlay({ onClose }) {
     setBusy(true)
     setAnswer('')
     try {
-      const r = await useStore.getState().chaosQuick(q)
-      setAnswer(r.text)
+      /* 9.8.2：逐字流式 —— 回答边生成边出现，不再等完整段 */
+      const r = await chaosQuickStream(q, {
+        onDelta: (d) => setAnswer((s) => s + d),
+      })
+      setAnswer(r.text || '')
     } catch (err) {
       setAnswer(`⚠️ ${err.message}`)
     } finally {
@@ -678,7 +682,7 @@ export function QuickOverlay({ onClose }) {
           </div>
           {(answer || busy) && (
             <div className="mt-3 max-h-[40vh] overflow-y-auto rounded-xl bg-ink-700/60 p-3 text-[12.5px] leading-relaxed text-slate-100 whitespace-pre-wrap break-words">
-              {busy ? '🌀 混沌正在本地思考…' : answer}
+              {answer || '🌀 正在思考…'}
             </div>
           )}
         </div>

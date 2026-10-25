@@ -1374,6 +1374,11 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
     let evalCount = 0
     let evalDuration = 0
     let doneReason = ''
+    /* 9.8.2：逐字流式 —— delta 经 ws 推给前端，回答边生成边出现，
+       不是憋到最后一次性砸出来 */
+    const emitDelta = (d) => {
+      if (d) store.bus.emit('message:delta', { taskId, delta: String(d) })
+    }
     const toolFinal = await runChaosToolLoop({ taskId, cwd: task.cwd, model, messages, signal: controller.signal })
     if (toolFinal.text !== null) {
       text = toolFinal.text
@@ -1384,7 +1389,10 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
         model,
         messages,
         signal: controller.signal,
-        onDelta: () => watchdog.arm(),
+        onDelta: (d) => {
+          watchdog.arm()
+          emitDelta(d)
+        },
       }))
     }
 
@@ -1397,7 +1405,7 @@ async function runChaos({ taskId, task, agent, prompt, extraInstruction, resumeS
       })
       const contMessages = [...messages, { role: 'assistant', content: String(text || '') }, { role: 'user', content: '继续。从断掉的地方无缝接着写，不要重复已有内容，写完自然收尾。' }]
       try {
-        const cont = await chaosLlm.chat({ model, messages: contMessages, signal: controller.signal, onDelta: () => watchdog.arm() })
+        const cont = await chaosLlm.chat({ model, messages: contMessages, signal: controller.signal, onDelta: (d) => { watchdog.arm(); emitDelta(d) } })
         if (cont.text) {
           text = `${String(text || '').trimEnd()}\n${cont.text.trimStart()}`
           evalCount += cont.evalCount

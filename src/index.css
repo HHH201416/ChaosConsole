@@ -804,3 +804,17 @@ html[data-theme='light'][data-accent='emerald'] {
     opacity: 0.85;
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * 9.8.2：错误态氛围灯 —— 应用任何地方报错（toast error / 任务出错 /
+ * 错误事件）或实时连接断开时，光色切红、呼吸加快，10 秒后自动复原
+ * （由 store.errorFlashUntil 驱动，见 App.jsx AmbientBorder）。
+ * ------------------------------------------------------------------ */
+
+.breathing-error {
+  box-shadow:
+    inset 0 0 46px -4px rgb(244 63 94 / 0.55),
+    inset 0 0 110px -18px rgb(244 63 94 / 0.35),
+    inset 0 0 240px -60px rgb(244 63 94 / 0.22);
+  animation-duration: 1.1s;
+}

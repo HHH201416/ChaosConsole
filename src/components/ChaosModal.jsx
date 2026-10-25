@@ -125,12 +125,17 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
   const logs = useStore((s) => s.chaosLogs)
   const loadChaosStatus = useStore((s) => s.loadChaosStatus)
   const installChaos = useStore((s) => s.installChaos)
+  const uninstallChaos = useStore((s) => s.uninstallChaos)
+  const setChaosDefaultModel = useStore((s) => s.setChaosDefaultModel)
   const pullChaosModel = useStore((s) => s.pullChaosModel)
   const cancelChaosJob = useStore((s) => s.cancelChaosJob)
   const agents = useStore((s) => s.agents)
   const refreshSystem = useStore((s) => s.refreshSystem)
 
   const [switched, setSwitched] = useState(false)
+  /* 9.8.2：卸载混沌 —— 两步确认，勾选决定连模型目录一起删不删 */
+  const [uninstallOpen, setUninstallOpen] = useState(false)
+  const [delModels, setDelModels] = useState(false)
   const logRef = useRef(null)
 
   useEffect(() => {
@@ -141,6 +146,15 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
     if (!logRef.current) return
     logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logs.length, job?.percent])
+
+  /* 安装/卸载任务结束（成功或失败）都重查一次状态，让界面立刻翻面 */
+  const jobSettledRef = useRef('')
+  useEffect(() => {
+    if (job && job.status !== 'running' && jobSettledRef.current !== job.id) {
+      jobSettledRef.current = job.id
+      loadChaosStatus()
+    }
+  }, [job, loadChaosStatus])
 
   const engineInstalled = Boolean(status?.installed)
   const serverUp = Boolean(status?.serverUp)
@@ -246,8 +260,47 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
                   {t('chaos.install')}
                 </button>
               )}
+              {engineInstalled && !running && (
+                <button
+                  className="btn-ghost shrink-0 text-rose-300 hover:bg-rose-500/15"
+                  onClick={() => setUninstallOpen((v) => !v)}
+                  title={t('chaos.uninstall')}
+                >
+                  {t('chaos.uninstall')}
+                </button>
+              )}
             </div>
           </div>
+
+          {/* 9.8.2：卸载确认块 */}
+          {uninstallOpen && engineInstalled && (
+            <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-900/15 p-3">
+              <p className="text-[12px] leading-relaxed text-slate-200">{t('chaos.uninstallBody')}</p>
+              <label className="mt-2 flex cursor-pointer items-center gap-2 text-[11.5px] text-slate-300">
+                <input
+                  type="checkbox"
+                  className="accent-rose-400"
+                  checked={delModels}
+                  onChange={(e) => setDelModels(e.target.checked)}
+                />
+                {t('chaos.uninstallModels')}
+              </label>
+              <div className="mt-3 flex gap-2">
+                <button
+                  className="btn-danger"
+                  onClick={() => {
+                    setUninstallOpen(false)
+                    uninstallChaos(delModels)
+                  }}
+                >
+                  {t('chaos.uninstallConfirmBtn')}
+                </button>
+                <button className="btn-ghost" onClick={() => setUninstallOpen(false)}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* 8.0.2：Token 额度（每日 3000 万免费；9.5.4 起填手机号绑定） */}
           <TokenCard />
@@ -266,10 +319,20 @@ export default function ChaosModal({ onClose, isFirstRun = false }) {
                         <span className="font-mono text-[10px] text-slate-600">{m.id}</span>
                         <span className="chip">{m.size}</span>
                         {m.installed && <span className="chip bg-emerald-500/15 text-emerald-300">{t('chaos.ready')}</span>}
+                        {m.installed && status?.defaultModel === m.id && (
+                          <span className="chip bg-boss/20 text-boss-strong">{t('chaos.isDefault')}</span>
+                        )}
                       </div>
                       <p className="mt-1 text-[10.5px] text-slate-500">{m.note}</p>
                     </div>
-                    {m.installed ? null : (
+                    {m.installed ? (
+                      /* 9.8.2：热更换 —— 点一下就把执行器默认/新对话/AIPPT 全切到这个模型 */
+                      status?.defaultModel !== m.id && (
+                        <button className="btn-ghost shrink-0" disabled={running} onClick={() => setChaosDefaultModel(m.id)}>
+                          {t('chaos.setDefault')}
+                        </button>
+                      )
+                    ) : (
                       <button className="btn-ghost shrink-0" disabled={running} onClick={() => pullChaosModel(m.id)}>
                         ↓ {t('chaos.pull')}
                       </button>

@@ -293,9 +293,8 @@ function chaosAvailable() {
 }
 
 function defaultChaosModel() {
-  const installed = listChaosModels().filter((m) => m.installed)
-  if (installed.length) return installed[0].id
-  return chaosLlm.DEFAULT_PULL
+  /* 9.8.2：热更换 —— 混沌弹窗里选的默认模型优先，切换即时生效 */
+  return chaosLlm.preferredDefaultModel()
 }
 
 const EXECUTORS = [

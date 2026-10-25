@@ -290,12 +290,19 @@ function summary() {
  * 返回 { text, evalCount, evalDuration, doneReason }；失败 throw（消息里带服务端原因）。
  * signal 用于取消；支持 stopIntent 的超时/换岗中断。
  */
-async function chat({ model, messages, signal, onDelta } = {}) {
+async function chat({ model, messages, signal, onDelta, options, keepAlive } = {}) {
   quotaGate()
+  const body = { model, messages, stream: true }
+  // 9.8.2：把推理参数透出去。以前这里写死只传 model/messages，导致上层想调
+  // num_ctx 都调不到 —— 而 Ollama 默认 num_ctx=2048，AIPPT 的提示词（策划
+  // 文本 + 逐页规则）轻松超过 2048 token，超出的部分被静默丢弃，模型看到的
+  // 是一份被截断的指令，输出的质量自然上不去。
+  if (options && typeof options === 'object') body.options = options
+  if (keepAlive) body.keep_alive = keepAlive
   const res = await fetch(`${baseUrl()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify(body),
     signal,
   })
   if (!res.ok || !res.body) {
@@ -404,34 +411,75 @@ async function chatWithTools({ model, messages, tools, signal } = {}) {
  * ------------------------------------------------------------------ */
 
 /** 单轮非流式问答：给速答 / 每日一句 / 魔法棒用。失败 throw。 */
-async function quickAnswer({ prompt, model, system = '', timeoutMs = 120 * 1000 } = {}) {
+async function quickAnswer({ prompt, model, system = '', timeoutMs = 120 * 1000, onDelta = null } = {}) {
   quotaGate()
   const s = snapshot()
-  const useModel = model || s.models[0]?.id || DEFAULT_PULL
+  const useModel = model || preferredDefaultModel()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const messages = []
     if (system) messages.push({ role: 'system', content: system })
     messages.push({ role: 'user', content: String(prompt || '') })
+    /* 9.8.2：stream:true + onDelta —— 速答逐字出现，不再憋完整段才回 */
     const res = await fetch(`${baseUrl()}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: useModel, messages, stream: false }),
+      body: JSON.stringify({ model: useModel, messages, stream: true }),
       signal: controller.signal,
     })
-    if (!res.ok) throw new Error(`混沌推理服务返回错误（HTTP ${res.status}）`)
-    const body = await res.json()
-    const text = String(body?.message?.content || '').trim()
-    if (!text) throw new Error('混沌返回了空回复')
-    const r = {
-      text,
-      model: useModel,
-      evalCount: Number(body?.eval_count) || 0,
-      evalDuration: Number(body?.eval_duration) || 0,
+    if (!res.ok || !res.body) throw new Error(`混沌推理服务返回错误（HTTP ${res.status}）`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let text = ''
+    let evalCount = 0
+    let evalDuration = 0
+    let doneReason = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let nl
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        let payload
+        try {
+          payload = JSON.parse(line)
+        } catch (_) {
+          continue
+        }
+        if (payload.error) throw new Error(`混沌推理服务报错：${payload.error}`)
+        const delta = payload?.message?.content
+        if (typeof delta === 'string' && delta) {
+          text += delta
+          if (onDelta) {
+            try {
+              onDelta(delta)
+            } catch (_) {
+              /* 回调异常不影响生成 */
+            }
+          }
+        }
+        if (payload.done) {
+          evalCount = Number(payload.eval_count) || 0
+          evalDuration = Number(payload.eval_duration) || 0
+          doneReason = String(payload.done_reason || '')
+        }
+      }
     }
-    quotaBill(r)
-    return r
+    const out = {
+      text: text.trim(),
+      model: useModel,
+      evalCount,
+      evalDuration,
+      doneReason,
+    }
+    if (!out.text) throw new Error('混沌返回了空回复')
+    quotaBill(out)
+    return out
   } finally {
     clearTimeout(timer)
   }
@@ -814,6 +862,141 @@ function cancelJob(jobId) {
   return { ok: true }
 }
 
+/* ------------------------------------------------------------------ *
+ * 9.8.2：卸载混沌引擎
+ *
+ * 引擎是官方 Ollama 安装器装的：程序在 %LOCALAPPDATA%\Programs\Ollama，
+ * 自带 NSIS 卸载器；模型另落在 ~/.ollama（几个 GB），默认保留、
+ * 用户勾选才删。卸载 = 停进程 → 静默跑卸载器 → （可选）删模型目录。
+ * ------------------------------------------------------------------ */
+
+function uninstallerPath() {
+  if (process.platform !== 'win32') return ''
+  const dirs = []
+  if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama'))
+  if (process.env.APPDATA) dirs.push(path.join(process.env.APPDATA, 'Ollama'))
+  for (const dir of dirs) {
+    for (const name of ['Uninstall Ollama.exe', 'Uninstall.exe', 'uninstall.exe']) {
+      const candidate = path.join(dir, name)
+      try {
+        if (fs.existsSync(candidate)) return candidate
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
+  return ''
+}
+
+/** 停掉 Ollama 的常驻进程（推理服务 + 托盘程序），不然文件被占用删不掉 */
+function stopEngineProcesses(job) {
+  if (process.platform !== 'win32') {
+    try {
+      const c = spawn('pkill', ['-f', 'ollama'], { windowsHide: true })
+      c.on('error', () => {})
+    } catch (_) {
+      /* ignore */
+    }
+    return
+  }
+  for (const name of ['ollama.exe', 'ollama app.exe']) {
+    try {
+      const c = spawn('taskkill', ['/IM', name, '/F', '/T'], { windowsHide: true })
+      c.on('error', () => {})
+      c.stderr?.on('data', (d) => jobLog(job, 'out', d.toString().trim()))
+    } catch (_) {
+      /* 进程不在就算了 */
+    }
+  }
+}
+
+function startUninstall({ consent, deleteModels } = {}) {
+  if (consent !== true) return { ok: false, error: '需要用户确认后才能卸载' }
+  if (activeJob) return { ok: false, error: '已有混沌任务进行中，请稍候' }
+  const unins = uninstallerPath()
+  if (!unins && !ollamaBin()) return { ok: false, error: '没有找到已安装的混沌引擎' }
+
+  const job = beginJob('engine')
+  ;(async () => {
+    setStep(job, '停止服务', 15, '停止混沌推理服务…')
+    stopEngineProcesses(job)
+    await new Promise((r) => setTimeout(r, 1500))
+
+    if (unins) {
+      setStep(job, '卸载', 45, '正在运行卸载程序…')
+      jobLog(job, 'out', `运行卸载器：${unins}`)
+      await new Promise((resolve) => {
+        let stderr = ''
+        const child = spawn(unins, ['/S', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], {
+          windowsHide: true,
+        })
+        const timer = setTimeout(() => {
+          killTree(child)
+          resolve() // 卸载器拖太久就不再等，后面按目录清理兜底
+        }, 3 * 60 * 1000)
+        child.on('error', (err) => {
+          clearTimeout(timer)
+          jobLog(job, 'err', err.message)
+          resolve()
+        })
+        child.stderr?.on('data', (c) => {
+          stderr += c.toString()
+          jobLog(job, 'err', c.toString().trim())
+        })
+        child.on('close', (code) => {
+          clearTimeout(timer)
+          jobLog(job, 'out', `卸载器退出码 ${code}${stderr.trim() ? `：${stderr.trim().slice(-200)}` : ''}`)
+          resolve()
+        })
+      })
+    } else {
+      setStep(job, '卸载', 45, '未找到卸载程序，直接清理安装目录…')
+    }
+
+    /* 兜底清理：卸载器没删干净（或压根没有卸载器）时，把程序目录删掉 */
+    const dirs = []
+    if (process.env.LOCALAPPDATA) dirs.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Ollama'))
+    for (const dir of dirs) {
+      try {
+        if (fs.existsSync(dir)) {
+          setStep(job, '清理', 70, `清理 ${dir}…`)
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+          jobLog(job, 'out', `已删除 ${dir}`)
+        }
+      } catch (err) {
+        jobLog(job, 'err', `清理 ${dir} 失败：${err.message}`)
+      }
+    }
+
+    if (deleteModels) {
+      const modelsDir = path.join(os.homedir(), '.ollama')
+      try {
+        if (fs.existsSync(modelsDir)) {
+          setStep(job, '清理模型', 85, `删除已下载的模型（${modelsDir}）…`)
+          fs.rmSync(modelsDir, { recursive: true, force: true, maxRetries: 3 })
+          jobLog(job, 'out', `已删除模型目录 ${modelsDir}`)
+        }
+      } catch (err) {
+        jobLog(job, 'err', `删除模型目录失败：${err.message}`)
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 800))
+    if (ollamaBin()) {
+      throw new Error('卸载程序已运行，但引擎文件仍存在（可能有进程占用），请重启应用后再试一次')
+    }
+    setStep(job, '完成', 100, '混沌引擎已卸载')
+  })()
+    .then(() => {
+      finishJob(job, { status: 'done', message: '混沌引擎已卸载' })
+    })
+    .catch((err) => {
+      jobLog(job, 'err', err.message)
+      finishJob(job, { status: 'error', error: err.message, message: '卸载失败' })
+    })
+  return { ok: true, data: publicJob(job) }
+}
+
 function status() {
   return {
     ...summary(),
@@ -822,7 +1005,35 @@ function status() {
     supported: canDownload() || !process.versions.electron,
     activeJob: publicJob(activeJob),
     history: history.slice(0, 10),
+    defaultModel: preferredDefaultModel(),
   }
+}
+
+/* 9.8.2：热更换模型 —— 用户在「下载混沌」里选的默认模型存在 settings
+ * （chaosDefaultModel）。执行器默认、新对话默认、AIPPT 默认都从这里取，
+ * 每次调用现读，切换即时生效、不用重启（对话里没被单独指定模型的任务
+ * 下一轮就用新模型）。
+ * 用户没选过时按硬件自动分层：有 GPU 用大模型（质量优先），
+ * 纯 CPU 优先小模型 —— 实测 CPU 跑 7B 一秒只出一两个字，1.5b 快 5 倍以上。 */
+function preferredDefaultModel() {
+  try {
+    const preferred = String(store.getSetting('chaosDefaultModel', '') || '')
+    /* snapshot().models 是探测到的已装模型，**没有 installed 字段**
+     * （那是 catalogFor 加的）——按 installed 过滤永远得空数组，
+     * 用户的「设为默认」就会被静默忽略（2026-10-25 实测踩坑） */
+    const installed = (snapshot().models || []).map((m) => m.id).filter(Boolean)
+    if (preferred && installed.includes(preferred)) return preferred
+    if (installed.length) {
+      if (!hasGpu()) {
+        const small = installed.find((id) => /1\.5b|1b|0\.5b|3b/i.test(id))
+        if (small) return small
+      }
+      return installed[0]
+    }
+  } catch (_) {
+    /* 探测失败走兜底 */
+  }
+  return DEFAULT_PULL
 }
 
 async function statusAsync() {
@@ -1047,13 +1258,60 @@ async function warmUp({ keepAlive = '2h', timeoutMs = 300000 } = {}) {
   }
 }
 
+/**
+ * 挑「快模型」给短输出任务用（策划、标题、改写这类几百 token 的活）。
+ * 纯 CPU 机器上 1.5B 约 9 tok/s、7B 只有 2.6 tok/s，差 3.5 倍 —— 短任务用
+ * 小模型几乎无损，长任务（逐页正文）才值得上 7B。
+ */
+function pickFastModel() {
+  try {
+    const s = snapshot()
+    const ids = (s?.models || []).map((m) => String(m.id || '')).filter(Boolean)
+    if (!ids.length) return null
+    const fast = ids.find((id) => /(^|[:\-/])(1\.5b|1b|0\.5b|3b)/i.test(id))
+    return fast || ids[0]
+  } catch (_) {
+    return null
+  }
+}
+
+/**
+ * 有没有显存可用。
+ * 没有独显时 7B 是 2.6 tok/s —— 用户等一份 6 页稿子要 4 分钟，
+ * 所以「有没有 GPU」直接决定 AIPPT 该走哪个档位，不能靠猜。
+ */
+let _gpu = { at: 0, ok: false }
+
+function hasGpu() {
+  return _gpu.ok
+}
+
+async function refreshGpu() {
+  try {
+    const res = await fetch(`${baseUrl()}/api/ps`, { signal: AbortSignal.timeout(4000) })
+    if (!res.ok) return _gpu.ok
+    const j = await res.json()
+    const vram = (j.models || []).reduce((s, m) => s + (Number(m.size_vram) || 0), 0)
+    _gpu = { at: Date.now(), ok: vram > 0 }
+    return _gpu.ok
+  } catch (_) {
+    return _gpu.ok
+  }
+}
+
 module.exports = {
   CATALOG,
   DEFAULT_PULL,
   EXPERTS,
   expertById,
+  pickFastModel,
+  hasGpu,
+  refreshGpu,
   baseUrl,
   ollamaBin,
+  uninstallerPath,
+  startUninstall,
+  preferredDefaultModel,
   probe,
   invalidate,
   snapshot,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from './store'
-import { loadToken } from './lib/api'
+import { loadToken, chaosQuickStream } from './lib/api'
 import Login from './components/Login'
 import TopBar from './components/TopBar'
 import ChatWorkspace from './components/ChatWorkspace'
@@ -30,6 +30,7 @@ import NavRail from './components/NavRail'
 import PhoneGate from './components/PhoneGate'
 import { HomePage, ExpertsPage, SkillsPage, AutomationsPage } from './components/ChaosPages'
 import AipptPage from './components/AipptPage'
+import ImagePage from './components/ImagePage'
 
 /* ------------------------------------------------------------------ *
  * 8.0.2：老板键遮罩 —— 一键把整个界面伪装成「编译日志终端」。
@@ -180,8 +181,9 @@ function QuickPage() {
     setBusy(true)
     setAnswer('')
     try {
-      const r = await useStore.getState().chaosQuick(q)
-      setAnswer(r.text)
+      /* 9.8.2：逐字流式 —— 速答窗与主窗口同一套流式通道 */
+      const r = await chaosQuickStream(q, { onDelta: (d) => setAnswer((s) => s + d) })
+      setAnswer(r.text || '')
     } catch (err) {
       setAnswer(`⚠️ ${err.message}`)
     } finally {
@@ -221,7 +223,7 @@ function QuickPage() {
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto rounded-xl bg-ink-800 p-3 text-[12.5px] leading-relaxed whitespace-pre-wrap break-words text-slate-100">
-          {busy ? '🌀 混沌正在本地思考…' : answer || <span className="text-slate-600">答案会出现在这里。</span>}
+          {answer || (busy ? '🌀 正在思考…' : <span className="text-slate-600">答案会出现在这里。</span>)}
         </div>
       </div>
     </div>
@@ -258,6 +260,16 @@ function Toasts() {
       ))}
     </div>
   )
+}
+
+/** 9.8.2：氛围灯 —— 平时绿色呼吸；任何地方报错 / 实时连接断开时变红色脉冲。
+ *  errorFlashUntil 由 store.triggerErrorFlash() 触发（toast error、任务出错、
+ *  错误事件），10 秒后自动复原。 */
+function AmbientBorder() {
+  const errFlash = useStore((s) => s.errorFlashUntil > Date.now())
+  const conn = useStore((s) => s.conn)
+  const red = errFlash || conn === 'closed'
+  return <div className={`breathing-border${red ? ' breathing-error' : ''}`} aria-hidden="true" />
 }
 
 /** 8.0.2：速答小窗走独立路由（Electron 的 quick 窗口加载 ?quick=1） */
@@ -507,6 +519,7 @@ export default function App() {
         {mainView === 'experts' && <ExpertsPage />}
         {mainView === 'skills' && <SkillsPage />}
         {mainView === 'aippt' && <AipptPage />}
+        {mainView === 'image' && <ImagePage />}
         {mainView === 'automations' && <AutomationsPage />}
         {/* 9.1.0：任务看板独立成页；对话页 = 会话列表 + 全宽聊天主区 */}
         {mainView === 'board' && <Board />}
@@ -546,8 +559,9 @@ export default function App() {
 
       </ErrorBoundary>
       <Toasts />
-      {/* 9.5.1：绿色呼吸边框（纯装饰，不挡点击） */}
-      <div className="breathing-border" aria-hidden="true" />
+      {/* 9.5.1：绿色呼吸边框（纯装饰，不挡点击）。
+          9.8.2：应用任何地方报错 / 实时连接断开 → 立刻变红色脉冲 */}
+      <AmbientBorder />
       <LockOverlay />
       {/* 9.7.0：手机号必填闸门 —— 没绑定就进不了界面。
           只用 system.phoneBound 判断（后端 /api/system 里算的），

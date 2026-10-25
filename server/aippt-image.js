@@ -25,9 +25,36 @@ const CONFIG = require('./config')
 const IMG_DIR = path.join(CONFIG.DATA_DIR, 'aippt', 'img')
 if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR, { recursive: true })
 
-/** 出图尺寸：16:9，压到 1024 宽就够投屏看，文件也小 */
-const W = 1024
-const H = 576
+/** 出图尺寸：16:9。1280×720 是「投屏不糊 + 文件不大」的平衡点 */
+const W = 1280
+const H = 720
+
+/* 独立绘图（高质量单图）用的尺寸预设 */
+const ART_DIR = path.join(CONFIG.DATA_DIR, 'art')
+if (!fs.existsSync(ART_DIR)) fs.mkdirSync(ART_DIR, { recursive: true })
+
+const RATIOS = {
+  '16:9': [1280, 720],
+  '4:3': [1152, 864],
+  '1:1': [1024, 1024],
+  '3:4': [864, 1152],
+  '9:16': [720, 1280],
+}
+
+/**
+ * 风格词表。文生图模型对「photograph / cinematic」这类英文风格词的响应，
+ * 明显好于中文形容词，所以这里统一翻成英文短语拼在提示词后面。
+ */
+const ART_STYLES = {
+  photo: 'professional photograph, natural lighting, sharp focus, shallow depth of field, high detail',
+  illustration: 'flat modern vector illustration, soft gradient background, clean minimal composition, subtle geometric shapes',
+  cinematic: 'cinematic film still, dramatic volumetric lighting, anamorphic lens, high dynamic range',
+  threed: '3d render, soft studio lighting, glossy materials, subsurface scattering, octane style',
+  minimal: 'minimalist design, generous negative space, two-tone palette, crisp edges',
+  ink: 'traditional chinese ink painting, rice paper texture, elegant brush strokes, muted colors',
+}
+
+const ART_NEGATIVE = 'no text, no letters, no watermark, no logo, no frame border'
 
 const MAGIC = {
   jpg: 'image/jpeg',
@@ -232,11 +259,11 @@ function enqueueOnline(task) {
   return run
 }
 
-async function fetchOnline(prompt, { seed = 1, timeoutMs = 45000 } = {}) {
+async function fetchOnline(prompt, { seed = 1, timeoutMs = 45000, width = W, height = H } = {}) {
   const url =
     'https://image.pollinations.ai/prompt/' +
     encodeURIComponent(prompt).replace(/%20/g, '%20') +
-    `?width=${W}&height=${H}&nologo=true&model=flux&seed=${seed}`
+    `?width=${width}&height=${height}&nologo=true&model=flux&seed=${seed}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -391,9 +418,157 @@ function clearCache() {
   return n
 }
 
+/* ------------------------------------------------------------------ *
+ * 高质量单图（独立绘图功能）
+ * ------------------------------------------------------------------ */
+
+const ART_RE = /^[a-f0-9]{20}\.(jpg|png|webp)$/
+
+const artKeyOf = (prompt, style, ratio, seed) =>
+  crypto.createHash('sha1').update(`art:${prompt}|${style}|${ratio}|${seed}`).digest('hex').slice(0, 20)
+
+function findArt(key) {
+  for (const ext of ['jpg', 'png', 'webp']) {
+    const p = path.join(ART_DIR, `${key}.${ext}`)
+    if (fs.existsSync(p)) return { file: p, ext, name: `${key}.${ext}` }
+  }
+  return null
+}
+
+/** 拼一条真正像样的出图提示词：主体 + 风格 + 质量约束 + 负向词 */
+function artPrompt(prompt, style) {
+  const base = String(prompt || '').trim()
+  const st = ART_STYLES[style] || ART_STYLES.photo
+  return `${base}, ${st}, highly detailed, professional quality, ${ART_NEGATIVE}`
+}
+
+/**
+ * 中文描述要翻成英文再出图。
+ * 实测：把「黄昏下的江南水乡，白墙黛瓦，河面倒影，薄雾」原样丢给 flux，
+ * 出来的是一张人像照片 —— 中文长句对它几乎等于噪声；翻成英文关键词
+ * （jiangnan water town at dusk, white walls, river reflections, mist）就对了。
+ * 用本地快模型翻，几秒的事，比出图便宜得多。
+ */
+let _llm = null
+function llm() {
+  if (!_llm) {
+    try {
+      _llm = require('./chaos-llm')
+    } catch (_) {
+      _llm = false
+    }
+  }
+  return _llm
+}
+
+async function toEnglish(text) {
+  const s = String(text || '').trim()
+  if (!/[\u4e00-\u9fa5]/.test(s)) return s
+  const L = llm()
+  if (!L) return s
+  try {
+    const model = (typeof L.pickFastModel === 'function' && L.pickFastModel()) || undefined
+    const r = await L.chat({
+      model,
+      options: { num_ctx: 2048, temperature: 0.2, num_predict: 160 },
+      keepAlive: '30m',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Translate the user description into a concise English image prompt. ' +
+            'Output ONLY comma-separated English keywords, no quotes, no explanation.',
+        },
+        { role: 'user', content: s },
+      ],
+    })
+    const out = String(r?.text || '')
+      .replace(/[`"']/g, '')
+      .replace(/\s*\n+\s*/g, ', ')
+      .trim()
+    // 翻不出来（模型抽风给了中文）就别用，宁可原样发
+    if (!out || /[\u4e00-\u9fa5]{2,}/.test(out)) return s
+    return out.slice(0, 400)
+  } catch (_) {
+    return s
+  }
+}
+
+/**
+ * 生成一张高质量图片。
+ * 返回 { ok, name, file, width, height, source } —— 失败时给 error。
+ * 走和配图同一条限流队列（pollinations 免费额度是每 IP 每 45 秒 1 张），
+ * 所以这里最多试 3 次、总等待不超过 150 秒，超时就如实报错，
+ * 绝不返回一张「本地插画」冒充高质量出图。
+ */
+async function generateHQ({ prompt, style = 'photo', ratio = '16:9', seed = 1 } = {}) {
+  const text = String(prompt || '').trim()
+  if (!text) return { ok: false, error: '先写一下想画什么' }
+  if (text.length > 600) return { ok: false, error: '提示词太长（上限 600 字）' }
+
+  const [width, height] = RATIOS[ratio] || RATIOS['16:9']
+  const key = artKeyOf(text, style, ratio, seed)
+  const hit = findArt(key)
+  if (hit) return { ok: true, ...hit, width, height, source: 'cache' }
+
+  const en = await toEnglish(text)
+  const styled = artPrompt(en, style)
+  const deadline = Date.now() + 150000
+  let lastErr = '出图超时'
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (Date.now() >= deadline) break
+    try {
+      const buf = await enqueueOnline(() => fetchOnline(styled, { seed, timeoutMs: 60000, width, height }))
+      const file = path.join(ART_DIR, `${key}.jpg`)
+      fs.writeFileSync(file, buf)
+      return { ok: true, file, ext: 'jpg', name: `${key}.jpg`, width, height, source: 'ai' }
+    } catch (err) {
+      lastErr = err instanceof RateLimited ? '出图额度被占满了，稍等一会儿再试' : err.message
+      if (err instanceof RateLimited) {
+        nextOnlineAt = Math.max(nextOnlineAt, Date.now() + err.retryAfterMs)
+        continue
+      }
+      break
+    }
+  }
+  return { ok: false, error: lastErr }
+}
+
+function resolveArt(name) {
+  const n = String(name || '')
+  if (!ART_RE.test(n)) return null
+  const file = path.join(ART_DIR, n)
+  if (!fs.existsSync(file)) return null
+  const ext = n.split('.').pop()
+  return { file, type: MAGIC[ext] || 'application/octet-stream' }
+}
+
+/** 最近的绘图记录（按修改时间倒序） */
+function listArt(limit = 30) {
+  try {
+    return fs
+      .readdirSync(ART_DIR)
+      .filter((f) => ART_RE.test(f))
+      .map((f) => {
+        const st = fs.statSync(path.join(ART_DIR, f))
+        return { name: f, at: st.mtimeMs, size: st.size }
+      })
+      .sort((a, b) => b.at - a.at)
+      .slice(0, limit)
+  } catch (_) {
+    return []
+  }
+}
+
 module.exports = {
   W,
   H,
+  RATIOS,
+  ART_STYLES,
+  generateHQ,
+  toEnglish,
+  resolveArt,
+  listArt,
   generateOne,
   generateMany,
   resolveImage,

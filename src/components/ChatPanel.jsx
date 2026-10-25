@@ -330,7 +330,8 @@ export default function ChatPanel() {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages.length, events.length])
+    /* 9.8.2：流式回答逐字增长时也要跟着滚到底（内容变化不改变条数） */
+  }, [messages.length, messages[messages.length - 1]?.content, events.length])
 
   // 8.0.2：草稿自动保存（按对话隔离；换对话 / 重启都不丢）
   useEffect(() => {

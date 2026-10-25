@@ -19,6 +19,8 @@ let socket = null
 let reconnectTimer = null
 let reconnectDelay = 800
 let manualClose = false
+/* 9.8.2：全局错误闪光计时器（非序列化状态，放模块级） */
+let errorFlashTimer = null
 
 function wsUrl(token) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -97,6 +99,10 @@ export const useStore = create((set, get) => ({
   update: { status: 'idle', message: '', percent: 0 },
 
   toasts: [],
+
+  /* 9.8.2：全局错误闪光。任何地方报错（toast error / 任务出错 / 错误事件），
+     氛围灯立刻变红、实时连接徽标显示「发生错误」，持续 10 秒自动复原 */
+  errorFlashUntil: 0,
 
   /* 侧栏 / 对话面板的折叠开关。跨重启保留（见 lib/prefs.js）。
      注意：它一旦持久化，就会改变 scripts/e2e-check.js 与 scripts/responsive-check.js
@@ -183,8 +189,20 @@ export const useStore = create((set, get) => ({
   toast(text, kind = 'info') {
     const id = Math.random().toString(36).slice(2)
     const ms = kind === 'error' ? 10000 : 4200
+    /* 9.8.2：报错即触发全局错误闪光（氛围灯变红 + 连接徽标显示错误） */
+    if (kind === 'error') get().triggerErrorFlash()
     set((s) => ({ toasts: [...s.toasts, { id, text, kind, ms }] }))
     setTimeout(() => get().dismissToast(id), ms)
+  },
+
+  /* 9.8.2：触发全局错误闪光，10 秒后自动复原 */
+  triggerErrorFlash() {
+    set({ errorFlashUntil: Date.now() + 10000 })
+    if (errorFlashTimer) clearTimeout(errorFlashTimer)
+    errorFlashTimer = setTimeout(() => {
+      errorFlashTimer = null
+      useStore.setState({ errorFlashUntil: 0 })
+    }, 10000)
   },
 
   dismissToast(id) {
@@ -1373,6 +1391,29 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  /* 9.8.2：卸载混沌引擎（模型目录按用户勾选决定删不删） */
+  async uninstallChaos(deleteModels) {
+    try {
+      const res = await api.chaosUninstall(deleteModels)
+      set({ chaosJob: res.data, chaosLogs: [] })
+      get().toast('开始卸载混沌引擎…', 'info')
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
+  /* 9.8.2：热更换默认模型 —— 执行器默认/新对话/AIPPT 即时生效，不用重启 */
+  async setChaosDefaultModel(model) {
+    try {
+      const res = await api.chaosSetDefaultModel(model)
+      if (!res.ok) throw new Error(res.error || '设置失败')
+      get().toast(`默认模型已切换为 ${model}`, 'success')
+      get().loadChaosStatus()
+    } catch (err) {
+      get().toast(err.message, 'error')
+    }
+  },
+
   async pullChaosModel(model) {
     try {
       const res = await api.chaosPull(model)
@@ -1467,6 +1508,8 @@ function connectSocket() {
   ws.onopen = () => {
     reconnectDelay = 800
     useStore.setState({ conn: 'open' })
+    // 9.8.2：重连成功立刻同步一次系统快照 —— 修「引擎已启动卡片还显示未启动」
+    useStore.getState().refreshSystem()
   }
 
   ws.onmessage = (event) => {
@@ -1565,6 +1608,8 @@ function handleServerMessageRaw(msg) {
           ? state.tasks.map((t) => (t.id === payload.id ? payload : t))
           : [payload, ...state.tasks],
       })
+      /* 9.8.2：任务出错 → 全局错误闪光（氛围灯变红） */
+      if (payload?.error) useStore.getState().triggerErrorFlash()
       // 换岗提示：靠 handoffAt 的跃迁判断（**不新增 WS 事件类型** —— 前端
       // handleServerMessage 的 switch 没有 default 报错，漏一个 case 就是静默
       // 失效，所以新状态一律挂在既有 task 字段上）
@@ -1613,13 +1658,46 @@ function handleServerMessageRaw(msg) {
 
     case 'message:added':
       if (state.detail && state.detail.task.id === payload.taskId) {
-        if (Array.isArray(state.detail.messages) && !state.detail.messages.some((m) => m.id === payload.id)) {
-          useStore.setState({ detail: { ...state.detail, messages: [...state.detail.messages, payload] } })
+        /* 9.8.2：真消息到了就撤掉流式占位（streaming- 前缀的临时消息） */
+        const base = state.detail.messages.filter(
+          (m) => !(payload.role === 'assistant' && String(m.id).startsWith(`streaming-${payload.taskId}`)),
+        )
+        if (!base.some((m) => m.id === payload.id)) {
+          useStore.setState({ detail: { ...state.detail, messages: [...base, payload] } })
         }
       }
       break
 
+    /* 9.8.2：混沌回答逐字流式 —— 增量拼到当前任务的流式占位消息上 */
+    case 'message:delta': {
+      const delta = String(payload?.delta || '')
+      if (!delta) break
+      const detail = useStore.getState().detail
+      if (!detail || detail.task.id !== payload.taskId) break
+      const msgs = detail.messages
+      const streamId = `streaming-${payload.taskId}`
+      const last = msgs[msgs.length - 1]
+      if (last && String(last.id) === streamId) {
+        useStore.setState({
+          detail: { ...detail, messages: [...msgs.slice(0, -1), { ...last, content: last.content + delta }] },
+        })
+      } else {
+        useStore.setState({
+          detail: {
+            ...detail,
+            messages: [
+              ...msgs,
+              { id: streamId, task_id: payload.taskId, role: 'assistant', content: delta, created_at: Date.now(), streaming: true },
+            ],
+          },
+        })
+      }
+      break
+    }
+
     case 'event:added':
+      /* 9.8.2：错误事件（Agent 执行报错）也触发全局错误闪光 */
+      if (payload?.type === 'error') useStore.getState().triggerErrorFlash()
       if (state.detail && state.detail.task.id === payload.taskId) {
         if (Array.isArray(state.detail.events) && !state.detail.events.some((e) => e.id === payload.id)) {
           useStore.setState({ detail: { ...state.detail, events: [...state.detail.events, payload] } })
@@ -1744,6 +1822,9 @@ function handleServerMessageRaw(msg) {
       useStore.getState().loadChaosAutomations()
       // 9.8.0：开机自动就绪 / 兑换码 / 绑定手机号都会推这个事件，顺手刷引擎状态
       useStore.getState().loadChaosStatus()
+      // 9.8.2：首页「混沌引擎」卡片读的是 system.chaos 快照 —— 不跟着刷，
+      // 引擎明明已启动卡片却一直「未启动」（用户报的 bug）
+      useStore.getState().refreshSystem()
       if (payload?.reason === 'automation-fired') {
         useStore.getState().refreshConversations()
         useStore.getState().toast(`定时自动化「${payload.name || ''}」已自动开跑`, 'info')

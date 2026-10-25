@@ -23,6 +23,9 @@ const PptxGenJS = require('pptxgenjs')
 const CONFIG = require('./config')
 const chaosLlm = require('./chaos-llm')
 const imageGen = require('./aippt-image')
+const webimage = require('./aippt-webimage')
+const researchMod = require('./aippt-research')
+const quality = require('./aippt-quality')
 
 const DIR = path.join(CONFIG.DATA_DIR, 'aippt')
 if (!fs.existsSync(DIR)) fs.mkdirSync(DIR, { recursive: true })
@@ -223,12 +226,28 @@ function normalizeTheme(id) {
 function resolveModel(model) {
   const m = String(model || '').trim()
   if (m) return m
+  /* AIPPT 的正文/大纲必须用大模型 —— 用户点名「AIPPT 重点要弄好」。
+   * CPU 分层的小模型只用于策划和速答（见 chaosLlm.preferredDefaultModel），
+   * 这里反着来：优先 7B 及以上，实在没有才退而求其次。
+   * 注意：snapshot().models 是探测到的已装模型，**没有 installed 字段**
+   * （那是 catalogFor 加的）—— 按 installed 过滤永远得空数组，会静默
+   * 退化成小模型（2026-10-25 实测翻过两次车）。 */
   try {
     const s = chaosLlm.snapshot()
-    const first = (s?.models || []).find((x) => x.installed) || (s?.models || [])[0]
-    if (first?.id) return first.id
+    const installed = (s?.models || []).map((x) => x.id).filter(Boolean)
+    /* CPU 上 14b 比 7b 慢一倍、质量提升有限 —— 优先 7b，其次其他大模型 */
+    const big =
+      installed.find((id) => /qwen2\.5:7b/i.test(id)) ||
+      installed.find((id) => /7b|8b|9b|1[0-9]b|3[2-9]b|70b/i.test(id))
+    if (big) return big
   } catch (_) {
-    /* 探测失败就用兜底 */
+    /* 探测失败就走兜底 */
+  }
+  try {
+    const preferred = chaosLlm.preferredDefaultModel()
+    if (preferred) return preferred
+  } catch (_) {
+    /* 探测失败就走兜底 */
   }
   return 'qwen2.5:7b'
 }
@@ -239,6 +258,308 @@ function strList(v, limit = 6, maxLen = 120) {
     .filter(Boolean)
     .slice(0, limit)
     .map((x) => x.slice(0, maxLen))
+}
+
+/* ------------------------------------------------------------------ *
+ * 9.8.2：紧凑行式大纲
+ *
+ * 为什么要换掉 JSON：这台机器是纯 CPU（i5-12400 / 无独显），实测
+ * qwen2.5:7b 只有 2.6 tok/s、1.5b 有 9.1 tok/s。一份 6 页 JSON 大纲
+ * 光键名（"title"/"kicker"/"kind"/"body"/"extra"/"stats"/"note"/"image"
+ * 重复 6 次）就要吃掉三成 token，而 token 在这台机器上等于时间。
+ *
+ * 行式格式把结构开销压到接近零，且模型不需要维护括号配对 —— 小模型
+ * 输出 JSON 最常见的失败（少个逗号、多个尾巴、缺右括号）直接消失。
+ * 剩下的事（页型节奏、封面结尾、kicker、空字段兜底）全部由代码保证。
+ * ------------------------------------------------------------------ */
+
+const KIND_BY_CODE = {
+  '01': 'cover',
+  '1': 'cover',
+  COVER: 'cover',
+  B: 'bullets',
+  S: 'stats',
+  C: 'twocol',
+  Q: 'quote',
+  E: 'closing',
+}
+
+const COMPACT_SPEC = `格式（一行一条，不要 JSON，不要解释，不要代码块；代号：01 封面、B 要点、S 数据、C 对比、Q 金句、E 结尾）：
+T|整份标题|副标题
+01|封面那句主张
+B|标题
+- 要点
+S|标题
+数值|指标名
+C|标题
+- 左栏|- 右栏
+Q|标题
+E|标题
+- 行动号召`
+
+const COMPACT_FEWSHOT = `示例（另一个主题的完整 6 页稿子，只示范写法）：
+T|出杯 90 秒：一家咖啡连锁的效率重建|32 家门店的三个月实验
+01|高峰期，每杯要等 4 分 12 秒
+B|慢不在咖啡机，在动线
+- 一名店员每小时往返取料 37 次，绕行 1.4 公里
+- 62% 的等待发生在排队，而不是制作
+- 峰值时段订单集中到 3 倍，人手却没变
+S|改造三个月后的数字
+-55%|高峰期等待时长
+90s|平均出杯时间
+C|旧动线 vs 新动线
+- 取料与制作挤在同一区|- 备料前置，制作区不放原料
+- 三台设备塞进 2 米内|- 设备按订单流顺序摆放
+- 高峰期靠加人|- 高峰期靠分单与预判
+Q|顾客记住的不是咖啡豆，是等了多久
+E|从一家门店的动线开始
+- 本周画一张店员走动图，标出最远的三个往返`
+
+/** 空话词表：要点里出现且整句偏短就判为注水 */
+const FILLER_WORDS = [
+  '意义重大',
+  '至关重要',
+  '众所周知',
+  '不言而喻',
+  '综上',
+  '总的来说',
+  '总而言之',
+  '随着',
+  '不断发展',
+  '进一步提升',
+  '深入探讨',
+  '重要作用',
+  '越来越',
+  '新纪元',
+  '新时代',
+  '赋能',
+  '抓手',
+  '生态闭环',
+]
+
+/**
+ * 解析紧凑行式大纲 → 与 normalizeOutline 同构的 raw 结构。
+ * 容错优先：认不出的行直接跳过，宁可少一条要点也不整份作废。
+ */
+function parseCompactOutline(text, { topic, n, pad = true } = {}) {
+  const lines = String(text || '')
+    .replace(/```[a-z]*/gi, '')
+    /* 小模型爱写 markdown 加粗：「**20% 门店销售提升案例**」——
+     * 星号不剥掉就会原样渲染上页面，还顺手破坏同名/重复检测 */
+    .replace(/\*{2,}/g, '')
+    .replace(/^#{1,4}\s+/gm, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+
+  let title = topic
+  let subtitle = ''
+  const slides = []
+  let cur = null
+  let seenDeck = false
+
+  const pushSlide = () => {
+    if (!cur) return
+    // 金句页最常见的写法是「Q|金句本身」，没有独立内容行 —— 把页头让给金句
+    if (cur.kind === 'quote' && !cur.body.length && cur.title) {
+      cur.body = [cur.title.slice(0, 60)]
+      cur.title = ''
+    }
+    slides.push(cur)
+  }
+
+  for (const raw of lines) {
+    // T|标题|副标题
+    const t = raw.match(/^T\s*[|｜]\s*(.+?)(?:\s*[|｜]\s*(.*))?$/i)
+    if (t) {
+      // 小模型写够了不知道停，会把整份稿子重复好几遍（实测 1.5B 重复 4 次）。
+      // 见到第二份 T 行就收工，绝不把重复内容渲染进 PPT。
+      if (seenDeck) break
+      seenDeck = true
+      title = (t[1] || topic).trim()
+      subtitle = (t[2] || '').trim()
+      continue
+    }
+
+    // 页头：01|标题 / B|标题 …
+    const head = raw.match(/^(0?[1-9]|COVER|B|S|C|Q|E)\s*[|｜]\s*(.*)$/i)
+    if (head) {
+      const code = head[1].toUpperCase()
+      // 纯数字页头：01 是封面，其余当内容页（模型有时整份都用数字编号）
+      const kind = KIND_BY_CODE[code] || (/^[1-9]$/.test(code.replace(/^0/, '')) ? 'bullets' : '')
+      if (kind) {
+        if (slides.length >= n) break // 页数已够，后面的重复内容一律不要
+        pushSlide()
+        // 模型偶尔写成「S|标题 数值|指标名」，标题只取竖线前那段
+        const headTitle = String(head[2] || '').split(/[|｜]/)[0].trim().slice(0, 60)
+        cur = { kind, title: headTitle, body: [], extra: [], stats: [], note: '', image: '' }
+        continue
+      }
+    }
+
+    if (!cur) continue // 页头之前的内容丢掉（多半是模型的寒暄）
+
+    // 只剥离「- 」这种带空格的列表符号。直接写 /^[-·•*]\s*/ 会把数据页的
+    // -46%（负数百分比）吃成 46%，那是把结论改反了。
+    const body = /^[-·•*]\s+/.test(raw) ? raw.replace(/^[-·•*]\s+/, '').trim() : raw
+
+    if (cur.kind === 'stats') {
+      // 82%|效率提升
+      const m = body.match(/^(.+?)\s*[|｜]\s*(.+)$/)
+      if (m && cur.stats.length < 3) {
+        cur.stats.push({ v: m[1].trim().slice(0, 12), l: m[2].trim().slice(0, 24) })
+      } else if (!cur.body.length && body) {
+        cur.body.push(body.slice(0, 40))
+      }
+      continue
+    }
+
+    if (cur.kind === 'twocol') {
+      // - 左栏观点|- 右栏观点
+      const m = body.match(/^(.+?)\s*[|｜]\s*(.+)$/)
+      if (m) {
+        if (cur.body.length < 4) cur.body.push(m[1].replace(/^[-·•*]\s+/, '').trim())
+        if (cur.extra.length < 4) cur.extra.push(m[2].replace(/^[-·•*]\s+/, '').trim())
+      }
+      continue
+    }
+
+    if (cur.kind === 'quote') {
+      if (!cur.body.length && body) cur.body.push(body.slice(0, 60))
+      continue
+    }
+
+    // cover / bullets / closing
+    if (/^\s*[-·•*]/.test(raw) || cur.kind !== 'cover') {
+      if (cur.body.length < 5 && body) cur.body.push(body.slice(0, 40))
+    }
+  }
+  pushSlide()
+
+  // 一页都没认出来 → 返回 null，让上层走 JSON 兜底
+  if (!slides.length) return null
+
+  // 页数不够就按需要补空白要点页（末尾的结尾页要留在最后）。
+  // pad:false 用于「续写补页」——补齐交给模型继续写，而不是先塞占位页。
+  let guard = 0
+  while (pad && slides.length < n && guard++ < 20) {
+    const last = slides[slides.length - 1]
+    const blank = { kind: 'bullets', title: '补充要点', body: [], extra: [], stats: [], note: '', image: '' }
+    if (last && last.kind === 'closing') slides.splice(slides.length - 1, 0, blank)
+    else slides.push(blank)
+  }
+
+  return { title, subtitle, slides: slides.slice(0, n) }
+}
+
+/** 一句话判断：这行要点是不是注水（空话 + 太短） */
+function isFiller(line) {
+  const s = String(line || '').trim()
+  if (!s) return true
+  // 只有 3 字以内才是真的没内容（「很重要」「待补充」）。之前门槛设成 8 字，
+  // 把「传统方式效率低」这种正常短要点也当注水删了，结果双栏页左栏全空。
+  if (s.length < 4) return true
+  const hit = FILLER_WORDS.filter((w) => s.includes(w))
+  if (!hit.length) return false
+  // 带数字或英文的长句说明有实指，短句还塞空话就是注水
+  const hasConcrete = /\d|[A-Za-z]{3,}/.test(s)
+  return !hasConcrete && s.length < 20
+}
+
+/**
+ * 大纲质量后处理：过滤注水、去重、修剪超长要点。
+ *
+ * 模型爱写「随着数字化转型不断深入」这种句子，渲染出来就是典型的水词 PPT，
+ * 这里直接砍掉。但砍要有底线：双栏页左右各少一条就成半边空栏，比留一句
+ * 平庸的话更难看，所以清空或不足两条时回退原样。
+ */
+function cleanPointList(list, { min = 0 } = {}) {
+  const before = list.map((x) => String(x || '').trim()).filter(Boolean)
+  const seen = new Set()
+  const after = before
+    .filter((x) => !isFiller(x))
+    .filter((x) => {
+      const key = x.replace(/\s/g, '').slice(0, 8)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((x) => (x.length > 30 ? x.slice(0, 29) + '…' : x))
+  if (after.length >= min) return after
+  // 删过头了：宁可保留原句，也不要留下空白栏
+  return before.map((x) => (x.length > 30 ? x.slice(0, 29) + '…' : x))
+}
+
+/** 副标题也常被模型写成格式词本身（「副标题：副标题」），这种直接丢掉 */
+function cleanSubtitle(raw) {
+  let t = String(raw || '').trim()
+  if (!t) return ''
+  if (/^(副标题|主标题|标题|副题|subtitle)$/i.test(t)) return ''
+  /* 「3个月沉淀20万企微会员_用户_品牌_流量」——关键词串的下划线尾巴
+   * 是模型从检索关键词里抄来的，去掉才像人写的副标题 */
+  t = t.replace(/[_｜|]\s*\S{2,4}(_\S{2,4}){1,6}\s*$/, '').trim()
+  return t.slice(0, 120)
+}
+
+function polishOutline(outline) {
+  if (!outline || !Array.isArray(outline.slides)) return outline
+  for (const s of outline.slides) {
+    const need = s.kind === 'twocol' ? 2 : 0
+    if (Array.isArray(s.body)) s.body = dedupePoints(cleanPointList(s.body, { min: need }))
+    if (Array.isArray(s.extra)) s.extra = dedupePoints(cleanPointList(s.extra, { min: need }))
+  }
+  return outline
+}
+
+/** 同一页里的近似重复（前 14 个字一样就算重复）：模型爱换个说法再写一遍 */
+function dedupePoints(list) {
+  const seen = new Set()
+  const out = []
+  for (const x of list || []) {
+    const k = String(x).replace(/\s+/g, '').slice(0, 14)
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    out.push(x)
+  }
+  return out
+}
+
+/** 页型对应的兜底标题 —— 模型把「数值」写在页头时用它顶上 */
+const KIND_FALLBACK_TITLE = {
+  cover: '',
+  bullets: '核心要点',
+  stats: '关键指标',
+  twocol: '两种做法对比',
+  quote: '',
+  closing: '下一步',
+}
+
+/** 模型会把格式词直接当标题用，也会把一整句行动号召塞进页头 */
+const TITLE_PREFIX_RE = /^(标题|要点|结论|行动号召|行动|金句|封面|数值|指标名|数据|对比)\s*[:：]\s*/
+
+function cleanTitle(raw, kind, topic) {
+  let t = String(raw || '').trim()
+  if (!t) return ''
+  t = t.replace(TITLE_PREFIX_RE, '').trim()
+  // 模型会把代号也带进页头（「封面主张 / S」「标题 | B」），把尾巴削掉
+  t = t.replace(/\s*[|｜/]\s*(0?[1-9]|COVER|B|S|C|Q|E)\s*$/i, '').trim()
+  // 页头只剩格式词（「数值」「指标名」）时换成该页型的通用标题
+  if (/^(数值|指标名|指标|数据|标题|要点|金句|对比|行动号召)$/.test(t)) {
+    return KIND_FALLBACK_TITLE[kind] || ''
+  }
+  // 「封面主张」「要点页标题」这类描述词也不是标题
+  if (/^(封面那句主张|封面主张|主标题|副标题|内容页|要点页|数据页|对比页|金句页|结尾页)(标题)?$/.test(t)) {
+    return KIND_FALLBACK_TITLE[kind] || ''
+  }
+  // 页头就是个裸数字（「-25%」「34%」）—— 那是数据行串到标题位了，
+  // 拿它当页标题会让人以为这页讲的是这个数字
+  if (/^[-+±]?\d+(\.\d+)?\s*(%|％|倍|万|亿|元|天|小时|分钟|秒)?$/.test(t)) {
+    return KIND_FALLBACK_TITLE[kind] || ''
+  }
+  if (!t) return ''
+  // 中文按 24 字、英文按 70 字符收口，否则渲染时字号被压到看不清
+  const cap = /[\u4e00-\u9fa5]/.test(t) ? 24 : 70
+  return t.length > cap ? t.slice(0, cap - 1) + '…' : t
 }
 
 /**
@@ -274,15 +595,38 @@ function normalizeOutline(raw, { topic, n }) {
 
     // 数据卡但没数据 / 双栏但缺一边 → 退回普通要点页，别渲染出空框
     let finalKind = kind
-    if (finalKind === 'stats' && stats.length < 2) finalKind = 'bullets'
-    if (finalKind === 'twocol' && (extra.length < 2 || body.length < 2)) finalKind = 'bullets'
-    if (finalKind === 'quote' && !body.length) finalKind = 'bullets'
+    if (finalKind === 'stats' && stats.length < 2) {
+      // 只憋出一个指标时，把它写成一句话留给要点页，别让用户看到「内容待补充」
+      if (stats.length === 1 && !body.length) body.push(`${stats[0].v} ${stats[0].l}`.trim())
+      finalKind = 'bullets'
+    }
+    if (finalKind === 'twocol' && (extra.length < 2 || body.length < 2)) {
+      finalKind = 'bullets'
+    } else if (finalKind === 'twocol') {
+      // 左右条数不一致会渲染成一高一低的半边空栏，按少的一边对齐
+      const k = Math.min(body.length, extra.length, 4)
+      body.length = k
+      extra.length = k
+    }
+    if (finalKind === 'quote' && !body.length) {
+      // 金句写在页头也是有效的：标题让位给金句，避免同句重复两遍
+      const head = String(s?.title || '').trim()
+      if (head) body.push(head.slice(0, 60))
+      else finalKind = 'bullets'
+    }
 
+    const isQuote = finalKind === 'quote'
+    // 标题清洗：模型常把格式词当标题（「数值」「行动号召：」），也会一句话写太长
+    const rawTitle = cleanTitle(s?.title, finalKind, isFirst ? topic : '')
     return {
-      title: String(s?.title || (isFirst ? topic : `第 ${i + 1} 页`)).slice(0, 80),
+      title: rawTitle || (isFirst ? String(topic).slice(0, 24) : isQuote ? '' : `第 ${i + 1} 页`),
       kicker: String(s?.kicker || '').slice(0, 8),
       kind: finalKind,
-      body: body.length ? body : isFirst || finalKind === 'closing' ? [] : ['（本页内容待补充）'],
+      body: body.length
+        ? body
+        : isFirst || finalKind === 'closing' || finalKind === 'stats'
+          ? []
+          : ['（本页内容待补充）'],
       extra,
       stats,
       note: String(s?.note || '').slice(0, 400),
@@ -310,7 +654,7 @@ function normalizeOutline(raw, { topic, n }) {
 
   return {
     title: String(raw?.title || topic).slice(0, 80),
-    subtitle: String(raw?.subtitle || '').slice(0, 120),
+    subtitle: cleanSubtitle(raw?.subtitle),
     slides,
   }
 }
@@ -772,70 +1116,87 @@ async function writeOut(pptx, id, title, outline, meta) {
  * 阶段一 / 二：提示词
  * ------------------------------------------------------------------ */
 
-function planPrompt({ topic, n, toneDesc, audience, lang }) {
-  if (lang === 'en') {
-    return (
-      `You are a top-tier presentation strategist. Deck topic: "${topic}". Total ${n} slides.\n` +
-      `Tone: ${toneDesc}.\n` +
-      (audience ? `Audience: ${audience}.\n` : '') +
-      `Think it through before writing anything, in English, 200-320 words, as numbered points:\n` +
-      `1) The single core argument this deck must land.\n` +
-      `2) What this audience cares about most, and what they will push back on.\n` +
-      `3) The narrative spine: which 3-5 parts, what each part is for, how many slides each gets.\n` +
-      `4) The 2-3 strongest concrete evidence points (numbers, cases, comparisons) worth showing.\n` +
-      `5) Visual direction: which slides deserve an illustration and what the picture should show.\n` +
-      `Be specific and opinionated. No pleasantries, no meta commentary.`
-    )
-  }
+/**
+ * 阶段一：联网找资料。
+ *
+ * 9.8.2 的做法是让本地模型「先列 6-8 条硬信息」当素材，再写正文。
+ * 问题在于：7B 没有行业数据，它列出来的「降低库存积压 50%」是编的 ——
+ * 比空话更糟，因为用户一眼能看出假。
+ *
+ * 现在改成真的上网查：360 搜索 + 正文抓取，拿到
+ *   ① 行业真实在讨论的话题（搜索结果标题）
+ *   ② 带数字的真实句子
+ * 模型的任务从「创作」退回到「挑选和改写」，这才是 7B 做得好的事。
+ *
+ * 查不到才退回让模型自己列 —— 有素材总比没有强，但要在 UI 上说清楚。
+ */
+function fallbackPlanPrompt({ topic, n, toneDesc, audience }) {
   return (
-    `你是一位顶级演示文稿策划师。这次要做《${topic}》，共 ${n} 页。\n` +
-    `语气：${toneDesc}。\n` +
-    (audience ? `听众：${audience}。\n` : '') +
-    `先别急着排版，先用中文把策划想清楚，200-320 字，分 5 点：\n` +
-    `1）这份演示必须让听众记住的那一个核心主张是什么。\n` +
-    `2）听众最关心什么、最可能在哪一点上反对或质疑。\n` +
-    `3）叙事主线：分成哪 3-5 个部分，每部分承担什么作用，各占几页。\n` +
-    `4）全篇最有说服力的 2-3 个具体论据（数字、案例、前后对比），要能落在页面上。\n` +
-    `5）配图方向：哪几页值得配图，画什么画面。\n` +
-    `要求：直接给判断，不要客套话，不要说「接下来我将」。`
+    `主题：《${topic}》，要做一份 ${n} 页的演示，语气${toneDesc}。` +
+    (audience ? `听众：${audience}。` : '') +
+    `\n先不要设计页面结构。请列出 6-8 条能直接放到页面上的具体信息，一行一条，每条 20-30 字：\n` +
+    `优先给数字、案例、前后对比、具体做法。\n` +
+    `不要写「重要性」「意义」「趋势」「前景」这类判断，也不要写「首先/其次」。直接列。`
   )
 }
 
-function outlinePrompt({ topic, n, toneDesc, audience, lang, plan }) {
+/**
+ * 阶段二：逐页大纲（紧凑行式）。
+ *
+ * 9.8.3 的核心改动是「页头必须是判断句」。
+ *
+ * 之前模型写的页头是名词短语：「精准采购策略的三大优势」「传统方法 vs 数据驱动方案」，
+ * 正文就只能是三个「提升了 X%」的并列句 —— 这是 PPT 读起来像说明书的根源。
+ * 千问那种能看的效果来自：页头先给一个明确判断，要点再去支撑这个判断。
+ *
+ * 所以规则里把「页头 = 名词」改掉，直接给句式模板（抽象模板不会像
+ * few-shot 那样被小模型原文照抄）。
+ */
+function outlinePrompt({ topic, n, toneDesc, audience, lang, plan, hasResearch }) {
   if (lang === 'en') {
     return (
-      `Your own planning notes for this deck:\n---\n${plan}\n---\n` +
-      `Now turn it into ${n} slides. Output ONLY the JSON object, no prose, no markdown fences.\n` +
-      `{"title":"deck title","subtitle":"one-line subtitle","slides":[{"title":"slide title","kicker":"01","kind":"cover","body":["..."],"extra":[],"stats":[],"note":"speaker note","image":"english image prompt or empty"}]}\n` +
-      `Rules:\n` +
-      `- slides.length must be exactly ${n}; slide 1 kind="cover"; last slide kind="closing".\n` +
-      `- kind is one of cover/bullets/twocol/stats/quote/closing.\n` +
-      `- bullets: 3-5 points, each 8-16 words, each containing a concrete noun, number or action. No filler like "introduction" or "overview".\n` +
-      `- twocol: body (3 points) vs extra (3 points), used for comparison.\n` +
-      `- stats: stats array of 2-3 objects {"v":"82%","l":"efficiency gain"} plus one body line.\n` +
-      `- quote: one 15-30 word line in body.\n` +
-      `- kicker: section number like "01", empty on cover/closing.\n` +
-      `- image: English prompt describing a concrete scene for that slide (no text/letters); empty string if the slide needs no picture. At most 4 slides should have images.\n` +
-      `- title max 10 words. Write everything in English.`
+      `Source material (pick, rewrite, never copy verbatim):\n${plan}\n\n` +
+      `Write a ${n}-slide deck on "${topic}" (tone: ${toneDesc}).` +
+      (audience ? ` Audience: ${audience}.` : '') +
+      `\n\nOne line per item, no JSON, no commentary, no code fences:\n\n` +
+      `T|deck title|subtitle\n` +
+      `01|cover headline\n` +
+      `B|slide title\n` +
+      `- a point, 8-16 words, concrete\n` +
+      `S|metric slide title\n` +
+      `82%|efficiency gain\n` +
+      `C|comparison slide title\n` +
+      `- left|- right\n` +
+      `Q|one-line judgment\n` +
+      `E|closing title\n` +
+      `- one action\n\n` +
+      `Codes: 01 cover, B bullets, S metrics, C comparison, Q quote, E closing.\n` +
+      `Exactly ${n} pages: page 1 is 01, last is E, at least one S and one C between.\n` +
+      `Titles must be claims, not labels: "Waiting time, not the machine, is the bottleneck" — never "The Importance of X".\n` +
+      `Vary sentence openings across the three bullets on a page. Never write three "improved by N%" lines.`
     )
   }
   return (
-    `这是你刚为《${topic}》写的策划思路：\n---\n${plan}\n---\n` +
-    `现在把它落成 ${n} 页的逐页结构。只输出 JSON，不要任何解释、不要 markdown 代码块。\n` +
-    `{"title":"整份PPT标题","subtitle":"一句话副标题","slides":[{"title":"本页标题","kicker":"01","kind":"cover","body":["..."],"extra":[],"stats":[],"note":"演讲备注","image":"配图的英文画面描述，不需要就留空"}]}\n` +
-    `规则：\n` +
-    `- slides 长度必须正好是 ${n}；第 1 页 kind 必须是 "cover"；最后 1 页 kind 必须是 "closing"。\n` +
-    `- kind 只能取：cover / bullets / twocol / stats / quote / closing。\n` +
-    `- bullets：body 3-5 条，每条 14-26 字，必须含具体名词、数字或动作；禁止「介绍」「概述」「意义重大」这类空话。\n` +
-    `- twocol：body 3 条 + extra 3 条，用于左右对比。\n` +
-    `- stats：stats 数组 2-3 项 {"v":"82%","l":"效率提升"}，body 再写 1 句结论。\n` +
-    `- quote：body 只写 1 条，20-40 字金句。\n` +
-    `- kicker：章节号如 "01"，封面页和结尾页留空。\n` +
-    `- note：给讲者的一句提示，30 字内。\n` +
-    `- image：只有 cover / bullets 页可以配图（这两类版式有图位），写英文画面描述（描述具体场景与主体，不要出现文字）；twocol / stats / quote 一律留空字符串。全篇最多 4 页配图。\n` +
-    `- 标题不超过 18 字。全部用中文写作。`
+    `素材：\n${plan}\n\n` +
+    `现在写《${topic}》的 ${n} 页内容，语气${toneDesc}。` +
+    (audience ? `听众：${audience}。` : '') +
+    `\n\n${COMPACT_SPEC}\n\n${COMPACT_FEWSHOT}\n\n` +
+    `现在写《${topic}》，正好 ${n} 页。要求：\n` +
+    `1. 每个页头必须是一句判断，不是名词短语。\n` +
+    `   好：「菜单越长，毛利越薄」「慢的不是出餐，是补货」\n` +
+    `   差：「选品的重要性」「三大优势」「现状分析」\n` +
+    `   可以用这几种句式：A 不是 B，是 C／越 A，越 B／A 让 B 从 x 变成 y。每个页头换一种。\n` +
+    `2. B 页写 3 条要点，每条 16-24 字，支撑上面那句判断。三条不能都是「提升了 X%」这种句式，\n` +
+    `   至少一条要写「具体怎么做」，至少一条要写「哪里行不通」。\n` +
+    `3. S 页写 2-3 行「数值|指标名」，数值在前，只写 1 个数值这页就算没写完。数字优先用素材里的真实数字。\n` +
+    `4. C 页每行左右两栏用 | 隔开，写满 3 行，左右要真的对立，不能是同义换词。\n` +
+    `5. 素材里没出现的具体数字、公司名、人名都不要编；确实需要就用「某连锁品牌」这样的泛称。\n` +
+    `6. 页数写死：01 封面 1 页 + 内容页 ${Math.max(2, n - 2)} 页 + E 结尾 1 页，一共 ${n} 页；内容页里至少 1 页 S、至少 1 页 C。\n` +
+    `7. 直接输出第 1 行 T|标题，不要写「好的」「以下是」这类开场白。` +
+    (hasResearch ? `\n8. 上面素材是网上查到的真实资料，内容要贴着它写，不要跑题到别的行业。` : '')
   )
 }
+
 
 /* ------------------------------------------------------------------ *
  * 配图
@@ -848,47 +1209,548 @@ function outlinePrompt({ topic, n, toneDesc, audience, lang, plan }) {
  */
 const IMAGE_KINDS = new Set(['cover', 'bullets'])
 
-/** 从大纲里挑出需要配图的页（最多 maxImages 张，封面优先） */
-function pickImageJobs(outline, themeId, maxImages, lang) {
+/**
+ * 场景词：出现这些词的页，配图能真正加分。
+ * 「客户 / 门店 / 车间 / 景区」这类词暗示画面感；「提升 25% / 流程优化」这类
+ * 抽象指标配一张图反而干扰阅读，所以不给它配额。
+ */
+const SCENE_WORDS = [
+  '客户',
+  '用户',
+  '员工',
+  '团队',
+  '门店',
+  '工厂',
+  '车间',
+  '仓库',
+  '城市',
+  '县域',
+  '乡村',
+  '景区',
+  '现场',
+  '会议',
+  '培训',
+  '课堂',
+  '学生',
+  '医院',
+  '银行',
+  '物流',
+  '市场',
+  '活动',
+  '游客',
+  '青年',
+  '年轻',
+  '孩子',
+  '老人',
+  '驾驶',
+  '设备',
+  '机器',
+  '田间',
+  '街',
+  '展',
+]
+
+/**
+ * 9.8.2：按内容决定配几张图，而不是按页数硬算。
+ *
+ * 打分规则：
+ *   封面 +6（最显眼，几乎总要一张）
+ *   要点页 +1，标题/要点里每命中一个场景词 +2（最多 +6），要点满 3 条 +1
+ * 只有分数达到阈值的页才配图，所以：
+ *   全是抽象指标的稿子 → 只配封面（1 张）
+ *   讲门店/客户/现场的稿子 → 该配的页都配（封顶 4 张）
+ */
+function planImageSlots(outline, themeId, { maxImages = 4 } = {}) {
   const T = THEMES[normalizeTheme(themeId)]
-  const slides = outline.slides
-  const cap = Math.max(1, maxImages)
-  const wants = []
-  for (let i = 0; i < slides.length; i++) {
-    if (!IMAGE_KINDS.has(slides[i].kind)) continue
-    const prompt = String(slides[i].image || '').trim()
-    if (prompt) wants.push({ index: i, prompt })
+  const slides = outline.slides || []
+  const cap = Math.min(4, Math.max(1, maxImages))
+
+  const scored = []
+  slides.forEach((s, i) => {
+    if (!IMAGE_KINDS.has(s.kind)) return
+    const text = `${s.title || ''} ${(s.body || []).join(' ')} ${(s.stats || []).map((x) => x.l).join(' ')}`
+    let score = 0
+    if (i === 0) score += 6
+    if (s.kind === 'bullets') {
+      score += 1
+      const hits = SCENE_WORDS.filter((w) => text.includes(w)).length
+      score += Math.min(6, hits * 2)
+      if ((s.body || []).length >= 3) score += 1
+    }
+    if (score >= 2) scored.push({ index: i, score, title: s.title || outline.title || '' })
+  })
+
+  // 封面永远保底一张：一张有图的封面，观感提升最明显
+  if (!scored.some((x) => x.index === 0) && slides.length) {
+    scored.unshift({ index: 0, score: 6, title: slides[0].title || outline.title || '' })
   }
-  // 封面没给提示词也补一张 —— 有图的封面观感提升最明显
-  if (!wants.some((w) => w.index === 0)) {
-    wants.unshift({ index: 0, prompt: `abstract conceptual cover artwork representing "${outline.title}"` })
-  }
-  // 名额没用完就挑还没配图的要点页补位，别把预算浪费在放不下图的页型上
-  for (let i = 1; i < slides.length && wants.length < cap; i++) {
-    if (!IMAGE_KINDS.has(slides[i].kind)) continue
-    if (wants.some((w) => w.index === i)) continue
-    if (!(slides[i].body || []).length) continue
-    wants.push({ index: i, prompt: `clean minimal editorial illustration about "${slides[i].title}"` })
-  }
-  void lang
-  return wants.slice(0, Math.max(1, maxImages)).map((w) => ({
+
+  scored.sort((a, b) => b.score - a.score || a.index - b.index)
+
+  return scored.slice(0, cap).map((w) => ({
     index: w.index,
-    prompt: w.prompt,
-    seed: 1000 + w.index * 37 + (outline.title.length % 97),
+    title: w.title,
+    prompt: `clean minimal editorial illustration about "${w.title}"`,
+    seed: 1000 + w.index * 37 + String(outline.title || '').length % 97,
     accent: T.accent,
     deep: T.coverBg,
     themeLabel: T.label,
+    score: w.score,
   }))
 }
 
-/* ------------------------------------------------------------------ *
- * 主流程（可选流式）
- * ------------------------------------------------------------------ */
+/** 兼容旧调用点（审计里有断言引用这个名字） */
+function pickImageJobs(outline, themeId, maxImages) {
+  return planImageSlots(outline, themeId, { maxImages })
+}
 
 /**
- * 生成一份 PPT。
- * emit(event) 可选：{ type:'phase'|'delta'|'progress'|'outline'|'done'|'error', ... }
+ * 批量取图（并发 3 路），每张都走 fetchImage，所以「联网照片 / AI 生成」在
+ * 同一份稿子里可以逐张降级，不会因为一张搜不到就让整页开天窗。
+ * 进度回调故意用「已启动序号」而不是「已完成数」：三路同时起跑时完成数都是 0，
+ * 前端会连着报「第 1 张」，看起来像卡住了。
  */
+async function generateImages(jobs, { source = 'auto', concurrency = 3, onStart, onOne, onNote } = {}) {
+  const out = new Array(jobs.length).fill(null)
+  const notes = new Set()
+  const note = (why) => {
+    if (!why || notes.has(why)) return
+    notes.add(why)
+    if (onNote) onNote(why)
+  }
+  let cursor = 0
+  let done = 0
+  let started = 0
+  async function worker() {
+    while (cursor < jobs.length) {
+      const i = cursor++
+      const seq = started++
+      if (onStart) onStart(i, seq, jobs.length)
+      try {
+        out[i] = await fetchImage(jobs[i], source, note)
+      } catch (err) {
+        out[i] = { ok: false, error: err.message }
+      }
+      done += 1
+      if (onOne) onOne(i, out[i], done, jobs.length)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length || 1) }, worker))
+  return out
+}
+
+/**
+ * 取一张图：按配置选「联网搜真实照片」还是「AI 生成」。
+ * 联网通道任何一步失败（没 Key / 限流 / 搜不到 / 下载失败）都降级到 AI 生成，
+ * 配图绝不开天窗；实在不行 imageGen 自己还有本地插画兜底。
+ */
+async function fetchImage(job, source, onNote) {
+  const wantWeb = source === 'web' || (source === 'auto' && webimage.hasKey())
+  if (wantWeb) {
+    if (!webimage.hasKey()) {
+      if (onNote) onNote('no-key')
+    } else {
+      const q = webimage.toQuery(job.title || job.prompt, job.seed || 0)
+      const r = await webimage.searchOne({ query: q, seed: job.seed || 0 })
+      if (r.ok) return r
+      if (onNote) onNote(r.error || 'search-failed')
+    }
+  }
+  return imageGen.generateOne({
+    prompt: job.prompt,
+    seed: job.seed || 1,
+    accent: job.accent,
+    deep: job.deep,
+    themeLabel: job.themeLabel,
+  })
+}
+
+/* ------------------------------------------------------------------ *
+ * 「一页都不能少」——页数不足就继续写，绝不用占位页收尾
+ * ------------------------------------------------------------------ */
+
+/** 补页总预算：超过就停手走素材兜底，别为了两页把整份稿子拖成 6 分钟 */
+const COMPLETE_BUDGET_MS = 55000
+
+/** 占位页的特征：标题是「补充要点」这类格式词，且没有真实内容 */
+function isPlaceholderPage(s) {
+  const title = String(s?.title || '').trim()
+  if (/^补充(要点|内容|页)|^第\s*\d+\s*页$/.test(title)) return true
+  return false
+}
+
+/** 这一页算不算「已完成的真实页」 */
+function isRealPage(s) {
+  if (!s || isPlaceholderPage(s)) return false
+  if (s.kind === 'cover') return Boolean(String(s.title || '').trim())
+  const body = (s.body || []).filter((x) => !isFiller(x) && !/待补充/.test(x))
+  return body.length > 0 || (s.stats || []).length > 0
+}
+
+/** 统计还差几页真实内容 */
+function missingPages(slides, n) {
+  const real = (slides || []).filter(isRealPage).length
+  return Math.max(0, n - real)
+}
+
+/** 把续写出来的页塞进去，但结尾页永远留在最后一页（否则 E 页会被挤到中间） */
+function appendPages(slides, extra) {
+  const list = Array.isArray(slides) ? slides : []
+  const tail = list.length > 1 && list[list.length - 1].kind === 'closing' ? list.pop() : null
+  for (const s of extra || []) {
+    if (tail && s.kind === 'closing') continue // 续写时模型又写了个结尾页，丢掉
+    list.push(s)
+  }
+  if (tail) list.push(tail)
+  return list
+}
+
+/** 续写提示词：只补缺的页，不重复已写内容 */
+function continuePrompt({ topic, n, need, titles, lang }) {
+  const done = titles.length ? `已写好的页标题：${titles.join('、')}。` : ''
+  if (lang === 'en') {
+    return `The deck "${topic}" needs ${n} slides in total. ${done}Write ONLY the remaining ${need} slides, do not repeat any of the titles above and do not write a T line or a cover (01). Use B|title / S|title / C|title / Q|line, and finish with E|title.`
+  }
+  return (
+    `《${topic}》这份演示一共 ${n} 页。${done}\n` +
+    `现在只补剩下的 ${need} 页，不要重复上面这些页，也不要再写 T 行和封面（01）。\n` +
+    `按同样格式输出 ${need} 页：B|标题 / S|标题 / C|标题 / Q|金句 任选，最后一页用 E|标题。\n` +
+    `每条要点 16-24 字，必须含数字或具体名词；S 页写「数值|指标名」；C 页每行「- 左|- 右」。不要写空话。`
+  )
+}
+
+/**
+ * 补齐页数。
+ *
+ * 顺序是「素材拼页 → 模型续写 → 删掉空页」，理由全是实测：
+ *  1. 素材来自策划阶段，本来就要落到页面上，拼页是零成本的；模型续写一轮
+ *     实测要 90 秒（1.5B 也不行），把 6 页任务从 20 秒拖到 110 秒。
+ *  2. 模型续写的输出经常不带页头，直接串进上一页的正文，把结尾页写成大杂烩。
+ *     所以只有在素材不够时才让它写，且只写一轮、有总预算。
+ *  3. 占位页永远排最后 —— 先塞占位页会污染结构，模型看见「补充要点」就学会照着写。
+ */
+async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan, send }) {
+  const started = Date.now()
+
+  // 1) 先用素材补齐（快、真、可控）
+  fillFromPlan(data, n, plan)
+
+  // 2) 素材不够才让模型补，且只补一轮
+  const work = fastModel || model
+  if (missingPages(data.slides, n) > 0 && Date.now() - started < COMPLETE_BUDGET_MS) {
+    const need = missingPages(data.slides, n)
+    send({
+      type: 'delta',
+      phase: 'outline',
+      text: `\n（还差 ${need} 页，继续补齐…）\n`,
+    })
+    let text = ''
+    try {
+      const r = await chaosLlm.chat({
+        model: work,
+        options: { ...opts, temperature: 0.5, num_predict: Math.min(420, 90 * need + 140) },
+        keepAlive: '30m',
+        messages: [
+          {
+            role: 'system',
+            content:
+              lang === 'en'
+                ? 'You output only the requested format. No commentary, no markdown fences.'
+                : '你只按给定格式输出，不加任何解释、不用 markdown 代码块。',
+          },
+          {
+            role: 'user',
+            content: continuePrompt({
+              topic,
+              n,
+              need,
+              titles: (data.slides || []).map((s) => s.title).filter(Boolean),
+              lang,
+            }),
+          },
+        ],
+        onDelta: (d) => {
+          text += d
+        },
+      })
+      text = String(r?.text || text)
+      const more = parseCompactOutline(text, { topic, n: need, pad: false })
+      if (more?.slides?.length) {
+        // 续写常把已有的页又抄一遍，标题重复的直接丢掉
+        const seen = new Set((data.slides || []).map((s) => String(s.title || '').trim()).filter(Boolean))
+        const fresh = more.slides.filter((s) => {
+          const t = String(s.title || '').trim()
+          if (!t || seen.has(t)) return false
+          seen.add(t)
+          return true
+        })
+        if (fresh.length) appendPages(data.slides, fresh)
+      }
+    } catch (_) {
+      /* 续写失败不该把整份稿子废掉，下面还有素材兜底 */
+    }
+    // 续写出来的页也补齐条数，别又出现一页一条
+    fillFromPlan(data, n, plan)
+  }
+
+  // 还有「本页内容待补充」的页，就直接删掉 —— 宁可少一页，
+  // 也不能让用户翻到一页空话。删完再让 normalize 按剩余页数收口。
+  const slides = data.slides || []
+  data.slides = slides.filter(
+    (s, i) => isRealPage(s) || s.kind === 'closing' || (i === 0 && s.kind === 'cover'),
+  )
+  if (!data.slides.length) data.slides = slides
+
+  // 结尾页永远放最后一页：续写塞进来的页可能把 E 页挤到中间，
+  // normalize 又只把「最后一页」当结尾，会把一页内容整页改版式
+  const arr = data.slides
+  const ci = arr.findIndex((s) => s.kind === 'closing')
+  if (ci >= 0 && ci !== arr.length - 1) arr.push(arr.splice(ci, 1)[0])
+
+  return data
+}
+
+/** 把素材行清洗成可用的要点（去掉序号、符号、太短的） */
+function planLines(plan, used) {
+  return planRows(plan).filter((l) => !isFiller(l) && !used.has(l.slice(0, 12)))
+}
+
+/** 清洗单行素材：去列表符号和序号，滤掉开场白/收尾话 */
+function cleanRow(line) {
+  let s = String(line || '').trim()
+  s = s.replace(/\*{2,}/g, '').replace(/^[-*·•]\s+/, '').replace(/^\d+\s*[.、)）]\s*/, '').trim()
+  if (s.length < 8) return ''
+  // 「好的，以下是关于…的 8 条具体信息」这类开场白不是内容
+  if (/^(好的|以下是|下面是|当然|没问题|可以|以下为)/.test(s) && s.length < 48) return ''
+  // 「…用于演示文稿」「…用于 PPT」这类说明尾巴
+  if (/(用于(演示文稿|PPT|幻灯片)|以上(就是|是))/.test(s)) return ''
+  if (/^(第\s*\d+\s*[页条点]?|页数|页标题)[：:]?$/.test(s)) return ''
+  return s
+}
+
+/** 素材全文清洗（给提示词和兜底共用同一套规则） */
+function cleanPlan(text) {
+  return planRows(text).join('\n')
+}
+
+function planRows(text) {
+  return String(text || '')
+    .split('\n')
+    .map(cleanRow)
+    .filter(Boolean)
+}
+
+/** 素材行当要点用时要短：按标点切一刀，别硬截断出「…」 */
+function fitLine(line, cap = 32) {
+  const s = String(line || '').trim()
+  if (s.length <= cap) return s
+  const cut = s.slice(0, cap)
+  const m = cut.match(/^.*[，,；;。、]/)
+  return (m ? m[0] : cut).replace(/[，,；;。、]$/, '')
+}
+
+/** 素材兜底：先就地修补空页/太薄的页（保住页序和版式），不够再从后面补页 */
+function fillFromPlan(data, n, plan) {
+  const slides = data.slides || []
+  const used = new Set()
+  slides.forEach((s) => (s.body || []).forEach((x) => used.add(String(x).slice(0, 12))))
+  const pool = planLines(plan, used)
+  if (!pool.length) return data
+
+  for (const s of slides) {
+    if (!pool.length) break
+    if (s.kind === 'closing' || s.kind === 'cover' || s.kind === 'quote') continue
+    const body = s.body || (s.body = [])
+    const real = isRealPage(s)
+    // 空页要整页重写；已经有 1 条要点但太薄的页只需补一条
+    if (real && body.length >= 2) continue
+    if (!real) {
+      const group = pool.splice(0, 3).map((x) => fitLine(x))
+      s.kind = 'bullets'
+      s.title = titleFromLine(group[0])
+      s.body = group
+      s.stats = []
+      s.extra = []
+      continue
+    }
+    while (body.length < 2 && pool.length) body.push(fitLine(pool.shift()))
+  }
+
+  let guard = 0
+  while (missingPages(slides, n) > 0 && pool.length && guard++ < 10) {
+    const group = pool.splice(0, 3)
+    // 只剩一条素材时别再开新页（一页只有一句话最难看），并进结尾页当行动项
+    if (group.length < 2) {
+      const tail = slides[slides.length - 1]
+      if (tail && (tail.kind === 'closing' || tail.kind === 'bullets')) {
+        tail.body = tail.body || []
+        if (tail.body.length < 4) tail.body.push(...group.map((x) => fitLine(x)))
+      }
+      break
+    }
+    appendPages(slides, [
+      {
+        kind: 'bullets',
+        title: titleFromLine(group[0]),
+        body: group.map((x) => fitLine(x)),
+        extra: [],
+        stats: [],
+        note: '',
+        image: '',
+      },
+    ])
+  }
+  return data
+}
+
+/** 从一条素材里抽个像标题的短语：优先取冒号/逗号前那截 */
+function titleFromLine(line) {
+  const s = String(line || '').trim()
+  const cut = s.split(/[：:，,。；;（(]/)[0].trim()
+  const t = (cut.length >= 4 ? cut : s).slice(0, 18)
+  return t || '要点'
+}
+
+/**
+ * 一页只有 1 条要点会显得空（实测模型爱写「B|三大要点」下面只给 1 条）。
+ * 从素材池里补齐到 2 条 —— 素材是策划阶段攒的真实信息，比空页强。
+ */
+function thicken(outline, plan) {
+  const slides = outline?.slides || []
+  if (!slides.length) return outline
+  const used = new Set()
+  slides.forEach((s) => (s.body || []).forEach((x) => used.add(String(x).slice(0, 10))))
+  const pool = planLines(plan, used)
+  for (const s of slides) {
+    if (s.kind !== 'bullets') continue
+    const body = s.body || (s.body = [])
+    let guard = 0
+    while (body.length < 2 && pool.length && guard++ < 3) {
+      body.push(String(pool.shift()).slice(0, 40))
+    }
+  }
+  return outline
+}
+
+/**
+ * 稳定的小哈希：同一个主题每次拿到同一个 seed，封面图不会每次重出一张。
+ */
+function hashString(s) {
+  let h = 2166136261
+  const str = String(s || '')
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = (h * 16777619) >>> 0
+  }
+  return h >>> 0
+}
+
+/**
+ * 单页回炉。
+ *
+ * 只重写闸门判定「修不了」的那几页，一页一次，最多 3 页、总预算 50 秒。
+ * 为什么不一整份重写：整份重写要 60 秒起，而且大概率在别的地方又出毛病；
+ * 单页重写 8-15 秒，且能带上「这一页具体哪里不合格」——
+ * 实测带原因的改写成功率明显高于笼统的「再写好一点」。
+ */
+async function refineSlides({ deck, original, rewrite, topic, research, model, lang, send, budgetMs = 45000 }) {
+  const started = Date.now()
+  /* CPU 推理（无 GPU）时单页回炉要 40-90 秒，页数一多总时长必爆。
+   * 只回炉最严重的 2 页，其余靠规则修 + 兜底撑住版面。 */
+  const jobs = rewrite.slice(0, 2)
+  if (!jobs.length) return deck
+  const slides = [...(deck.slides || [])]
+  const peers = (deck.slides || []).map((x) => String(x?.title || '').trim())
+
+  for (const job of jobs) {
+    if (Date.now() - started > budgetMs) break
+    const slide = slides[job.index]
+    if (!slide) continue
+    let text = ''
+    try {
+      /* CPU 推理单次可能磨到 80 秒，预算检查只在任务间隙生效 ——
+       * 必须给单次调用加硬超时，不然一页回炉就能吃掉整个时长预算。 */
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), 40000)
+      const r = await chaosLlm.chat({
+        model,
+        signal: ac.signal,
+        options: { num_ctx: 4096, temperature: 0.55, top_p: 0.9, repeat_penalty: 1.1, num_predict: 280 },
+        keepAlive: '30m',
+        messages: [
+          {
+            role: 'system',
+            content:
+              lang === 'en'
+                ? 'You output only the requested format. No commentary, no markdown fences.'
+                : '你只按给定格式输出，不加任何解释、不用 markdown 代码块。',
+          },
+          {
+            role: 'user',
+            content: quality.rewritePrompt({
+              // 给模型看的是「删除前的原版」：删空之后它就没东西可改了
+              slide: original?.[job.index] || slide,
+              topic,
+              research,
+              why: job.why,
+              peers,
+              lang,
+            }),
+          },
+        ],
+        onDelta: (d) => {
+          text += d
+        },
+      })
+      clearTimeout(timer)
+      text = String(r?.text || text)
+    } catch (_) {
+      continue // 单页重写失败就保留原样，不能因为它整份失败
+    }
+
+    const parsed = parseCompactOutline(text, { topic, n: 1, pad: false })
+    const fresh = parsed?.slides?.[0]
+    /* 改写拿不出东西就退回原版。
+     * 之前这里是 continue —— 于是闸门把内容删干净、回炉又失败，
+     * 页面上就留了一张只有标题的空片，比原来的毛病还刺眼。 */
+    const giveUp = () => {
+      /* 回炉失败时的取舍：规则修过的版本只要还有 ≥2 条内容，就比
+       * 带着垃圾素材的原版好——原版是闸门判定过「抄来的/空话」的。
+       * 修完真空了才退回原版，反正后面还有空页兜底 + 终检。 */
+      const cur = slides[job.index]
+      const curHas =
+        (cur?.body || []).length + (cur?.extra || []).length + (cur?.stats || []).length
+      if (curHas >= 2) return
+      if (original?.[job.index]) slides[job.index] = original[job.index]
+    }
+    if (!fresh) {
+      giveUp()
+      continue
+    }
+    // 只接受「同一页型」的改写。模型常把要点页改成金句页，那等于换了内容
+    if (fresh.kind !== slide.kind && fresh.kind !== 'bullets') {
+      giveUp()
+      continue
+    }
+    const body = (fresh.body || []).filter((x) => String(x).trim().length >= 6)
+    if (body.length < 2) {
+      giveUp()
+      continue
+    }
+    slides[job.index] = {
+      ...slide,
+      kind: fresh.kind === 'bullets' && slide.kind === 'twocol' ? 'twocol' : slide.kind,
+      title: String(fresh.title || slide.title || '').trim(),
+      body: fresh.body,
+      extra: fresh.extra?.length ? fresh.extra : slide.extra,
+      stats: fresh.stats?.length ? fresh.stats : slide.stats,
+    }
+    send({ type: 'progress', phase: 'refine', label: `修订第 ${job.index + 1} 页（${job.why}）` })
+  }
+  return { ...deck, slides }
+}
+
+
 async function generate(opts = {}, emit = null) {
   const {
     topic,
@@ -900,6 +1762,8 @@ async function generate(opts = {}, emit = null) {
     withToc = false,
     withImages = true,
     model,
+    speed = 'auto',
+    imageSource = 'auto',
   } = opts
 
   const send = (ev) => {
@@ -911,6 +1775,7 @@ async function generate(opts = {}, emit = null) {
     }
   }
 
+  const t0 = Date.now()
   const n = clampPages(pages, 6)
   const topicClean = String(topic || '').trim()
   if (!topicClean) return { ok: false, error: '请先填写 PPT 主题' }
@@ -918,119 +1783,395 @@ async function generate(opts = {}, emit = null) {
   const lang = LANGS[language] ? language : 'zh'
   const audienceClean = String(audience || '').trim().slice(0, 40)
   const themeId = normalizeTheme(theme)
-  const useModel = resolveModel(model)
 
-  /* ---- 阶段一：策划推理（流式显示） ---- */
-  send({ type: 'phase', phase: 'plan', label: '策划叙事结构' })
-  let plan = ''
-  let tokens = 0
+  /* ---- 选模型与档位 ----
+   * 实测（i5-12400 / 无独显，紧凑格式）：
+   *   qwen2.5:7b   66 秒 / 174 token / 格式全对 / 质量 100 分
+   *   qwen2.5:1.5b 25 秒 / 但要点偏少、易退化成重复输出
+   * 旧 JSON 提示词下 7B 要 224 秒 —— 慢的根源是输出格式，不是模型大小。
+   * 所以默认直接上 7B：多等 40 秒换一份能直接用的稿子，比快但空洞划算。
+   *   auto / balanced  策划用小模型、正文用 7B（默认）
+   *   fast             正文用 1.5B，配图只出封面（约 80 秒，着急时用）
+   *   quality          7B + 更低温度
+   */
+  /* 先确保探测过引擎：resolveModel 要按已装模型选大模型，snapshot 空的话
+   * 会退化成小模型 —— 大纲质量立刻崩（2026-10-25 实测翻过车） */
   try {
-    const r = await chaosLlm.chat({
-      model: useModel,
-      messages: [
-        {
-          role: 'system',
-          content: lang === 'en' ? 'You are a sharp presentation strategist.' : '你是一位思路清晰的演示文稿策划师。',
-        },
-        { role: 'user', content: planPrompt({ topic: topicClean, n, toneDesc, audience: audienceClean, lang }) },
-      ],
-      onDelta: (d) => send({ type: 'delta', phase: 'plan', text: d }),
-    })
-    plan = String(r?.text || '').trim()
-    tokens += Number(r?.evalCount) || Math.ceil(plan.length / 2)
-  } catch (err) {
-    const msg = String(err?.message || '模型推理失败')
-    send({ type: 'error', error: msg, code: err?.code })
-    return { ok: false, error: msg, code: err?.code }
+    const s0 = chaosLlm.snapshot()
+    if (!(s0?.models || []).length) await chaosLlm.probe({ force: true })
+  } catch (_) {
+    /* 探测失败就按兜底走 */
+  }
+  const mainModel = resolveModel(model)
+  const fastModel = chaosLlm.pickFastModel() || mainModel
+  const mode = ['fast', 'balanced', 'quality'].includes(speed) ? speed : 'auto'
+  const gpu = typeof chaosLlm.hasGpu === 'function' ? chaosLlm.hasGpu() : false
+  const effective = mode === 'auto' ? 'balanced' : mode
+  const outlineModel = effective === 'fast' ? fastModel : mainModel
+  const planModel = fastModel
+  const planOpts = { num_ctx: 8192, temperature: 0.7, top_p: 0.9, num_predict: 520 }
+  const outlineOpts = {
+    num_ctx: 8192,
+    temperature: effective === 'quality' ? 0.35 : 0.45,
+    top_p: 0.9,
+    // 小模型在宽松预算下会把整份稿子重复好几遍（实测 1.5B 重复 4 次），
+    // 1.15 的重复惩罚 + 按页数收紧的预算能压住
+    repeat_penalty: 1.15,
+    num_predict: Math.min(1400, 90 * n + 220),
+  }
+  send({ type: 'model', planModel, outlineModel, mode: effective, gpu })
+
+  /* ---- 封面图预取 ----
+   * 免费出图是每 IP 每 45 秒一张，等它排在文本后面就是干等 45 秒。
+   * 封面只需要主题就能画，所以从第一秒就并行启动，文本写完时图基本也好了。
+   */
+  const coverPrompt = `abstract conceptual cover artwork representing "${topicClean}"`
+  const coverSeed = (hashString(topicClean) % 90000) + 1000
+  const themeDef = THEMES[themeId]
+  let coverJob = null
+  if (withImages) {
+    coverJob = fetchImage(
+      {
+        prompt: coverPrompt,
+        title: topicClean,
+        seed: coverSeed,
+        accent: themeDef.accent,
+        deep: themeDef.coverBg,
+        themeLabel: themeDef.label,
+      },
+      imageSource,
+      (why) => send({ type: 'notice', reason: why, field: 'image' }),
+    )
+      .then((r) => (r && r.ok ? r : null))
+      .catch(() => null)
   }
 
-  if (!plan) plan = `主题：${topicClean}`
+  /* ---- 阶段一：联网找资料 ----
+   * 不再是「让模型先想一遍」，而是真的去搜。本地模型编出来的数字
+   * 用户一眼能看穿（「降低库存积压 50%」），真实数据才有说服力。
+   *
+   * 检索和封面图并行：封面从第一秒就在排队出图，检索回来时图也差不多好了。
+   */
+  send({ type: 'phase', phase: 'plan', label: '联网搜集资料' })
+  let plan = ''      // 给模型看的素材
+  let planRows = ''  // 素材兜底用的纯行版本
+  let planText = ''  // 给前端看的展示文本（两者格式不同）
+  let hasResearch = false
+  let research = null
+  let tokens = 0
+  try {
+    research = await researchMod.research(topicClean, {
+      lang,
+      onNote: (why) => send({ type: 'notice', reason: why, field: 'research' }),
+    })
+  } catch (_) {
+    research = null
+  }
 
-  /* ---- 阶段二：大纲（流式，边生成边冒标题） ---- */
-  send({ type: 'phase', phase: 'outline', label: '逐页排大纲' })
-  let data = null
-  let rawText = ''
-  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
-    rawText = ''
+  if (research && research.ok) {
+    hasResearch = true
+    // 把检索到的东西流式吐给前端，用户能看见「真的查到了东西」
+    const lines = []
+    if (research.angles?.length) {
+      lines.push(`搜到 ${research.angles.length} 条行业话题：`)
+      research.angles.forEach((a) => lines.push(`· ${a}`))
+    }
+    if (research.facts?.length) {
+      lines.push('')
+      lines.push(`抓到 ${research.facts.length} 条带数字的资料：`)
+      research.facts.forEach((f) => lines.push(`· ${f.text}`))
+    }
+    if (research.sources?.length) {
+      lines.push('')
+      lines.push(`来源：${research.sources.slice(0, 4).map((s) => s.title).join('／')}`)
+    }
+    const text = lines.join('\n')
+    planText = text
+    // 送给模型的是另一份：只留素材本身，不带「搜到 N 条」这种汇报腔
+    plan = researchMod.factsPrompt(research) || text
+    // 素材兜底用的纯行版本。只放带数字的事实——锚点标题绝不能进：
+    // 兜底拼页是照抄素材行，标题进来页面就会出现「XX案例.docx-原创力文档」
+    planRows = (research.facts || []).map((f) => f.text).join('\n')
+    // 分成小段推，前端才有「在打字」的观感
+    for (let i = 0; i < text.length; i += 60) {
+      send({ type: 'delta', phase: 'plan', text: text.slice(i, i + 60) })
+      await new Promise((r) => setTimeout(r, 12))
+    }
+    send({ type: 'research', facts: research.facts?.length || 0, angles: research.angles?.length || 0 })
+  } else {
+    /* 检索失败（断网 / 全部被拦）：退回让模型自己列素材。
+     * 会标明「未联网」，不假装是查到的。 */
+    send({ type: 'notice', reason: 'research-failed', field: 'research' })
     try {
       const r = await chaosLlm.chat({
-        model: useModel,
+        model: planModel,
+        options: planOpts,
+        keepAlive: '30m',
+        messages: [
+          {
+            role: 'system',
+            content: lang === 'en' ? 'You are a sharp presentation strategist.' : '你是一位思路清晰的演示文稿策划师。',
+          },
+          { role: 'user', content: fallbackPlanPrompt({ topic: topicClean, n, toneDesc, audience: audienceClean }) },
+        ],
+        onDelta: (d) => send({ type: 'delta', phase: 'plan', text: d }),
+      })
+      plan = String(r?.text || '').trim()
+      tokens += Number(r?.evalCount) || Math.ceil(plan.length / 2)
+      planText = plan
+    } catch (err) {
+      // 素材阶段失败不该终止整份稿子，正文还能自己写
+      plan = ''
+    }
+    plan = cleanPlan(plan)
+  }
+
+  /* ---- 阶段二：逐页大纲（流式，边生成边冒标题） ---- */
+  send({ type: 'phase', phase: 'outline', label: '逐页写内容' })
+  let data = null
+  let rawText = ''
+  /* 边写边预览：每写完一页就把「当前这份不完整的大纲」推给前端，
+   * 右侧大预览框能一页页长出来，而不是等到最后一次性弹出。
+   * 解析是纯内存操作（文本才 1-2KB），但按 token 触发太频繁，限到 450ms 一次。 */
+  let lastPreviewAt = 0
+  let lastPreviewKey = ''
+  const emitPreview = () => {
+    const now = Date.now()
+    if (now - lastPreviewAt < 450) return
+    lastPreviewAt = now
+    const parsed = parseCompactOutline(rawText, { topic: topicClean, n, pad: false })
+    if (!parsed || !parsed.slides?.length) return
+    const tail = parsed.slides[parsed.slides.length - 1]
+    const key = `${parsed.slides.length}|${tail.title}|${(tail.body || []).length}|${(tail.stats || []).length}`
+    if (key === lastPreviewKey) return
+    lastPreviewKey = key
+    send({
+      type: 'preview',
+      outline: { title: parsed.title, subtitle: parsed.subtitle, slides: parsed.slides },
+    })
+  }
+  // 失败重试 3 次而不是 2 次：小模型偶发吐格式垃圾是常事，一次重试往往不够，
+  // 但「任务没写完不许停」也不能真的无限循环 —— 服务端 3 次 × 前端整任务重试，
+  // 已经是足够大的兜底空间。
+  for (let attempt = 1; attempt <= 3 && !data; attempt++) {
+    rawText = ''
+    lastPreviewKey = ''
+    try {
+      const r = await chaosLlm.chat({
+        model: outlineModel,
+        options: { ...outlineOpts, temperature: attempt === 1 ? outlineOpts.temperature : 0.3 },
+        keepAlive: '30m',
         messages: [
           {
             role: 'system',
             content:
               lang === 'en'
-                ? 'You output JSON only. No explanation, no markdown fences.'
-                : '你只输出 JSON，不输出任何解释或 markdown 代码块标记。',
+                ? 'You output only the requested format. No commentary, no markdown fences.'
+                : '你只按给定格式输出，不加任何解释、不用 markdown 代码块。',
           },
           {
             role: 'user',
-            content: outlinePrompt({ topic: topicClean, n, toneDesc, audience: audienceClean, lang, plan }),
+            content: outlinePrompt({ topic: topicClean, n, toneDesc, audience: audienceClean, lang, plan, hasResearch }),
           },
         ],
         onDelta: (d) => {
           rawText += d
           send({ type: 'delta', phase: 'outline', text: d })
+          emitPreview()
         },
       })
       rawText = String(r?.text || rawText)
       tokens += Number(r?.evalCount) || Math.ceil(rawText.length / 2)
     } catch (err) {
-      if (attempt === 2) {
+      if (attempt === 3) {
         const msg = `模型生成失败：${err.message}`
         send({ type: 'error', error: msg, code: err?.code })
+        if (coverJob) coverJob.catch(() => null)
         return { ok: false, error: msg, code: err?.code }
       }
       continue
     }
-    data = parseJsonLoose(rawText)
+
+    data = parseCompactOutline(rawText, { topic: topicClean, n, pad: false })
+    // 兜底：模型万一还是给了 JSON（换模型、换提示词时可能发生）
+    if (!data) data = parseJsonLoose(rawText)
     if (!data || !Array.isArray(data.slides) || !data.slides.length) {
       data = null
-      send({ type: 'delta', phase: 'outline', text: '\n（格式没对上，重新整理一次…）\n' })
+      send({ type: 'delta', phase: 'outline', text: '\n（格式没对上，重新写一次…）\n' })
     }
   }
-  if (!data) return { ok: false, error: '模型两次都没能产出有效大纲，请换个主题或换个小模型再试' }
+  if (!data) {
+    if (coverJob) coverJob.catch(() => null)
+    return { ok: false, error: '模型连续三次没能产出有效内容，已自动重试仍未成功，请再点一次生成' }
+  }
 
-  const outline = normalizeOutline(data, { topic: topicClean, n })
-  send({ type: 'outline', outline })
+  // 页数不齐就接着写 —— 「没写完」不算完成，不能让用户拿到半份稿子
+  data = await completeDeck({
+    data,
+    topic: topicClean,
+    n,
+    model: outlineModel,
+    fastModel,
+    opts: outlineOpts,
+    lang,
+    plan: planRows || plan,
+    send,
+  })
+
+  let outline = thicken(polishOutline(normalizeOutline(data, { topic: topicClean, n })), plan)
+
+  /* ---- 质量闸门 ----
+   * 模型出来的稿子必过一遍：规则能修的当场修（抄来的素材、塌掉的双栏、
+   * 套话页头），修不了的挑最多 3 页回炉。这是「看起来像模板」和
+   * 「真的能拿去讲」之间最后一道关。 */
+  /* 回炉只在「有 GPU 或用户点名 quality」时跑。CPU 推理单页 80s 起步，
+   * 而且客户端中止后 Ollama 服务端会把幽灵生成跑完，下一个请求在
+   * 队列里干等 —— 实测两页回炉拖出 160s。CPU 上规则修 + 兜底已够用。 */
+  const canRefine = gpu || effective === 'quality'
+  try {
+    const gate = quality.auditDeck(outline, { topic: topicClean, research, canRefine })
+    outline = gate.deck
+    if (gate.rewrite.length && canRefine) {
+      send({ type: 'phase', phase: 'refine', label: `修订 ${gate.rewrite.length} 页` })
+      outline = await refineSlides({
+        deck: outline,
+        original: gate.original,
+        rewrite: gate.rewrite,
+        topic: topicClean,
+        research,
+        model: fastModel,
+        lang,
+        send,
+      })
+      // 回炉后再过一遍，把这次新引入的小毛病（比如页头变重复）压掉
+      outline = quality.auditDeck(outline, { topic: topicClean, research }).deck
+    } else if (gate.rewrite.length) {
+      /* CPU 上跳过回炉时，被规则删空的页交给下面的素材兜底填满 */
+      send({ type: 'notice', reason: 'refine-skipped-cpu', field: 'refine' })
+    }
+    send({
+      type: 'quality',
+      score: gate.report.score,
+      fixed: gate.report.fixed,
+      rewritten: gate.rewrite.length,
+      issues: gate.report.issues.slice(0, 12).map((x) => `${x.page + 1}:${x.type}`),
+    })
+    outline = polishOutline(outline)
+  } catch (err) {
+    // 闸门本身出问题不能连累出片
+    send({ type: 'notice', reason: 'quality-skip', field: 'quality' })
+  }
+
+  /* 最后一道保险。
+   * 闸门删、回炉又没救回来的页，到这里可能是空的 —— 那种页翻过去一片白，
+   * 比内容差更伤人。用真实素材把它们填满，实在没素材才丢掉这一页。 */
+  const isHole = (x) =>
+    x && x.kind !== 'quote' && x.kind !== 'cover' &&
+    !(x.body || []).length && !(x.stats || []).length && !(x.extra || []).length
+  if ((outline.slides || []).some(isHole)) {
+    const patched = fillFromPlan({ ...data, slides: outline.slides }, n, planRows || plan)
+    outline = { ...outline, slides: patched.slides }
+    // 素材也填不上的，直接删页；页数少一页总比空一页好
+    const kept = outline.slides.filter((x) => !isHole(x))
+    if (kept.length >= Math.min(4, n)) outline = { ...outline, slides: kept }
+    /* 兜底拼页是照抄素材行，必须再过一遍规则闸门——不然「XX案例.docx-原创力文档」
+     * 这种行就绕过了前面所有检查直接上页面（2026-10-25 实测踩坑）。 */
+    try {
+      outline = quality.auditDeck(outline, { topic: topicClean, research }).deck
+    } catch (_) { /* 闸门故障不能连累出片 */ }
+    /* 终检删掉垃圾行后页面可能又变空 —— 再清一轮，别把只有标题的空壳交给用户 */
+    const kept2 = outline.slides.filter((x) => !isHole(x))
+    if (kept2.length >= Math.min(4, n)) outline = { ...outline, slides: kept2 }
+  }
+
+  send({ type: 'outline', outline, elapsed: Date.now() - t0 })
 
   /* ---- 阶段三：配图 ---- */
   const images = {}
   let imageOk = 0
   if (withImages) {
-    const jobs = pickImageJobs(outline, themeId, Math.min(4, Math.max(1, Math.round(n / 2))), lang)
+    // 配几张不写死，交给 planImageSlots 按内容打分决定（封面必出，其余看有没有
+    // 具体场景）。这里只给上限：
+    //   联网搜图基本秒回 → 最多 4 张
+    //   纯 AI 出图每张要排 45 秒 → 最多 2 张，否则总时长会被配图吃掉
+    const canWeb = imageSource === 'web' || (imageSource === 'auto' && webimage.hasKey())
+    const cap = effective === 'fast' ? 1 : canWeb ? 4 : 2
+    const jobs = pickImageJobs(outline, themeId, cap, lang)
+
+    // 封面用预取那张：prompt / 标题 / seed 全部对齐预取参数，命中缓存而不是重画一张。
+    // 标题必须一起对齐 —— 联网搜图是按标题生成查询词的，标题不同就是一次新搜索。
+    const cover = coverJob ? await coverJob : null
+    if (jobs.length && jobs[0].index === 0) {
+      if (cover) {
+        jobs[0].prompt = coverPrompt
+        jobs[0].title = topicClean
+        jobs[0].seed = coverSeed
+      }
+    }
+
     send({ type: 'phase', phase: 'image', label: `生成配图（0/${jobs.length}）`, total: jobs.length, done: 0 })
-    await imageGen.generateMany(jobs, {
-      concurrency: 3,
-      onStart: (_i, seq, totalCount) => {
-        // 免费出图按 45 秒窗口排队，先给个「在等」的提示，别让人以为卡死了
-        send({
-          type: 'progress',
-          phase: 'image',
-          label: `生成配图（第 ${Math.min(seq + 1, totalCount)}/${totalCount} 张排队中…）`,
-          done: seq,
-          total: totalCount,
-          pending: true,
-        })
-      },
-      onOne: (i, r, done, totalCount) => {
-        if (r?.ok) {
-          images[jobs[i].index] = r.file
-          outline.slides[jobs[i].index].imageName = r.name
-          imageOk += 1
-        }
-        send({
-          type: 'progress',
-          phase: 'image',
-          label: `生成配图（${done}/${totalCount}）`,
-          done,
-          total: totalCount,
-          index: jobs[i].index,
-          source: r?.source || '',
-          name: r?.name || '',
-        })
-      },
-    })
+
+    let doneBefore = 0
+    if (cover && jobs.length && jobs[0].index === 0) {
+      images[0] = cover.file
+      outline.slides[0].imageName = cover.name
+      imageOk += 1
+      doneBefore = 1
+      send({
+        type: 'progress',
+        phase: 'image',
+        label: `生成配图（1/${jobs.length}）`,
+        done: 1,
+        total: jobs.length,
+        index: 0,
+        source: cover.source,
+        name: cover.name,
+      })
+      jobs.shift()
+    }
+
+    if (jobs.length) {
+      // 封面已经算掉一张，总数要用「剩余 + 已完成」，否则会显示成 2/1 这种倒退
+      const grand = jobs.length + doneBefore
+      await generateImages(jobs, {
+        source: imageSource,
+        concurrency: 3,
+        onStart: (_i, seq) => {
+          // 免费出图按 45 秒窗口排队，先给个「在等」的提示，别让人以为卡死了。
+          // 联网搜图基本是秒回，这句提示只在等待时才出现，不会造成误导。
+          const shown = Math.min(doneBefore + seq + 1, grand)
+          send({
+            type: 'progress',
+            phase: 'image',
+            label: `生成配图（第 ${shown}/${grand} 张排队中…）`,
+            done: doneBefore + seq,
+            total: grand,
+            pending: true,
+          })
+        },
+        onOne: (i, r, done) => {
+          if (r?.ok) {
+            images[jobs[i].index] = r.file
+            outline.slides[jobs[i].index].imageName = r.name
+            imageOk += 1
+          }
+          send({
+            type: 'progress',
+            phase: 'image',
+            label: `生成配图（${doneBefore + done}/${grand}）`,
+            done: doneBefore + done,
+            total: grand,
+            index: jobs[i].index,
+            source: r?.source || '',
+            name: r?.name || '',
+          })
+        },
+        onNote: (why) => {
+          // 联网通道不可用时只提示一次，别在进度里刷屏
+          send({ type: 'notice', reason: why, field: 'image' })
+        },
+      })
+    }
   } else {
     send({ type: 'phase', phase: 'image', label: '跳过配图', skipped: true })
   }
@@ -1051,6 +2192,9 @@ async function generate(opts = {}, emit = null) {
     tokens,
     images: imageOk,
     plan,
+    mode: effective,
+    model: outlineModel,
+    elapsedMs: Date.now() - t0,
     createdAt: Date.now(),
   })
 
@@ -1068,6 +2212,9 @@ async function generate(opts = {}, emit = null) {
     theme: themeId,
     withToc: toc,
     size: out.size,
+    mode: effective,
+    model: outlineModel,
+    elapsedMs: Date.now() - t0,
   }
   send({ type: 'done', result })
   return result
@@ -1223,8 +2370,20 @@ module.exports = {
   listFiles,
   buildPptx,
   normalizeOutline,
+  parseCompactOutline,
+  polishOutline,
+  fallbackPlanPrompt,
+  researchMod,
+  outlinePrompt,
   sniffProgress,
   pickImageJobs,
+  planImageSlots,
+  generateImages,
+  fetchImage,
+  completeDeck,
+  isRealPage,
+  missingPages,
+  thicken,
   IMAGE_KINDS,
   TONES,
   THEMES,

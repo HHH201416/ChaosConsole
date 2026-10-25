@@ -84,15 +84,20 @@ function UpdateControl({ onInstallUpdate }) {
 
 function ConnBadge({ conn }) {
   const t = useT()
+  /* 9.8.2：应用任何地方报错时，实时连接徽标同步显示「发生错误」（红色），
+     10 秒后随 errorFlashUntil 自动复原；连接真正断开也常驻错误态 */
+  const errFlash = useStore((s) => s.errorFlashUntil > Date.now())
+  const error = errFlash || conn === 'closed'
   const map = {
     open: { cls: 'bg-emerald-500', text: t('topbar.connected'), textCls: 'text-emerald-400' },
     connecting: { cls: 'bg-boss animate-pulseDot', text: t('topbar.connecting'), textCls: 'text-boss-strong' },
     closed: { cls: 'bg-rose-500', text: t('topbar.disconnected'), textCls: 'text-rose-400' },
+    error: { cls: 'bg-rose-500', text: t('topbar.error'), textCls: 'text-rose-400' },
   }
-  const m = map[conn] || map.closed
+  const m = error ? map.error : map[conn] || map.closed
   return (
-    <div className="flex items-center gap-1.5" title={`WebSocket: ${conn}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${m.cls}`} />
+    <div className="flex items-center gap-1.5" title={`WebSocket: ${conn}${errFlash ? ' · error' : ''}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${m.cls} ${errFlash ? 'animate-pulseDot' : ''}`} />
       <span className={`text-[11px] ${m.textCls}`}>{m.text}</span>
     </div>
   )

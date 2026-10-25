@@ -109,7 +109,8 @@ async function send({ conversationId, text, cwd, executor, model, agentId }) {
     const installed = (chaos.models || []).map((m) => m.id)
     if (chaos.up && installed.length) {
       useExecutor = 'chaos'
-      if (!useModel) useModel = installed.includes(chaosLlm.DEFAULT_PULL) ? chaosLlm.DEFAULT_PULL : installed[0]
+      /* 9.8.2：默认模型可热更换（「下载混沌」弹窗里选），这里现读现用 */
+      if (!useModel) useModel = chaosLlm.preferredDefaultModel()
     }
   }
 

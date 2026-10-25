@@ -1341,7 +1341,7 @@ export const useStore = create((set, get) => ({
       if (!res.ok) throw new Error(res.error || '兑换失败')
       const d = res.data || {}
       get().toast(
-        d.repeat ? `兑换码 ${d.code} 已经用过了，额度继续不限量` : `兑换成功：${d.label || d.code} · ${d.note || '额度已升级'}`,
+        d.repeat ? '这个兑换码已经用过了，额度继续不限量' : `兑换成功：${d.label || '额度已升级'} · ${d.note || '额度已升级'}`,
         'success',
       )
       await get().loadChaosStatus()

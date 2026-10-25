@@ -7,7 +7,8 @@ import { useT } from '../lib/useT'
  * 8.0.2：Token 额度卡片。
  * 规则：每日自动送 3000 万 token；用完当天混沌停用（等明天自动恢复）；
  * 9.5.4：填手机号激活（每个手机号每天 3000 万 token）。
- * 9.8.0：手机号下面补回兑换码（可选，HY2014 解锁不限量）—— 号是必填，码是加档。
+ * 9.8.0：手机号下面补回兑换码（可选）—— 号是必填，码是加档。
+ * 注意：兑换码是凭证，**任何前端界面/文案/占位符里都不许出现具体码值**，只留输入框。
  */
 function TokenCard() {
   const status = useStore((s) => s.chaosStatus)
@@ -38,8 +39,9 @@ function TokenCard() {
           </>
         )}
         {q.phone && <span className="chip bg-sky-500/15 text-sky-300">已绑定 {masked(q.phone)}</span>}
-        {q.unlimited && q.redeemCode && (
-          <span className="chip bg-violet-500/15 text-violet-300">兑换码 {q.redeemCode}</span>
+        {/* 不显示兑换码本身 —— 码是凭证，露出来等于把永久额度送人 */}
+        {q.unlimited && (
+          <span className="chip bg-violet-500/15 text-violet-300">已解锁不限量</span>
         )}
       </div>
       {!q.unlimited && (
@@ -49,7 +51,7 @@ function TokenCard() {
       )}
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">
         手机号是必填项：绑定后每天 3000 万 token（0 点自动恢复）。换号直接填新号，旧号保留登记。
-        兑换码选填，填 HY2014 可解锁不限量。
+        有兑换码就填在下方，通过验证后解锁不限量。
       </p>
 
       {/* 手机号 */}
@@ -88,7 +90,7 @@ function TokenCard() {
               if (redeemChaosCode(code.trim())) setCode('')
             }
           }}
-          placeholder="兑换码（可选，HY2014）"
+          placeholder="兑换码（可选）"
           className="field min-w-0 flex-1 py-1 font-mono text-[11px] tracking-[0.1em]"
         />
         <button

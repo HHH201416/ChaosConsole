@@ -3,7 +3,8 @@ import { useStore } from '../store'
 
 /**
  * 9.7.0：手机号绑定闸门。
- * 9.8.0：手机号下面多了一格兑换码（可选，HY2014）—— 号是必填，码是加档。
+ * 9.8.0：手机号下面多了一格兑换码（可选）—— 号是必填，码是加档。
+ * 兑换码是凭证，界面上不许出现具体码值。
  *
  * 用户要求「手机号是必须填了才能用这个应用」—— 所以这是一层**不可关闭**的全屏遮罩：
  * 没绑定之前界面进不去，绑定成功后自动消失（store.bindChaosPhone 会 refreshSystem）。
@@ -92,7 +93,7 @@ export default function PhoneGate() {
 
         <ul className="mt-3 space-y-1 text-[10.5px] leading-relaxed text-slate-500">
           <li>· 手机号必填：每个号每天 3000 万 token，跨天自动恢复</li>
-          <li>· 兑换码选填：HY2014 可解锁不限量额度</li>
+          <li>· 兑换码选填：通过验证后解锁不限量额度</li>
           <li>· 号码只保存在本机数据库，不上传任何服务器</li>
         </ul>
       </div>

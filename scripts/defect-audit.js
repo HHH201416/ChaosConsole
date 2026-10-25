@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "9\.8\.0"/, '版本为 9.8.0')
+must('package.json', /"version": "9\.8\.1"/, '版本为 9.8.1')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -237,7 +237,14 @@ must('server/index.js', /app\.post\('\/api\/chaos\/redeem'[\s\S]*?quota\.redeem\
 must('src/store.js', /async redeemChaosCode\(code\)/, 'store 有兑换动作')
 must('src/components/PhoneGate.jsx', /兑换码（可选）/, '手机号下方有兑换码输入框')
 must('src/components/PhoneGate.jsx', /兑换码选填/, '闸门说明写清「号必填、码选填」')
-must('src/components/ChaosModal.jsx', /兑换码（可选，HY2014）/, '额度卡片有兑换码入口')
+must('src/components/ChaosModal.jsx', /placeholder="兑换码（可选）"/, '额度卡片有兑换码入口')
+/* 9.8.1：兑换码是凭证，前端任何位置（文案 / 占位符 / 注释 / changelog）都不许出现明文码值 */
+mustNot('src/components/ChaosModal.jsx', /HY2014/i, '额度卡片不暴露兑换码明文')
+mustNot('src/components/PhoneGate.jsx', /HY2014/i, '闸门不暴露兑换码明文')
+mustNot('src/lib/changelog.js', /HY2014/i, '版本日志不暴露兑换码明文')
+mustNot('server/chaos-quota.js', /redeemCode: typeof q\.redeemCode/, 'usage() 不再回传兑换码明文')
+mustNot('server/chaos-quota.js', /^\s+code,$/m, '兑换响应不再回传 code 字段')
+must('src/components/ChaosModal.jsx', /已解锁不限量/, '已兑换只显示「已解锁不限量」')
 
 must('server/aippt-image.js', /function encodePng\(rgb, w, h\)/, '有零依赖 PNG 编码器（本地兜底插画）')
 must('server/aippt-image.js', /function crc32\(buf\)/, 'PNG CRC32 自带实现')
@@ -270,6 +277,8 @@ must('src/components/AipptPage.jsx', /THEMES\.map\(\(th\) => \(/, '模板选择�
 must('src/components/AipptPage.jsx', /kind === 'stats'/, '预览按页型渲染（数据卡）')
 must('src/components/AipptPage.jsx', /自动配图（最多 4 张）/, '有配图开关')
 must('src/lib/changelog.js', /AIPPT 自动配图/, '9.8.0 版本简介写了配图能力')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '9\.8\.1'/, '更新日志首条是 9.8.1')
+
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */
 must('server/runner.js', /function keepThink\(text\)/, '思考内容有专门的不截断通道')

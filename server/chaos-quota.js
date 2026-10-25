@@ -65,8 +65,10 @@ function usage() {
   const usedToday = q.day === day ? Number(q.usedToday) || 0 : 0
   return {
     dailyFree: DAILY_FREE,
-    permanent: q.permanent === true, // 兑换码（HY2014 等）解锁的存量用户，继续 honoring
-    redeemCode: typeof q.redeemCode === 'string' ? q.redeemCode : null,
+    permanent: q.permanent === true, // 兑换码解锁的存量用户，继续 honoring
+    // 9.8.1：只回「兑没兑过」，**不回具体码值** —— 这个对象会整份发给前端，
+    // 带上 redeemCode 等于把永久额度凭证明文送给任何一个打开额度面板的人。
+    redeemed: typeof q.redeemCode === 'string' && q.redeemCode.length > 0,
     redeemedAt: Number(q.redeemedAt) || 0,
     phone: typeof q.activePhone === 'string' && q.activePhone ? q.activePhone : null,
     phoneCount: q.phones && typeof q.phones === 'object' ? Object.keys(q.phones).length : 0,
@@ -179,7 +181,7 @@ function redeem(raw) {
   return {
     ok: true,
     data: {
-      code,
+      // 不回 code —— 响应会被前端整份接管，没必要把凭证再递一遍
       label: hit.label,
       note: hit.note,
       repeat,

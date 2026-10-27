@@ -1246,11 +1246,68 @@ app.post('/api/aippt/stream', requireAuth, async (req, res) => {
         model: req.body?.model,
         speed: req.body?.speed,
         imageSource: req.body?.imageSource,
+        /* 10.0.1：只出大纲 —— 前端三步向导的第一步走这个分支 */
+        outlineOnly: Boolean(req.body?.outlineOnly),
       },
       write,
     )
-    if (r.ok) store.bus.emit('chaos:changed', { reason: 'aippt-generated' })
-    else write({ type: 'error', error: r.error || '生成失败', code: r.code })
+    if (r.ok && !req.body?.outlineOnly) store.bus.emit('chaos:changed', { reason: 'aippt-generated' })
+    else if (!r.ok) write({ type: 'error', error: r.error || '生成失败', code: r.code })
+  } catch (err) {
+    write({ type: 'error', error: err.message })
+  } finally {
+    clearInterval(hb)
+    if (!closed) res.end()
+  }
+})
+
+/**
+ * 10.0.1：按已确认的大纲出片（SSE）。
+ *
+ * 只做配图 + 渲染，不再问模型 —— 用户在编辑器里改大纲时可以立刻看到代价：
+ * 换配色、调页序是秒级的，只有「生成」这一步才会等配图。
+ */
+app.post('/api/aippt/assemble', requireAuth, async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.write(': ok\n\n')
+
+  let closed = false
+  res.on('close', () => {
+    closed = true
+  })
+  req.on('aborted', () => {
+    closed = true
+  })
+  const write = (ev) => {
+    if (closed) return
+    try {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`)
+    } catch (_) {
+      closed = true
+    }
+  }
+  const hb = setInterval(() => {
+    if (!closed) res.write(': ping\n\n')
+  }, 15000)
+
+  try {
+    const r = await aippt.assemble(
+      {
+        outline: req.body?.outline,
+        theme: req.body?.theme,
+        withToc: req.body?.withToc,
+        withImages: req.body?.withImages !== false,
+        imageSource: req.body?.imageSource,
+      },
+      write,
+    )
+    if (r.ok) store.bus.emit('chaos:changed', { reason: 'aippt-assembled' })
+    else write({ type: 'error', error: r.error || '出片失败' })
   } catch (err) {
     write({ type: 'error', error: err.message })
   } finally {

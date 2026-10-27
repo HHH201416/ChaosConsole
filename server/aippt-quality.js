@@ -400,8 +400,10 @@ function auditDeck(outline, { topic = '', research = null, canRefine = true } = 
 
     const left = issues.filter((x) => x.level === 'rewrite')
     if (!titleSalvaged) left.push({ type: 'filler-title' })
-    // 修完还不成样子（内容太少）也算回炉
-    const thin = fixed.kind !== 'cover' && fixed.kind !== 'closing' && fixed.kind !== 'quote' && (fixed.body || []).length < 2
+    // 修完还不成样子（内容太少）也算回炉。
+    // 10.0.1：章节过渡 / 图表 / 时间轴的「内容」在结构化字段里，不按 body 条数判空
+    const STRUCT = new Set(['cover', 'closing', 'quote', 'section', 'chart', 'timeline', 'stats'])
+    const thin = !STRUCT.has(fixed.kind) && (fixed.body || []).length < 2
     if (left.length || thin) {
       rewrite.push({
         index: i,
@@ -459,7 +461,19 @@ function rewritePrompt({ slide, topic, research, why, peers = [], lang = 'zh' })
   }
   const tips = reasons.map((r) => `· ${hint[r] || '内容不够具体'}`).join('\n')
 
-  const kindCode = { cover: '01', bullets: 'B', stats: 'S', twocol: 'C', quote: 'Q', closing: 'E' }
+  /* 10.0.1：结构化页型（图表 / 时间轴 / 表格 / 章节）不参与回炉重写 ——
+   * 重写只能返回一行行文本，把图表数据写回成正文会直接丢结构。
+   * 这些页的问题留给规则修或在编辑器里人工调整。 */
+  const kindCode = {
+    cover: '01',
+    bullets: 'B',
+    stats: 'S',
+    twocol: 'C',
+    quote: 'Q',
+    closing: 'E',
+    section: 'P',
+    process: 'PS',
+  }
   const code = kindCode[slide.kind] || 'B'
   const bodyLines = (slide.body || []).map((x) => `- ${x}`).join('\n')
   const extraLines = (slide.extra || []).map((x) => `- ${x}`).join('\n')

@@ -193,7 +193,24 @@ const MIN_PAGES = 3
 const MAX_PAGES = 30
 
 /** 页型白名单 —— 模型给错的按位置兜底推断 */
-const KINDS = new Set(['cover', 'bullets', 'twocol', 'stats', 'quote', 'closing'])
+/* 10.0.1：版式库从 6 种扩到 11 种。
+ * 旧版只有「封面 / 要点 / 双栏 / 数据 / 金句 / 结尾」，模型无论写什么都只能往这
+ * 六个模子里塞，结果是每页长得一样 —— 这是「像模板」观感的根因。
+ * 补上章节过渡、真图表、时间轴、流程、表格对比之后，同一个内容可以被摆成
+ * 完全不同的版式，版面节奏才可能像 WPS 那样有起伏。 */
+const KINDS = new Set([
+  'cover',
+  'bullets',
+  'twocol',
+  'stats',
+  'quote',
+  'closing',
+  'section', // 章节过渡页：大序号 + 章节名
+  'chart', // 真图表页：柱/折线/饼/环形
+  'timeline', // 时间轴页
+  'process', // 流程步骤页
+  'compare', // 真表格对比页
+])
 
 const ID_RE = /^[a-f0-9]{16}$/
 
@@ -312,35 +329,77 @@ const KIND_BY_CODE = {
   C: 'twocol',
   Q: 'quote',
   E: 'closing',
+  // 10.0.1 新增
+  P: 'section',
+  SEC: 'section',
+  SECTION: 'section',
+  CH: 'chart',
+  CHART: 'chart',
+  TL: 'timeline',
+  TIMELINE: 'timeline',
+  PS: 'process',
+  PROCESS: 'process',
+  TB: 'compare',
+  TABLE: 'compare',
+  COMPARE: 'compare',
 }
 
-const COMPACT_SPEC = `格式（一行一条，不要 JSON，不要解释，不要代码块；代号：01 封面、B 要点、S 数据、C 对比、Q 金句、E 结尾）：
+const COMPACT_SPEC = `格式（一行一条，不要 JSON，不要解释，不要代码块）：
 T|整份标题|副标题
 01|封面那句主张
+P|第一章的章节名
+- 这一章讲什么（一句，可省）
 B|标题
 - 要点
 S|标题
 数值|指标名
 C|标题
 - 左栏|- 右栏
-Q|标题
+TB|标题
+左列名|右列名
+- 左值|- 右值
+CH|bar|标题
+类目|数值
+TL|标题
+时点|发生了什么
+PS|标题
+- 一个步骤
+N|这一页的演讲备注（放哪一页就写在那个页头下面）
+Q|金句
 E|标题
-- 行动号召`
+- 行动号召
 
-const COMPACT_FEWSHOT = `示例（另一个主题的完整 6 页稿子，只示范写法）：
+代号：01 封面、P 章节过渡、B 要点、S 数据卡、C 双栏对比、TB 表格对比、CH 图表、TL 时间轴、PS 流程步骤、Q 金句、E 结尾。
+CH 的第二个位置是图表类型，只能是 bar（柱）、line（折线）、pie（饼）、doughnut（环形）。`
+
+const COMPACT_FEWSHOT = `示例（另一个主题的完整 8 页稿子，只示范写法，不要照抄内容）：
 T|出杯 90 秒：一家咖啡连锁的效率重建|32 家门店的三个月实验
 01|高峰期，每杯要等 4 分 12 秒
+P|第一章 慢在哪里
+- 先量清楚等待到底发生在哪一步
 B|慢不在咖啡机，在动线
 - 一名店员每小时往返取料 37 次，绕行 1.4 公里
 - 62% 的等待发生在排队，而不是制作
 - 峰值时段订单集中到 3 倍，人手却没变
-S|改造三个月后的数字
--55%|高峰期等待时长
-90s|平均出杯时间
+CH|bar|等待时间被切成了四段
+排队等待|168
+等待点单|41
+制作出杯|38
+取餐等待|5
+N|这段用秒做单位念，重点落在排队那 168 秒上，别念设备参数。
 C|旧动线 vs 新动线
 - 取料与制作挤在同一区|- 备料前置，制作区不放原料
 - 三台设备塞进 2 米内|- 设备按订单流顺序摆放
 - 高峰期靠加人|- 高峰期靠分单与预判
+TL|三个月是怎么改的
+第 1 周|画出 32 家店的店员走动图，标出最远的三个往返
+第 4 周|把备料台移到前场，制作区清空原料
+第 9 周|按订单流重排设备，出杯口挪到取餐台旁
+PS|下一家门店照这四步做
+- 站在店里数一小时的走动往返
+- 把最费时的备料挪到视线内
+- 按订单到达顺序重排设备
+- 用两周数据验证，再决定是否推广
 Q|顾客记住的不是咖啡豆，是等了多久
 E|从一家门店的动线开始
 - 本周画一张店员走动图，标出最远的三个往返`
@@ -367,9 +426,21 @@ const FILLER_WORDS = [
   '生态闭环',
 ]
 
+const CHART_TYPES = new Set(['bar', 'line', 'pie', 'doughnut'])
+
+/* 页头代号。多字符代号必须排在单字符前面，否则 P 会先吃掉 PS、S 会先吃掉 SEC */
+const HEAD_RE = /^(0?[1-9]|SECTION|SEC|COVER|CHART|CH|TIMELINE|TL|PROCESS|PS|COMPARE|TABLE|TB|B|S|C|Q|E|P)\s*[|｜]\s*(.*)$/i
+
 /**
  * 解析紧凑行式大纲 → 与 normalizeOutline 同构的 raw 结构。
  * 容错优先：认不出的行直接跳过，宁可少一条要点也不整份作废。
+ *
+ * 10.0.1 新增三种带结构化数据的页型：
+ *   CH 图表   数据行「类目|数值」→ cur.chart
+ *   TL 时间轴 数据行「时点|描述」→ cur.timeline
+ *   TB 表格   第一行「左列名|右列名」当表头，之后每行左右各一格 → cur.head + body/extra
+ * 这些数据不能留在 body 里：cleanPointList 会把超过 30 字的要点截断加省略号，
+ * 「第 1 周|画出 32 家店的店员走动图」这种时间轴条目会被砍成半句。
  */
 function parseCompactOutline(text, { topic, n, pad = true } = {}) {
   const lines = String(text || '')
@@ -388,12 +459,45 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
   let cur = null
   let seenDeck = false
 
+  const newSlide = (kind, headTitle) => ({
+    kind,
+    title: headTitle,
+    body: [],
+    extra: [],
+    stats: [],
+    note: '',
+    image: '',
+    chart: kind === 'chart' ? { type: 'bar', labels: [], values: [] } : null,
+    timeline: kind === 'timeline' ? [] : null,
+    head: kind === 'compare' ? [] : null,
+  })
+
   const pushSlide = () => {
     if (!cur) return
     // 金句页最常见的写法是「Q|金句本身」，没有独立内容行 —— 把页头让给金句
     if (cur.kind === 'quote' && !cur.body.length && cur.title) {
       cur.body = [cur.title.slice(0, 60)]
       cur.title = ''
+    }
+    /* 图表页/时间轴页数据不足就降级成要点页 —— 渲染时没有数据的图表框比
+     * 一张普通文字页更难看，宁可退回去也别画空图 */
+    if (cur.kind === 'chart' && (!cur.chart?.values || cur.chart.values.length < 2)) {
+      cur.kind = 'bullets'
+      if (!cur.body.length && cur.chart?.labels?.length) {
+        cur.body = cur.chart.labels.map((l, k) => `${l} ${cur.chart.values[k] ?? ''}`.trim()).slice(0, 5)
+      }
+      cur.chart = null
+    }
+    if (cur.kind === 'timeline' && (!cur.timeline || cur.timeline.length < 2)) {
+      cur.kind = 'bullets'
+      if (!cur.body.length && cur.timeline?.length) {
+        cur.body = cur.timeline.map((x) => `${x.t} ${x.d}`.trim()).slice(0, 5)
+      }
+      cur.timeline = null
+    }
+    if (cur.kind === 'compare' && (cur.body.length < 2 || cur.extra.length < 2)) {
+      cur.kind = 'bullets'
+      cur.head = null
     }
     slides.push(cur)
   }
@@ -411,8 +515,15 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
       continue
     }
 
-    // 页头：01|标题 / B|标题 …
-    const head = raw.match(/^(0?[1-9]|COVER|B|S|C|Q|E)\s*[|｜]\s*(.*)$/i)
+    // N|演讲备注 —— 挂在当前这一页上，必须放在页头判定之前
+    const noteLine = raw.match(/^N\s*[|｜]\s*(.*)$/i)
+    if (noteLine) {
+      if (cur) cur.note = String(noteLine[1] || '').trim().slice(0, 400)
+      continue
+    }
+
+    // 页头：01|标题 / B|标题 / CH|bar|标题 …
+    const head = raw.match(HEAD_RE)
     if (head) {
       const code = head[1].toUpperCase()
       // 纯数字页头：01 是封面，其余当内容页（模型有时整份都用数字编号）
@@ -420,9 +531,21 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
       if (kind) {
         if (slides.length >= n) break // 页数已够，后面的重复内容一律不要
         pushSlide()
+        let rest = String(head[2] || '')
+        let chartType = ''
+        /* CH|bar|标题：第二个位置是图表类型 */
+        if (kind === 'chart') {
+          const seg = rest.split(/[|｜]/)
+          const maybe = String(seg[0] || '').trim().toLowerCase()
+          if (CHART_TYPES.has(maybe)) {
+            chartType = maybe
+            rest = seg.slice(1).join('|')
+          }
+        }
         // 模型偶尔写成「S|标题 数值|指标名」，标题只取竖线前那段
-        const headTitle = String(head[2] || '').split(/[|｜]/)[0].trim().slice(0, 60)
-        cur = { kind, title: headTitle, body: [], extra: [], stats: [], note: '', image: '' }
+        const headTitle = rest.split(/[|｜]/)[0].trim().slice(0, 60)
+        cur = newSlide(kind, headTitle)
+        if (cur.chart) cur.chart.type = chartType || 'bar'
         continue
       }
     }
@@ -432,6 +555,51 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
     // 只剥离「- 」这种带空格的列表符号。直接写 /^[-·•*]\s*/ 会把数据页的
     // -46%（负数百分比）吃成 46%，那是把结论改反了。
     const body = /^[-·•*]\s+/.test(raw) ? raw.replace(/^[-·•*]\s+/, '').trim() : raw
+
+    /* ---- 图表数据行：类目|数值 ---- */
+    if (cur.kind === 'chart') {
+      const m = body.match(/^(.+?)\s*[|｜]\s*(-?[\d.]+)\s*%?$/)
+      if (m) {
+        if (cur.chart.labels.length < 8) {
+          cur.chart.labels.push(m[1].trim().slice(0, 14))
+          const v = Number(m[2])
+          cur.chart.values.push(Number.isFinite(v) ? v : 0)
+        }
+      } else if (!cur.body.length && body && !/\|/.test(body)) {
+        // 没有数值的那一行当结论文字
+        cur.body.push(body.slice(0, 40))
+      }
+      continue
+    }
+
+    /* ---- 时间轴数据行：时点|描述 ---- */
+    if (cur.kind === 'timeline') {
+      const m = body.match(/^(.+?)\s*[|｜]\s*(.+)$/)
+      if (m) {
+        if (cur.timeline.length < 6) {
+          cur.timeline.push({ t: m[1].trim().slice(0, 16), d: m[2].trim().slice(0, 40) })
+        }
+      } else if (body && cur.timeline.length < 6) {
+        cur.timeline.push({ t: '', d: body.slice(0, 40) })
+      }
+      continue
+    }
+
+    /* ---- 表格：第一行左右列名当表头，之后每行左右各一格 ---- */
+    if (cur.kind === 'compare') {
+      const m = body.match(/^(.+?)\s*[|｜]\s*(.+)$/)
+      if (m) {
+        const l = m[1].replace(/^[-·•*]\s+/, '').trim()
+        const r = m[2].trim()
+        if (!cur.head.length && !cur.body.length) {
+          cur.head = [l.slice(0, 16), r.slice(0, 16)]
+        } else if (cur.body.length < 5) {
+          cur.body.push(l.slice(0, 26))
+          cur.extra.push(r.slice(0, 26))
+        }
+      }
+      continue
+    }
 
     if (cur.kind === 'stats') {
       // 82%|效率提升
@@ -459,9 +627,10 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
       continue
     }
 
-    // cover / bullets / closing
+    // section 只留一句导语；process 最多五步；其余按要点收
+    const cap = cur.kind === 'section' ? 1 : cur.kind === 'process' ? 5 : 5
     if (/^\s*[-·•*]/.test(raw) || cur.kind !== 'cover') {
-      if (cur.body.length < 5 && body) cur.body.push(body.slice(0, 40))
+      if (cur.body.length < cap && body) cur.body.push(body.slice(0, 40))
     }
   }
   pushSlide()
@@ -596,6 +765,29 @@ function cleanTitle(raw, kind, topic) {
  * 把模型给的粗糙 slides 整理成稳定结构。
  * 9.8.0 新增：kind（页型）/ extra（双栏第二栏）/ stats（数据卡）/ note（备注）/ image（配图提示词）
  */
+
+/** 图表数据：只留数字型数值，最多 8 组，标签去空 */
+function normalizeChart(raw) {
+  const type = CHART_TYPES.has(String(raw?.type || '').toLowerCase()) ? String(raw.type).toLowerCase() : 'bar'
+  const labels = (Array.isArray(raw?.labels) ? raw.labels : []).map((x) => String(x || '').trim().slice(0, 14)).filter(Boolean)
+  const values = (Array.isArray(raw?.values) ? raw.values : [])
+    .map((x) => Number(String(x).replace(/[^0-9.\-]/g, '')))
+    .map((x) => (Number.isFinite(x) ? x : 0))
+  const k = Math.min(labels.length, values.length, 8)
+  return { type, labels: labels.slice(0, k), values: values.slice(0, k) }
+}
+
+/** 时间轴：{t,d} 数组，最多 6 个节点 */
+function normalizeTimeline(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map((x) => ({
+      t: String(x?.t ?? x?.time ?? '').trim().slice(0, 16),
+      d: String(x?.d ?? x?.desc ?? '').trim().slice(0, 40),
+    }))
+    .filter((x) => x.t || x.d)
+    .slice(0, 6)
+}
+
 function normalizeOutline(raw, { topic, n }) {
   const list = (Array.isArray(raw?.slides) ? raw.slides : []).slice(0, n)
   const slides = list.map((s, i) => {
@@ -638,27 +830,47 @@ function normalizeOutline(raw, { topic, n }) {
       body.length = k
       extra.length = k
     }
+
+    /* 10.0.1：结构化页型的降级 —— 没有可用数据就不画空图表 / 空时间轴 */
+    const chart = normalizeChart(s?.chart)
+    const timeline = normalizeTimeline(s?.timeline)
+    const head = (Array.isArray(s?.head) ? s.head : []).slice(0, 2).map((x) => String(x || '').slice(0, 16))
+    if (finalKind === 'chart' && chart.values.length < 2) {
+      finalKind = 'bullets'
+      if (!body.length && chart.labels.length) {
+        body.push(...chart.labels.map((l, k) => `${l} ${chart.values[k] ?? ''}`.trim()).slice(0, 5))
+      }
+    }
+    if (finalKind === 'timeline' && timeline.length < 2) {
+      finalKind = 'bullets'
+      if (!body.length && timeline.length) {
+        body.push(...timeline.map((x) => `${x.t} ${x.d}`.trim()).slice(0, 5))
+      }
+    }
+    if (finalKind === 'compare' && (body.length < 2 || extra.length < 2)) finalKind = 'bullets'
     if (finalKind === 'quote' && !body.length) {
       // 金句写在页头也是有效的：标题让位给金句，避免同句重复两遍
-      const head = String(s?.title || '').trim()
-      if (head) body.push(head.slice(0, 60))
+      const head2 = String(s?.title || '').trim()
+      if (head2) body.push(head2.slice(0, 60))
       else finalKind = 'bullets'
     }
 
     const isQuote = finalKind === 'quote'
+    const isSection = finalKind === 'section'
+    /* section 只有一句导语，不该被塞「内容待补充」占位 */
+    const keepEmptyBody = isFirst || finalKind === 'closing' || finalKind === 'stats' || isSection || finalKind === 'chart'
     // 标题清洗：模型常把格式词当标题（「数值」「行动号召：」），也会一句话写太长
     const rawTitle = cleanTitle(s?.title, finalKind, isFirst ? topic : '')
     return {
-      title: rawTitle || (isFirst ? String(topic).slice(0, 24) : isQuote ? '' : `第 ${i + 1} 页`),
+      title: rawTitle || (isFirst ? String(topic).slice(0, 24) : isQuote || isSection ? '' : `第 ${i + 1} 页`),
       kicker: String(s?.kicker || '').slice(0, 8),
       kind: finalKind,
-      body: body.length
-        ? body
-        : isFirst || finalKind === 'closing' || finalKind === 'stats'
-          ? []
-          : ['（本页内容待补充）'],
+      body: body.length ? body : keepEmptyBody ? [] : ['（本页内容待补充）'],
       extra,
       stats,
+      chart: finalKind === 'chart' ? chart : null,
+      timeline: finalKind === 'timeline' ? timeline : null,
+      head: finalKind === 'compare' ? head : null,
       note: String(s?.note || '').slice(0, 400),
       image: String(s?.image || '').slice(0, 300),
       imageName: '',
@@ -673,6 +885,9 @@ function normalizeOutline(raw, { topic, n }) {
     body: ['这一页可以补充你想强调的其他要点'],
     extra: [],
     stats: [],
+    chart: null,
+    timeline: null,
+    head: null,
     note: '',
     image: '',
     imageName: '',
@@ -706,13 +921,18 @@ function cleanOutlineForRender(outline) {
             v: String(x?.v ?? '').slice(0, 12),
             l: String(x?.l ?? '').slice(0, 24),
           })),
+        chart: normalizeChart(s?.chart),
+        timeline: normalizeTimeline(s?.timeline),
+        head: (Array.isArray(s?.head) ? s.head : []).slice(0, 2).map((x) => String(x || '').slice(0, 16)),
         note: String(s?.note || '').slice(0, 400),
         image: String(s?.image || '').slice(0, 300),
         // 重渲染优先复用已经出好的图，缓存命中就不再下载
         imageName: String(s?.imageName || '').slice(0, 60),
       }
     })
-    .filter((s) => s.title)
+    /* quote / section 允许没有标题（金句和章节导语本身就是内容），
+     * 只把「标题和正文都空」的页剔掉 */
+    .filter((s) => s.title || s.body.length || (s.chart && s.chart.values.length))
   return {
     title: String(outline?.title || '未命名演示文稿').slice(0, 80),
     subtitle: String(outline?.subtitle || '').slice(0, 120),
@@ -726,6 +946,31 @@ function cleanOutlineForRender(outline) {
 
 const PAGE_W = 13.333
 const PAGE_H = 7.5
+
+/**
+ * 从主题色推一条同色系色阶，供饼图/折线多系列着色。
+ * pptxgenjs 的 chartColors 只吃不带 # 的 6 位十六进制，这里统一产出该格式。
+ */
+function chartPalette(hex, n = 5) {
+  const h = String(hex || '2563EB')
+    .replace('#', '')
+    .padEnd(6, '0')
+    .slice(0, 6)
+  const base = [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]
+  const out = []
+  for (let i = 0; i < Math.max(3, n); i++) {
+    // i=0 原色；之后交替往亮/暗两头拉开，保证相邻扇区色差足够
+    const t = i === 0 ? 0 : (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.26
+    const mix = (v) => Math.max(0, Math.min(255, Math.round(t >= 0 ? v + (255 - v) * t : v * (1 + t))))
+    out.push(
+      [mix(base[0]), mix(base[1]), mix(base[2])]
+        .map((x) => x.toString(16).padStart(2, '0'))
+        .join('')
+        .toUpperCase(),
+    )
+  }
+  return out
+}
 
 /**
  * 渲染一份 PPTX。
@@ -925,6 +1170,7 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
   }
 
   /* ---------------- 内容页 ---------------- */
+  let sectionCount = 0 // 章节序号：section 页按出现顺序编号
   for (let i = 1; i < slides.length; i++) {
     const sl = slides[i]
     const s = pptx.addSlide()
@@ -983,6 +1229,88 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
           fit: 'shrink',
         })
       }
+      if (sl.note) {
+        try {
+          s.addNotes(sl.note)
+        } catch (_) {
+          /* ignore */
+        }
+      }
+      continue
+    }
+
+    /* ---- 版式 5：章节过渡页（10.0.1）----
+     * 深色整页 + 超大章序号。作用是把长稿子切成几段，让版面有呼吸；
+     * WPS 模板里这一页几乎必现，缺了它整份稿子会显得平。 */
+    if (sl.kind === 'section') {
+      sectionCount += 1
+      s.background = { color: T.coverBg }
+      /* 背景：一个大号半透明序号压在右侧，不抢标题 */
+      s.addText(String(sectionCount).padStart(2, '0'), {
+        x: PAGE_W - 5.4,
+        y: 0.9,
+        w: 5,
+        h: 5.2,
+        fontSize: 260,
+        bold: true,
+        color: T.accent,
+        transparency: 82,
+        align: 'right',
+        valign: 'middle',
+        fontFace: F,
+      })
+      if (pic) {
+        s.addImage({ path: pic, x: 0, y: 0, w: PAGE_W, h: PAGE_H })
+        s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: PAGE_H, fill: { color: T.coverBg, transparency: 20 } })
+      }
+      s.addShape('rect', { x: 0, y: 0, w: PAGE_W, h: 0.07, fill: { color: T.accent } })
+      /* 章节眉标 */
+      s.addText(lang === 'en' ? `CHAPTER ${sectionCount}` : `第 ${sectionCount} 章`, {
+        x: 1.25,
+        y: 2.05,
+        w: 4,
+        h: 0.35,
+        fontSize: 12,
+        bold: true,
+        color: T.accent,
+        charSpacing: 3,
+        fontFace: F,
+      })
+      s.addShape('rect', { x: 1.28, y: 2.55, w: 0.9, h: 0.055, fill: { color: T.accent } })
+      s.addText(sl.title || '—', {
+        x: 1.22,
+        y: 2.75,
+        w: PAGE_W - 3.2,
+        h: 1.5,
+        fontSize: 44,
+        bold: true,
+        color: T.coverTitle,
+        valign: 'middle',
+        fontFace: F,
+        fit: 'shrink',
+      })
+      if (sl.body?.[0]) {
+        s.addText(sl.body[0], {
+          x: 1.25,
+          y: 4.35,
+          w: PAGE_W - 4.6,
+          h: 0.85,
+          fontSize: 15,
+          color: T.coverSub,
+          fontFace: F,
+          fit: 'shrink',
+        })
+      }
+      s.addText(`${pageNo} / ${total}`, {
+        x: PAGE_W - 1.5,
+        y: PAGE_H - 0.5,
+        w: 0.9,
+        h: 0.3,
+        fontSize: 9.5,
+        color: T.coverSub,
+        align: 'right',
+        fontFace: F,
+      })
       if (sl.note) {
         try {
           s.addNotes(sl.note)
@@ -1246,6 +1574,256 @@ function buildPptx({ outline, themeId, withToc, images = {}, lang = 'zh' }) {
       }
     }
 
+    /* ---- 版式 6：真图表（10.0.1）----
+     * 旧版的数据页只会把数字排成卡片，商务汇报一眼就假。这里走 pptxgenjs 的
+     * 原生 addChart，导出的 pptx 里图表是**可编辑图表对象**，不是一张图片。 */
+    if (sl.kind === 'chart' && sl.chart && sl.chart.values.length >= 2) {
+      const C = sl.chart
+      const hasText = (sl.body || []).length > 0
+      const chartW = hasText ? 7.7 : PAGE_W - 2.0
+      const cx = hasText ? 0.8 : (PAGE_W - chartW) / 2
+      const chartH = Math.min(bodyH - 0.25, 4.7)
+      const typeMap = {
+        bar: pptx.ChartType.bar,
+        line: pptx.ChartType.line,
+        pie: pptx.ChartType.pie,
+        doughnut: pptx.ChartType.doughnut,
+      }
+      const isPie = C.type === 'pie' || C.type === 'doughnut'
+      try {
+        s.addChart(
+          typeMap[C.type] || pptx.ChartType.bar,
+          [{ name: (sl.title || '数据').slice(0, 30), labels: C.labels, values: C.values }],
+          {
+            x: cx,
+            y: bodyTop,
+            w: chartW,
+            h: chartH,
+            chartColors: chartPalette(T.accent, Math.max(C.values.length, 3)),
+            showLegend: isPie,
+            legendPos: 'b',
+            legendFontFace: F,
+            legendFontSize: 10,
+            legendColor: T.text,
+            showValue: true,
+            dataLabelColor: T.text,
+            dataLabelFontFace: F,
+            dataLabelFontSize: 10,
+            dataLabelPosition: isPie ? 'bestFit' : 'outEnd',
+            catAxisLabelColor: T.text,
+            catAxisLabelFontFace: F,
+            catAxisLabelFontSize: 10.5,
+            valAxisHidden: true,
+            valGridLine: { style: 'none' },
+            catGridLine: { style: 'none' },
+            border: { pt: 0, color: 'FFFFFF' },
+            barGapWidthPct: 55,
+            lineSize: 2.5,
+            lineDataSymbolSize: 7,
+          },
+        )
+      } catch (_) {
+        /* 图表数据异常时退回把数字排成一行，不能让整页渲染失败 */
+        s.addText(
+          C.labels.map((l, k) => `${l} ${C.values[k]}`).join('   ·   '),
+          { x: cx, y: bodyTop + 1.6, w: chartW, h: 0.8, fontSize: 14, color: T.text, fontFace: F, align: 'center', fit: 'shrink' },
+        )
+      }
+      /* 右栏：这一页要说明的结论 */
+      if (hasText) {
+        const tx = cx + chartW + 0.45
+        const tw = PAGE_W - tx - 0.8
+        s.addShape('rect', { x: tx, y: bodyTop + 0.2, w: 0.07, h: 0.42, fill: { color: T.accent } })
+        s.addText(lang === 'en' ? 'Takeaway' : '看懂这张图', {
+          x: tx + 0.2,
+          y: bodyTop + 0.2,
+          w: tw - 0.2,
+          h: 0.42,
+          fontSize: 11,
+          bold: true,
+          color: T.accent,
+          valign: 'middle',
+          fontFace: F,
+        })
+        s.addText(
+          sl.body.slice(0, 4).map((t) => ({
+            text: t,
+            options: { bullet: { code: '25AA' }, breakLine: true, paraSpaceAfter: 10, fontSize: 13.5, color: T.text, fontFace: F },
+          })),
+          { x: tx, y: bodyTop + 0.85, w: tw, h: chartH - 1.0, lineSpacingMultiple: 1.3, valign: 'top', fit: 'shrink' },
+        )
+      }
+    }
+
+    /* ---- 版式 7：时间轴（10.0.1）---- */
+    if (sl.kind === 'timeline' && Array.isArray(sl.timeline) && sl.timeline.length >= 2) {
+      const nodes = sl.timeline.slice(0, 6)
+      const n = nodes.length
+      const left = 1.0
+      const usable = PAGE_W - left * 2
+      const step = usable / Math.max(n - 1, 1)
+      const axisY = bodyTop + 2.05
+      /* 主轴 */
+      s.addShape('line', { x: left, y: axisY, w: usable, h: 0, line: { color: 'CBD5E1', width: 1.75 } })
+      nodes.forEach((nd, k) => {
+        const cx0 = left + step * k
+        const up = k % 2 === 0
+        const dotR = 0.19
+        /* 节点圆点：外圈浅色 + 内圈主题色 */
+        s.addShape('ellipse', {
+          x: cx0 - dotR - 0.055,
+          y: axisY - dotR - 0.055,
+          w: (dotR + 0.055) * 2,
+          h: (dotR + 0.055) * 2,
+          fill: { color: T.accent, transparency: 78 },
+        })
+        s.addShape('ellipse', {
+          x: cx0 - dotR,
+          y: axisY - dotR,
+          w: dotR * 2,
+          h: dotR * 2,
+          fill: { color: T.accent },
+        })
+        /* 连接竖线 */
+        const linkH = 0.62
+        s.addShape('line', {
+          x: cx0,
+          y: up ? axisY - dotR - linkH : axisY + dotR,
+          w: 0,
+          h: linkH,
+          line: { color: T.accent, width: 1, transparency: 45 },
+        })
+        const boxW = Math.min(step - 0.22, 3.2)
+        const boxX = Math.max(0.45, Math.min(PAGE_W - boxW - 0.45, cx0 - boxW / 2))
+        const labelY = up ? axisY - dotR - linkH - 0.42 : axisY + dotR + linkH
+        if (nd.t) {
+          s.addText(nd.t, {
+            x: boxX,
+            y: labelY,
+            w: boxW,
+            h: 0.36,
+            fontSize: 13,
+            bold: true,
+            color: T.accent,
+            align: 'center',
+            fontFace: F,
+            fit: 'shrink',
+          })
+        }
+        s.addText(nd.d, {
+          x: boxX,
+          y: labelY + 0.38,
+          w: boxW,
+          h: 0.85,
+          fontSize: 11,
+          color: T.text,
+          align: 'center',
+          lineSpacingMultiple: 1.2,
+          valign: up ? 'bottom' : 'top',
+          fontFace: F,
+          fit: 'shrink',
+        })
+      })
+    }
+
+    /* ---- 版式 8：流程步骤（10.0.1）---- */
+    if (sl.kind === 'process' && (sl.body || []).length >= 2) {
+      const steps = sl.body.slice(0, 5)
+      const n = steps.length
+      const gap = 0.28
+      const cardW = (PAGE_W - 1.7 - gap * (n - 1)) / n
+      const cardH = Math.min(bodyH - 0.4, 3.5)
+      const y0 = bodyTop + 0.35
+      steps.forEach((t, k) => {
+        const x = 0.85 + k * (cardW + gap)
+        s.addShape('rect', {
+          x,
+          y: y0,
+          w: cardW,
+          h: cardH,
+          fill: { color: T.panel },
+          line: { color: T.panel, width: 1 },
+          rectRadius: 0.08,
+        })
+        /* 顶部主题色进度条：最后一步满格，前面按比例 —— 一眼看出是流程而非并列 */
+        s.addShape('rect', { x, y: y0, w: cardW, h: 0.075, fill: { color: T.accent, transparency: k === n - 1 ? 0 : 55 } })
+        s.addShape('ellipse', { x: x + 0.28, y: y0 + 0.32, w: 0.52, h: 0.52, fill: { color: T.accent } })
+        s.addText(String(k + 1), {
+          x: x + 0.28,
+          y: y0 + 0.32,
+          w: 0.52,
+          h: 0.52,
+          fontSize: 15,
+          bold: true,
+          color: 'FFFFFF',
+          align: 'center',
+          valign: 'middle',
+          fontFace: F,
+        })
+        s.addText(t, {
+          x: x + 0.22,
+          y: y0 + 1.02,
+          w: cardW - 0.44,
+          h: cardH - 1.2,
+          fontSize: 12.5,
+          color: T.text,
+          lineSpacingMultiple: 1.25,
+          valign: 'top',
+          fontFace: F,
+          fit: 'shrink',
+        })
+        /* 步骤之间的箭头 */
+        if (k < n - 1) {
+          s.addShape('chevron', {
+            x: x + cardW + 0.04,
+            y: y0 + 0.36,
+            w: 0.2,
+            h: 0.3,
+            fill: { color: T.accent, transparency: 35 },
+          })
+        }
+      })
+    }
+
+    /* ---- 版式 9：表格对比（10.0.1）----
+     * 对比表用原生 addTable，文字可编辑、行高自动，比两张卡片更像汇报材料。 */
+    if (sl.kind === 'compare' && (sl.body || []).length >= 2 && (sl.extra || []).length >= 2) {
+      const n = Math.min(sl.body.length, sl.extra.length, 5)
+      const head = Array.isArray(sl.head) && sl.head.length === 2 ? sl.head : [lang === 'en' ? 'Before' : '现在', lang === 'en' ? 'After' : '之后']
+      const rows = [
+        head.map((h, k) => ({
+          text: h || (k ? '—' : '—'),
+          options: { bold: true, color: 'FFFFFF', fill: { color: T.accent }, align: 'left', valign: 'middle', fontSize: 13.5, fontFace: F },
+        })),
+      ]
+      for (let k = 0; k < n; k++) {
+        const bg = k % 2 === 0 ? 'FFFFFF' : T.panel
+        rows.push([
+          {
+            text: sl.body[k],
+            options: { color: T.text, fill: { color: bg }, align: 'left', valign: 'middle', fontSize: 12.5, fontFace: F },
+          },
+          {
+            text: sl.extra[k],
+            options: { color: T.title, fill: { color: bg }, align: 'left', valign: 'middle', fontSize: 12.5, fontFace: F },
+          },
+        ])
+      }
+      const tableW = PAGE_W - 1.7
+      const rowH = Math.min(0.92, (bodyH - 0.3) / (n + 1))
+      s.addTable(rows, {
+        x: 0.85,
+        y: bodyTop + 0.1,
+        w: tableW,
+        colW: [tableW / 2, tableW / 2],
+        rowH,
+        border: { type: 'solid', pt: 0.75, color: 'E2E8F0' },
+        valign: 'middle',
+        margin: 0.12,
+        autoPage: false,
+      })
+    }
+
     /* 10.0.0：页脚 —— 细分隔线 + 左侧稿题 + 右侧页码，WPS 模板的收尾标配 */
     s.addShape('rect', { x: 0.75, y: PAGE_H - 0.5, w: PAGE_W - 1.5, h: 0.012, fill: { color: 'CBD5E1' } })
     s.addText(outline.title || '', {
@@ -1355,6 +1933,8 @@ function fallbackPlanPrompt({ topic, n, toneDesc, audience }) {
  * few-shot 那样被小模型原文照抄）。
  */
 function outlinePrompt({ topic, n, toneDesc, audience, lang, plan, hasResearch }) {
+  /* 页型节奏按总页数缩放：短稿子塞章节页会把内容挤没，长稿子不给章节页又太平 */
+  const rich = n >= 8
   if (lang === 'en') {
     return (
       `Source material (pick, rewrite, never copy verbatim):\n${plan}\n\n` +
@@ -1363,19 +1943,22 @@ function outlinePrompt({ topic, n, toneDesc, audience, lang, plan, hasResearch }
       `\n\nOne line per item, no JSON, no commentary, no code fences:\n\n` +
       `T|deck title|subtitle\n` +
       `01|cover headline\n` +
+      (rich ? `P|chapter name\n` : '') +
       `B|slide title\n` +
       `- a point, 8-16 words, concrete\n` +
-      `S|metric slide title\n` +
-      `82%|efficiency gain\n` +
-      `C|comparison slide title\n` +
-      `- left|- right\n` +
+      `S|metric slide title\n82%|efficiency gain\n` +
+      `C|comparison slide title\n- left|- right\n` +
+      `CH|bar|chart slide title\nlabel|number\nlabel|number\n` +
+      `TL|timeline slide title\nWeek 1|what happened\n` +
       `Q|one-line judgment\n` +
-      `E|closing title\n` +
-      `- one action\n\n` +
-      `Codes: 01 cover, B bullets, S metrics, C comparison, Q quote, E closing.\n` +
-      `Exactly ${n} pages: page 1 is 01, last is E, at least one S and one C between.\n` +
+      `E|closing title\n- one action\n` +
+      `N|speaker note for the slide above\n\n` +
+      `Codes: 01 cover, P chapter break, B bullets, S metrics, C comparison, TB table, CH chart, TL timeline, PS steps, Q quote, E closing.\n` +
+      `Exactly ${n} pages: page 1 is 01, last is E.\n` +
+      `Use at least one CH (chart) and vary the rest — do not make every content slide a B.\n` +
+      `Chart data lines must be "label|pure number", no units, no percent sign.\n` +
       `Titles must be claims, not labels: "Waiting time, not the machine, is the bottleneck" — never "The Importance of X".\n` +
-      `Vary sentence openings across the three bullets on a page. Never write three "improved by N%" lines.`
+      `Add one N| line after each content slide: 30-60 words on how to present it, never restating the visible text.`
     )
   }
   return (
@@ -1393,9 +1976,19 @@ function outlinePrompt({ topic, n, toneDesc, audience, lang, plan, hasResearch }
     `3. S 页写 2-3 行「数值|指标名」，数值在前，只写 1 个数值这页就算没写完。数字优先用素材里的真实数字。\n` +
     `4. C 页每行左右两栏用 | 隔开，写满 3 行，左右要真的对立，不能是同义换词。\n` +
     `5. 素材里没出现的具体数字、公司名、人名都不要编；确实需要就用「某连锁品牌」这样的泛称。\n` +
-    `6. 页数写死：01 封面 1 页 + 内容页 ${Math.max(2, n - 2)} 页 + E 结尾 1 页，一共 ${n} 页；内容页里至少 1 页 S、至少 1 页 C。\n` +
-    `7. 直接输出第 1 行 T|标题，不要写「好的」「以下是」这类开场白。` +
-    (hasResearch ? `\n8. 上面素材是网上查到的真实资料，内容要贴着它写，不要跑题到别的行业。` : '')
+    `6. 页数写死：01 封面 1 页 + E 结尾 1 页 + 其余内容页，一共正好 ${n} 页。\n` +
+    `7. 直接输出第 1 行 T|标题，不要写「好的」「以下是」这类开场白。\n` +
+    `8. 页型要有节奏，不要整份都是 B：\n` +
+    `   · CH 图表页 1-2 页：标题下面先写「类目|纯数字」，只写数字不要带单位或百分号，至少 3 行；\n` +
+    `   · TB 表格页最多 1 页：第一行是「左列名|右列名」表头，之后每行「- 左值|- 右值」；\n` +
+    `   · TL 时间轴最多 1 页，只在讲过程、阶段、里程碑时用，每行「时点|发生了什么」；\n` +
+    `   · PS 流程页最多 1 页，只在讲做法步骤时用，写 3-4 行「- 一步」；\n` +
+    (rich
+      ? `   · P 章节过渡页使用 1-2 页，放在内容成段的地方，只写章节名加一句导语；\n`
+      : `   · 这份稿子页数少，不要用 P 章节过渡页；\n`) +
+    `9. 每一页内容页后面另起一行写「N|演讲备注」，40-80 字，说明这一页怎么讲、\n` +
+    `   要强调哪个数字、听众可能会有疑问的地方。备注不要复述页面上已有的文字。` +
+    (hasResearch ? `\n10. 上面素材是网上查到的真实资料，内容要贴着它写，不要跑题到别的行业。` : '')
   )
 }
 
@@ -1585,6 +2178,10 @@ function isPlaceholderPage(s) {
 function isRealPage(s) {
   if (!s || isPlaceholderPage(s)) return false
   if (s.kind === 'cover') return Boolean(String(s.title || '').trim())
+  /* 10.0.1：图表页和时间轴页的有效内容在结构化字段里，不在 body */
+  if (s.kind === 'chart') return (s.chart?.values || []).length >= 2
+  if (s.kind === 'timeline') return (s.timeline || []).length >= 2
+  if (s.kind === 'section') return Boolean(String(s.title || '').trim())
   const body = (s.body || []).filter((x) => !isFiller(x) && !/待补充/.test(x))
   return body.length > 0 || (s.stats || []).length > 0
 }
@@ -1977,6 +2574,10 @@ async function generate(opts = {}, emit = null) {
     }
   }
 
+  /* 10.0.1：只出大纲（WPS AI 那种「先看大纲再确认」的第一步）。
+   * 走到 outline 事件就返回，不配图、不渲染、不落盘 —— 用户改完大纲再走 assemble。 */
+  const outlineOnly = Boolean(opts.outlineOnly)
+
   const t0 = Date.now()
   const n = clampPages(pages, 6)
   /* 9.9.7：页数语义 = 成品 pptx 的页数（用户要几页就拿到几页）。
@@ -2036,7 +2637,7 @@ async function generate(opts = {}, emit = null) {
   const coverSeed = (hashString(topicClean) % 90000) + 1000
   const themeDef = THEMES[themeId]
   let coverJob = null
-  if (withImages) {
+  if (withImages && !outlineOnly) {
     coverJob = fetchImage(
       {
         prompt: coverPrompt,
@@ -2272,8 +2873,10 @@ async function generate(opts = {}, emit = null) {
   /* 最后一道保险。
    * 闸门删、回炉又没救回来的页，到这里可能是空的 —— 那种页翻过去一片白，
    * 比内容差更伤人。用真实素材把它们填满，实在没素材才丢掉这一页。 */
+  /* 结构性页型（金句/章节/图表/时间轴）的「内容」不在 body 里，不能按空页处理 */
+  const STRUCT_KINDS = new Set(['quote', 'cover', 'section', 'chart', 'timeline'])
   const isHole = (x) =>
-    x && x.kind !== 'quote' && x.kind !== 'cover' &&
+    x && !STRUCT_KINDS.has(x.kind) &&
     !(x.body || []).length && !(x.stats || []).length && !(x.extra || []).length
   if ((outline.slides || []).some(isHole)) {
     const patched = fillFromPlan({ ...data, slides: outline.slides }, n, planRows || plan)
@@ -2375,6 +2978,30 @@ async function generate(opts = {}, emit = null) {
   send({ type: 'notice', reason: 'page-count', field: `final=${(outline.slides || []).length}(askN=${askN})` })
 
   send({ type: 'outline', outline, elapsed: Date.now() - t0 })
+
+  /* 只要大纲：到这里就收工，把大纲交回去让用户改。
+   * 必须补一个 done 事件 —— 前端 streamPost 靠 done 事件取结果，
+   * 只发 outline 不发 done 会被判成「生成流意外结束」。 */
+  if (outlineOnly) {
+    if (coverJob) coverJob.catch(() => null)
+    const result = {
+      ok: true,
+      outline,
+      outlineOnly: true,
+      title: outline.title,
+      subtitle: outline.subtitle,
+      pages: outline.slides.length,
+      tokens,
+      model: outlineModel,
+      mode: effective,
+      topic: topicClean,
+      theme: themeId,
+      withToc: Boolean(withToc),
+      lang,
+    }
+    send({ type: 'done', result })
+    return result
+  }
 
   /* ---- 阶段三：配图 ---- */
   const images = {}
@@ -2507,6 +3134,129 @@ async function generate(opts = {}, emit = null) {
     size: out.size,
     mode: effective,
     model: outlineModel,
+    elapsedMs: Date.now() - t0,
+  }
+  send({ type: 'done', result })
+  return result
+}
+
+/**
+ * 10.0.1：按「用户已确认（并可能改过）的大纲」出片。
+ *
+ * 和 generate() 的区别只有一点：内容不再问模型，直接拿传进来的大纲配图 + 渲染。
+ * 这是 WPS AI 那条链路的第二步 —— 大纲阶段充分可改，改完才花时间出片，
+ * 避免「改一次就要重跑两分钟模型」。
+ */
+async function assemble({ outline, theme, withToc, withImages = true, imageSource = 'auto' } = {}, emit = null) {
+  const send = (ev) => {
+    if (!emit) return
+    try {
+      emit(ev)
+    } catch (_) {
+      /* 前端断开不该拖垮渲染 */
+    }
+  }
+
+  const t0 = Date.now()
+  const clean = cleanOutlineForRender(outline)
+  if (clean.slides.length < 2) return { ok: false, error: '大纲至少要有 2 页（含封面）' }
+
+  const themeId = normalizeTheme(theme)
+  const toc = Boolean(withToc) && clean.slides.length >= 5
+  const lang = /[\u4e00-\u9fa5]/.test(clean.title) ? 'zh' : 'en'
+  send({ type: 'phase', phase: 'image', label: '准备配图', total: 0, done: 0 })
+
+  /* ---- 配图 ----
+   * 先复用大纲里已经带回来的 imageName（编辑时没动过的图不重画），
+   * 剩下的按内容打分补。 */
+  const images = {}
+  const reuse = {}
+  clean.slides.forEach((s, i) => {
+    if (!s.imageName) return
+    const hit = imageGen.resolveImage(s.imageName)
+    if (hit) {
+      images[i] = hit.file
+      reuse[i] = true
+    } else {
+      s.imageName = ''
+    }
+  })
+
+  let imageOk = Object.keys(images).length
+  if (withImages) {
+    const canWeb = imageSource === 'web' || (imageSource === 'auto' && webimage.hasKey())
+    const cap = canWeb ? 4 : 2
+    const jobs = pickImageJobs(clean, themeId, cap, lang).filter((j) => !reuse[j.index])
+    if (jobs.length) {
+      send({ type: 'phase', phase: 'image', label: `生成配图（0/${jobs.length}）`, total: jobs.length, done: 0 })
+      let done = 0
+      await generateImages(jobs, {
+        source: imageSource,
+        concurrency: 3,
+        onStart: (_i, seq) =>
+          send({
+            type: 'progress',
+            phase: 'image',
+            label: `生成配图（第 ${Math.min(seq + 1, jobs.length)}/${jobs.length} 张排队中…）`,
+            done,
+            total: jobs.length,
+            pending: true,
+          }),
+        onOne: (i, r) => {
+          done += 1
+          if (r?.ok) {
+            images[jobs[i].index] = r.file
+            clean.slides[jobs[i].index].imageName = r.name
+            imageOk += 1
+          }
+          send({
+            type: 'progress',
+            phase: 'image',
+            label: `生成配图（${done}/${jobs.length}）`,
+            done,
+            total: jobs.length,
+            index: jobs[i].index,
+            source: r?.source || '',
+            name: r?.name || '',
+          })
+        },
+        onNote: (why) => send({ type: 'notice', reason: why, field: 'image' }),
+      })
+    }
+  } else {
+    send({ type: 'phase', phase: 'image', label: '跳过配图', skipped: true })
+  }
+
+  /* ---- 渲染 ---- */
+  send({ type: 'phase', phase: 'render', label: '排版渲染' })
+  const id = crypto.randomBytes(8).toString('hex')
+  const pptx = buildPptx({ outline: clean, themeId, withToc: toc, images, lang })
+  const out = await writeOut(pptx, id, clean.title, clean, {
+    id,
+    topic: clean.title,
+    theme: themeId,
+    language: lang,
+    withToc: toc,
+    images: imageOk,
+    elapsedMs: Date.now() - t0,
+    createdAt: Date.now(),
+    assembledAt: Date.now(),
+  })
+
+  quota.bumpTask('ppt')
+
+  const result = {
+    ok: true,
+    id,
+    file: out.file,
+    download: path.basename(out.file),
+    title: clean.title,
+    pages: clean.slides.length + (toc ? 1 : 0),
+    images: imageOk,
+    outline: clean,
+    theme: themeId,
+    withToc: toc,
+    size: out.size,
     elapsedMs: Date.now() - t0,
   }
   send({ type: 'done', result })
@@ -2656,6 +3406,7 @@ function listFiles() {
 
 module.exports = {
   generate,
+  assemble,
   render,
   getOutline,
   resolveFile,

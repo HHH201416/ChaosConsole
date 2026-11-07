@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "10\.0\.3"/, '版本为 10.0.3')
+must('package.json', /"version": "10\.0\.4"/, '版本为 10.0.4')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -367,7 +367,7 @@ must('src/components/AipptPage.jsx', /onInsertAfter/, '编辑器有插页入口'
 must('src/components/AipptPage.jsx', /换模板（预览立刻变，不用重新生成）/, '换模板不重新生成')
 must('src/components/AipptPage.jsx', /演讲备注（放映时不显示/, '编辑页可写演讲备注')
 must('src/components/AipptPage.jsx', /function ChartBox/, '预览里有图表渲染')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.3'/, '更新日志首条是 10.0.3')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.4'/, '更新日志首条是 10.0.4')
 
 /* ---------- 10.0.1：页数硬保证（要几页就出几页） ---------- */
 console.log('— 10.0.1 页数硬保证（缺页用真实内容补，不用占位句）')
@@ -485,6 +485,26 @@ must(U, /静默卸载（\/S）不显示本页/, '注释写明静默卸载一项�
 must('release-notes-10.0.3.md', /五项|逐项/, '有本版发布正文')
 must('src/lib/changelog.js', /version: '10\.0\.3'/, '应用内更新日志写了 10.0.3')
 must('src/lib/i18n.js', /五项清理清单/, '中英提示同步成清单说法')
+
+/* ---------- 10.0.4：应用内点卸载，自动打开卸载向导 ---------- */
+console.log('— 10.0.4 应用内卸载自动开向导')
+const M = 'electron/main.js'
+/* 旧实现：spawn 一个 ping -n 3 的 cmd 抢跑，2 秒压不住「动画 + 停后端」最多 5 秒，
+ * 卸载器先到、应用还在 → checkAppRunning 判定正在运行 → 向导中止。这条必须绝迹。 */
+mustNot(M, /ping -n 3 127\.0\.0\.1 >nul & start/, '不再用 ping 延迟抢跑卸载器')
+mustNot(M, /start "" "\$\{found\}"/, '不再经过 cmd 的 start 拉起卸载器')
+must(M, /let uninstallRequested = ''/, '有「本次退出是为了卸载」的登记位')
+must(M, /function findUninstaller\(\)/, '卸载器探测抽成独立函数')
+must(M, /readdirSync\(exeDir\)[\s\S]{0,120}\^uninstall\.\*\\\.exe\$/i, '按 Uninstall*.exe 扫目录兜底（名字随 productName 变）')
+must(M, /uninstallRequested = found/, '点确认后登记卸载意图')
+must(M, /if \(closeState === 'running'\) requestQuit\(\)/, '走统一退出流程（退场动画 + 停后端 + 停守护）')
+/* 真正的拉起必须晚于应用退出，所以在 finalizing 分支里 */
+must(M, /if \(uninstallRequested\) \{[\s\S]{0,600}?spawn\(target, \[\], \{[\s\S]{0,200}?detached: true/, '在退出收尾阶段 detached 拉起卸载器')
+must(M, /if \(uninstallRequested\) \{[\s\S]{0,900}?app\.exit\(0\)/, '拉起后主进程退出，交给卸载器接管')
+must(M, /自动打开卸载向导/, '确认框写明会自动打开向导')
+must(M, /shell\.openPath\(target\)/, 'spawn 失败时退回系统 ShellExecute')
+must('release-notes-10.0.4.md', /卸载向导/, '有本版发布正文')
+must('src/lib/changelog.js', /version: '10\.0\.4'/, '应用内更新日志写了 10.0.4')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

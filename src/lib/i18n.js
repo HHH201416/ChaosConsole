@@ -172,7 +172,7 @@ const DICT = {
     'settings.uninstallBusy': '正在启动…',
     'settings.uninstallHint':
       '启动系统卸载程序。卸载向导最后一页是五项清理清单：用户数据、缓存与更新包、已下载的 MCP 工具、早期版本残留、混沌引擎与本地模型 —— 逐项勾选要删的，默认保留引擎与模型。升级流程里的静默卸载一项都不删。',
-    'settings.uninstallLaunching': '已启动卸载程序，应用即将退出',
+    'settings.uninstallLaunching': '正在退出，卸载向导会自动打开',
     'settings.uninstallNotFound': '没找到卸载程序：当前可能是绿色版或解压运行，直接删除安装文件夹即可',
     'settings.uninstallFailed': '启动卸载程序失败',
     'settings.uninstallUnsupported': '当前环境不支持（需要 Windows 安装版）',
@@ -554,7 +554,7 @@ const DICT = {
     'settings.uninstallBusy': 'Launching…',
     'settings.uninstallHint':
       'Starts the system uninstaller. Its last page lists five cleanup groups — user data, caches and downloaded updates, MCP tools, leftovers from older versions, and the local engine plus models. Tick what should go; the engine and models stay by default. Silent uninstall (used during upgrades) deletes nothing.',
-    'settings.uninstallLaunching': 'Uninstaller started, the app will now quit',
+    'settings.uninstallLaunching': 'Closing the app — the uninstall wizard opens right after',
     'settings.uninstallNotFound':
       'Uninstaller not found — this looks like a portable copy; just delete the folder instead',
     'settings.uninstallFailed': 'Could not start the uninstaller',

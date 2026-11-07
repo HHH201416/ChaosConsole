@@ -193,6 +193,9 @@ let updateRuntime = {
 
 let downloading = false
 let installingUpdate = false
+/** 10.0.4：待卸载的卸载器路径。非空表示「这次退出的目的是卸载」，
+ *  真正拉起卸载器的时机在 before-quit 的 finalizing 分支（后端已停、锁已放）。 */
+let uninstallRequested = ''
 /** 检查序号：HTTP 路由与「空闲时自动」都可能发起检查，用它防止结果串台 */
 let checkSeq = 0
 
@@ -1114,20 +1117,26 @@ ipcMain.handle('dialog:pick-dir', async () => {
 })
 
 /**
- * 10.0.2：在应用内触发卸载。
+ * 10.0.2：在应用内触发卸载（10.0.4 重写拉起顺序）。
  *
  * 为什么不自己实现删除：卸载器是 NSIS 生成的，负责写它的那套逻辑（注册表、
  * 快捷方式、文件清单）只有它自己知道全。这里只做两件事 —— 找到它、按正确
- * 顺序交给它。数据要不要删，由卸载器第一页的选项决定。
+ * 顺序交给它。数据要不要删，由卸载器最后一页的选项决定。
  *
- * 顺序是硬要求：应用不退，卸载器在 un.onInit 里 checkAppRunning 会判定
- * 「程序正在运行」并中止。所以先 spawn 一个延迟 2 秒的 cmd，再 app.quit()，
- * 等主进程真的退出、文件锁放开，卸载器才开始跑。
+ * 顺序是硬要求，10.0.3 就是在这里翻的车：卸载器的 `un.onInit` 与卸载 Section
+ * 都会跑 `checkAppRunning`，一旦发现应用进程还在，就弹一个「请先关闭程序」
+ * 的框并 Abort。10.0.3 的做法是 spawn 一个 `ping -n 3`（约 2 秒）的 cmd 抢在
+ * 退出流程之前排队，可正常退出的耗时是 **退场动画 + 停后端（最长 5 秒）**，
+ * 根本压不住 2 秒 —— 于是卸载器先到、应用还在，向导直接中止，用户看到的是
+ * 「点了卸载，什么都没发生」。
  *
- * 卸载器文件名随 productName 变（中文名 + 空格），不硬编码单一候选：
- * 打包配置改过名字的历史版本会留下别的名字，多探测几个比报错好。
+ * 10.0.4 改成和「安装更新」走同一条路：这里只登记意图，真正的 spawn 放在
+ * before-quit 的 finalizing 分支里 —— 那一刻退场动画已播完、后端已停、关机
+ * 守护已退、窗口已收，卸载器不可能再被 checkAppRunning 拦下。
  */
-ipcMain.handle('app:uninstall', async () => {
+/* 卸载器文件名随 productName 变（中文名 + 空格），不硬编码单一候选：
+ * 打包配置改过名字的历史版本会留下别的名字，多探测几个比报错好。 */
+function findUninstaller() {
   let productName = ''
   try {
     productName = String(require('../package.json').build?.productName || '')
@@ -1144,18 +1153,27 @@ ipcMain.handle('app:uninstall', async () => {
     'Uninstall.exe',
   ].filter(Boolean)
 
-  let found = ''
   for (const name of candidates) {
     try {
       const p = path.join(exeDir, name)
-      if (fs.existsSync(p)) {
-        found = p
-        break
-      }
+      if (fs.existsSync(p)) return p
     } catch (_) {
       /* 单个候选探测失败不影响其它候选 */
     }
   }
+
+  // 兜底：productName 改过名、或系统语言包不同时，按前缀扫一遍安装目录
+  try {
+    const hit = fs.readdirSync(exeDir).find((f) => /^uninstall.*\.exe$/i.test(f))
+    if (hit) return path.join(exeDir, hit)
+  } catch (_) {
+    /* 目录读不了就当没找到 */
+  }
+  return ''
+}
+
+ipcMain.handle('app:uninstall', async () => {
+  const found = findUninstaller()
   if (!found) return { ok: false, error: 'not-found' }
 
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
@@ -1168,30 +1186,20 @@ ipcMain.handle('app:uninstall', async () => {
     title: '卸载 AI Agent开发控制台',
     message: '确定要卸载吗？',
     detail:
-      '会关闭应用并启动卸载程序。\n\n' +
-      '卸载程序里可以选是否一并删除用户数据（对话、岗位、知识库、生成的文件）。' +
-      '默认会删除，想留着重装后接着用，就在那一页取消勾选。',
+      '会先关闭应用，然后自动打开卸载向导。\n\n' +
+      '向导最后一页是五项清理清单（用户数据、缓存与更新包、已下载的 MCP 工具、' +
+      '早期版本残留、混沌引擎与本地模型），逐项勾选要删的，默认保留引擎与模型。',
   })
   if (r.response !== 1) return { ok: false, canceled: true }
 
+  // 只登记意图，不在这里 spawn —— 见上面那段顺序说明
+  uninstallRequested = found
   try {
-    spawn('cmd.exe', ['/c', `ping -n 3 127.0.0.1 >nul & start "" "${found}"`], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    }).unref()
-  } catch (err) {
-    return { ok: false, error: String(err && err.message ? err.message : err) }
+    if (closeState === 'running') requestQuit()
+    else app.quit() // 已经在关：finalizing 分支照样会把它拉起来
+  } catch (_) {
+    app.quit()
   }
-
-  // 留一点时间让 cmd 起来，再走正常退出流程（before-quit 会收服务、停守护）
-  setTimeout(() => {
-    try {
-      app.quit()
-    } catch (_) {
-      app.exit(0)
-    }
-  }, 150)
   return { ok: true, uninstaller: path.basename(found) }
 })
 
@@ -2082,6 +2090,37 @@ app.on('before-quit', (event) => {
       } catch (err) {
         console.error('[electron] 关闭后端出错:', err.message)
       }
+    }
+
+    /* 10.0.4：应用内点「卸载」。
+     *
+     * 走到这里意味着：退场动画播完、后端已停、WS 已断、关机守护已退。这正是
+     * 卸载器需要的状态 —— 它的 checkAppRunning 按「进程名」找应用，只要本进程
+     * 还活着就会弹「请先关闭程序」并中止，所以拉起动作必须晚于应用退出，而
+     * 「晚于退出」这件事只能在退出流程里做，不能靠外部 sleep 猜时间。
+     *
+     * detached 让卸载器脱离本进程的进程组：下面紧接着 app.exit(0)，不解脱的话
+     * 卸载器可能跟着一起被收走。cwd 设成安装目录，NSIS 卸载器会先把自身复制到
+     * %TEMP% 再运行，目录不可写时不至于失败。 */
+    if (uninstallRequested) {
+      const target = uninstallRequested
+      try {
+        spawn(target, [], {
+          detached: true,
+          stdio: 'ignore',
+          cwd: path.dirname(target),
+        }).unref()
+      } catch (err) {
+        console.error('[uninstall] 拉起卸载器失败:', err.message)
+        // 兜底：交给系统 ShellExecute，它会自己处理 UAC
+        try {
+          shell.openPath(target)
+        } catch (_) {
+          /* 真起不来就只能让用户去「应用和功能」里卸 */
+        }
+      }
+      setTimeout(() => app.exit(0), 600)
+      return
     }
 
     if (installRequested) {

@@ -1196,6 +1196,86 @@ function WorkspaceField() {
   )
 }
 
+/**
+ * 10.0.2：运行期间禁止关机。
+ *
+ * 开关本身只是服务端一条设置（blockShutdown），**真正拦不拦得住**由主进程的
+ * 守护进程决定（需要 .NET / PowerShell / Windows 三样齐）。所以这里的状态必须
+ * 走 IPC 问主进程，不能拿 settings 的值当结果 —— 否则用户以为开了，其实没拦住。
+ */
+function ShutdownGuardField() {
+  const t = useT()
+  const system = useStore((s) => s.system)
+  const setDesktopSetting = useStore((s) => s.setDesktopSetting)
+  const [state, setState] = useState(null)
+  const wanted = Boolean(system?.blockShutdown)
+  const bridge = typeof window !== 'undefined' ? window.chaos : null
+  const canQuery = Boolean(bridge && bridge.shutdownGuardStatus)
+
+  useEffect(() => {
+    if (!canQuery) return undefined
+    let alive = true
+    bridge
+      .shutdownGuardStatus()
+      .then((s) => {
+        if (alive) setState(s)
+      })
+      .catch(() => {})
+    const off = bridge.onShutdownGuardStatus?.((s) => {
+      if (alive) setState((prev) => ({ ...(prev || {}), ...s }))
+    })
+    return () => {
+      alive = false
+      if (typeof off === 'function') off()
+    }
+  }, [canQuery, bridge, wanted])
+
+  let status = ''
+  let tone = 'text-slate-500'
+  if (!canQuery) {
+    status = t('settings.shutdownUnsupported')
+  } else if (!wanted) {
+    status = t('settings.shutdownOff')
+  } else {
+    const s = state?.status || ''
+    if (s === 'running') {
+      status = t('settings.shutdownOn')
+      tone = 'text-emerald-400'
+    } else if (s === 'running-fallback') {
+      status = t('settings.shutdownFallback')
+      tone = 'text-amber-400'
+    } else if (s === 'starting') {
+      status = t('settings.shutdownStarting')
+      tone = 'text-slate-400'
+    } else if (s === 'unsupported') {
+      status = t('settings.shutdownUnsupported')
+      tone = 'text-amber-400'
+    } else if (s === 'error') {
+      status = `${t('settings.shutdownFailed')}${state?.detail ? `：${state.detail}` : ''}`
+      tone = 'text-rose-400'
+    } else {
+      status = t('settings.shutdownPaused')
+      tone = 'text-slate-500'
+    }
+  }
+
+  return (
+    <div className="space-y-1 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <label className="flex cursor-pointer items-center justify-between gap-3">
+        <span className="text-[11.5px] text-slate-400">{t('settings.blockShutdown')}</span>
+        <input
+          type="checkbox"
+          className="h-3.5 w-3.5 accent-boss"
+          checked={wanted}
+          onChange={(e) => setDesktopSetting('blockShutdown', e.target.checked)}
+        />
+      </label>
+      <p className="text-[10px] leading-relaxed text-slate-500">{t('settings.blockShutdownHint')}</p>
+      <p className={`text-[10px] ${tone}`}>{status}</p>
+    </div>
+  )
+}
+
 export function SettingsModal({ onClose }) {
   const t = useT()
   const system = useStore((s) => s.system)
@@ -1300,6 +1380,9 @@ export function SettingsModal({ onClose }) {
               />
             </label>
           ))}
+
+          {/* 10.0.2：运行期间禁止关机 */}
+          <ShutdownGuardField />
 
           <label className="flex items-center justify-between gap-3">
             <span className="text-[11.5px] text-slate-400">{t('settings.globalShortcut')}</span>

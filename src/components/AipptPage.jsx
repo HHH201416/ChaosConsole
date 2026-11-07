@@ -1005,7 +1005,15 @@ export default function AipptPage() {
           setPhase('done')
           setStep('outline')
           setSlideIndex(0)
-          toast(`大纲已生成：${asArr(o.slides).length} 页，可以逐页改了`, 'success')
+          /* 页数没写满时如实说一句 —— 别让用户以为大纲就这么长，
+           * 缺的页可以在编辑器里插（这是他自己的稿子，不是模型说了算）。 */
+          const short = Number(res.result?.pagesShort) || 0
+          toast(
+            short > 0
+              ? `大纲已生成：${asArr(o.slides).length} 页，还差 ${short} 页没写满，可以自己插页补上`
+              : `大纲已生成：${asArr(o.slides).length} 页，可以逐页改了`,
+            short > 0 ? 'info' : 'success',
+          )
           return
         }
       } else {

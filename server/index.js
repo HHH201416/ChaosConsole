@@ -161,6 +161,8 @@ app.get('/api/system', requireAuth, async (_req, res) => {
       notifyOnNeedsInput: store.getSetting('notifyOnNeedsInput', '1') === '1',
       notifyOnlyWhenUnfocused: store.getSetting('notifyOnlyWhenUnfocused', '1') === '1',
       globalShortcut: store.getSetting('globalShortcut', 'CommandOrControl+Shift+Space'),
+      // 10.0.2：运行期间禁止关机（默认关；真正能不能拦由 Electron 主进程的守护进程决定）
+      blockShutdown: store.getSetting('blockShutdown', '0') === '1',
       backupEnabled: store.getSetting('backupEnabled', '1') === '1',
       backupIntervalHours: Number(store.getSetting('backupIntervalHours', '24')) || 24,
       backupRetention: Number(store.getSetting('backupRetention', '10')) || 10,
@@ -213,6 +215,7 @@ app.post('/api/settings', requireAuth, (req, res) => {
     notifyOnNeedsInput,
     notifyOnlyWhenUnfocused,
     globalShortcut,
+    blockShutdown,
     backupEnabled,
     backupIntervalHours,
     backupRetention,
@@ -327,6 +330,9 @@ app.post('/api/settings', requireAuth, (req, res) => {
     }
     store.setSetting('globalShortcut', globalShortcut)
   }
+  // 10.0.2：运行期间禁止关机。值变过去之后，electron/main.js 里监听
+  // settings:updated 的 syncShutdownGuard() 会立刻起/停守护进程，不用重启应用。
+  if (blockShutdown !== undefined) store.setSetting('blockShutdown', blockShutdown ? '1' : '0')
   if (backupEnabled !== undefined) store.setSetting('backupEnabled', backupEnabled ? '1' : '0')
   if (backupIntervalHours !== undefined) {
     const n = Number(backupIntervalHours)

@@ -82,6 +82,7 @@ function safeSettings() {
     'uiLanguage',
     'accent',
     'trayEnabled',
+  'blockShutdown',
     'closeToTray',
     'backupEnabled',
     'backupIntervalHours',

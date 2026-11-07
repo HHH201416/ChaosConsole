@@ -90,4 +90,18 @@ contextBridge.exposeInMainWorld('chaos', {
    * 浏览器里跑（非 Electron）时这个函数不存在，调用方要自己兜底成手填。
    */
   pickDirectory: () => ipcRenderer.invoke('dialog:pick-dir'),
+  /**
+   * 10.0.2：运行期间禁止关机 —— 守护进程的真实状态。
+   *
+   * 设置项只是「用户想开」，能不能真的拦住看进程里有没有起来（.NET 缺失、
+   * PowerShell 被策略禁用、非 Windows 都会失败）。界面显示状态必须问这个，
+   * 不能拿设置项当结果。
+   */
+  shutdownGuardStatus: () => ipcRenderer.invoke('shutdown-guard:status'),
+  /** 守护状态变化（启动中 / 已生效 / 降级 / 失败）主动推给界面 */
+  onShutdownGuardStatus: (cb) => {
+    const handler = (_event, payload) => cb(payload)
+    ipcRenderer.on('shutdown-guard:status', handler)
+    return () => ipcRenderer.removeListener('shutdown-guard:status', handler)
+  },
 })

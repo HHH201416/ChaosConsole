@@ -314,12 +314,23 @@ function repairSlide(slide, issues) {
   const drop = new Set(issues.filter((x) => dropTypes.has(x.type)).map((x) => x.detail))
   if (drop.size) {
     out.body = out.body.filter((line) => !drop.has(line))
+    /* 右栏也得一起清。只清正文时，双栏塌成要点页以后留下的那一条右栏会孤零零
+     * 挂在 extra 里：bullets 只渲染 body，这一页成品就是「只有标题」的白页
+     * （2026-10-29 e2e 实测：第 6 页 body 空、extra 只有「45,000」）。 */
+    out.extra = out.extra.filter((line) => !drop.has(line))
   }
 
   // 元叙述删掉
   if (types.has('meta-talk')) {
     out.body = out.body.filter((x) => !META.test(x))
     out.extra = out.extra.filter((x) => !META.test(x))
+  }
+
+  /* 修完只剩右栏内容的要点页：右栏搬进正文，别让它在成品里变成白页。
+   * 双栏/表格页的 extra 是真正的右列，不能搬。 */
+  if (out.body.length === 0 && out.extra.length && !['twocol', 'compare'].includes(out.kind)) {
+    out.body = out.extra.slice(0, 4)
+    out.extra = []
   }
 
   // 双栏塌了：把两侧合成一页要点，版式至少是完整的

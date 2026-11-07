@@ -529,7 +529,12 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
       // 纯数字页头：01 是封面，其余当内容页（模型有时整份都用数字编号）
       const kind = KIND_BY_CODE[code] || (/^[1-9]$/.test(code.replace(/^0/, '')) ? 'bullets' : '')
       if (kind) {
-        if (slides.length >= n) break // 页数已够，后面的重复内容一律不要
+        /* 解析时不按 n 硬截断 —— 上限放到 n+8，只防模型死循环。
+         * 原因：模型写超时（要 8 页敢给 11 页）E 页总在最后，一 break 就永远
+         * 看不到结尾，稿子「讲着讲着断了」，版式上也没了首尾呼应
+         * （2026-10-27 e2e 实测：11 页稿子截到 8 页，末页成了时间轴）。
+         * 真正的页数收口交给 truncateKeepClosing：前 n-1 页 + E 页。 */
+        if (slides.length >= n + 8) break
         pushSlide()
         let rest = String(head[2] || '')
         let chartType = ''
@@ -648,7 +653,22 @@ function parseCompactOutline(text, { topic, n, pad = true } = {}) {
     else slides.push(blank)
   }
 
-  return { title, subtitle, slides: slides.slice(0, n) }
+  return { title, subtitle, slides: truncateKeepClosing(slides, n) }
+}
+
+/**
+ * 按页数截断，但永远保住收尾页。
+ *
+ * 模型经常写超（要 8 页敢给 11 页），而 E 页总在最后、也最短。
+ * 直接 slice(0, n) 会把它切掉 —— 稿子变成「讲着讲着没结尾」，
+ * 版式上也少了首尾呼应那一页（2026-10-27 e2e 实测：11 页截到 8 页，末页是时间轴）。
+ * 截断规则：前 n-1 页 + 最后一个 E 页。
+ */
+function truncateKeepClosing(list, n) {
+  const arr = Array.isArray(list) ? list : []
+  if (!n || arr.length <= n) return arr
+  const closing = arr.slice(n - 1).find((s) => String(s?.kind || '').toLowerCase() === 'closing')
+  return closing ? [...arr.slice(0, n - 1), closing] : arr.slice(0, n)
 }
 
 /** 一句话判断：这行要点是不是注水（空话 + 太短） */
@@ -789,7 +809,11 @@ function normalizeTimeline(raw) {
 }
 
 function normalizeOutline(raw, { topic, n }) {
-  const list = (Array.isArray(raw?.slides) ? raw.slides : []).slice(0, n)
+  const all = Array.isArray(raw?.slides) ? raw.slides : []
+  /* 模型经常写超：要 8 页敢给 11 页，而收尾页（E）总在最后。
+   * 直接 slice(0, n) 会把 E 切掉 —— 稿子变成「讲着讲着没结尾了」。
+   * 截断时因此永远保住收尾页：前 n-1 页 + 最后一个 E 页。 */
+  const list = truncateKeepClosing(all, n)
   const slides = list.map((s, i) => {
     const isFirst = i === 0
     const isLast = i === list.length - 1 && list.length > 1
@@ -855,6 +879,13 @@ function normalizeOutline(raw, { topic, n }) {
       else finalKind = 'bullets'
     }
 
+    /* 末页必须是收尾页 —— 这一步要放在所有降级之后。
+     * 坑：上面「末页允许是 stats」的豁免发生在降级之前，模型给最后一个 S 页
+     * 只写一个指标时，stats 又被降成 bullets，于是整份稿子最后一页成了普通
+     * 内容页、根本没有收尾（2026-10-27 e2e 实测：8 页稿子末页是 bullets）。
+     * 只有金句/数据卡/章节过渡可以当最后一页，其余一律收成 closing。 */
+    if (isLast && !['closing', 'quote', 'stats', 'section'].includes(finalKind)) finalKind = 'closing'
+
     const isQuote = finalKind === 'quote'
     const isSection = finalKind === 'section'
     /* section 只有一句导语，不该被塞「内容待补充」占位 */
@@ -877,26 +908,11 @@ function normalizeOutline(raw, { topic, n }) {
     }
   })
 
-  // 页数不足就补内容页，绝不让用户拿到只有 2 页的东西
-  const blank = () => ({
-    title: '补充内容',
-    kicker: '',
-    kind: 'bullets',
-    body: ['这一页可以补充你想强调的其他要点'],
-    extra: [],
-    stats: [],
-    chart: null,
-    timeline: null,
-    head: null,
-    note: '',
-    image: '',
-    imageName: '',
-  })
-  let guard = 0
-  while (slides.length < n && slides.length >= 2 && guard++ < 60) {
-    slides.splice(slides.length - 1, 0, blank())
-  }
-
+  /* 页数不足不在这里补。
+   * 以前这里塞「补充内容 / 这一页可以补充你想强调的其他要点」的占位页凑数，
+   * 但那个句子正好命中闸门的 META 正则（「这一页」）→ 被判 meta-talk 删掉，
+   * 加了等于没加，只让质量分难看。现在补页统一由 enforcePageCount 负责：
+   * 先用素材、再拆厚页/加章节过渡/金句，全是真实内容。 */
   return {
     title: String(raw?.title || topic).slice(0, 80),
     subtitle: cleanSubtitle(raw?.subtitle),
@@ -2204,17 +2220,33 @@ function appendPages(slides, extra) {
   return list
 }
 
+/* 续写时给每页一个「该讲什么」的角度。
+ * 只说「再写 3 页」时，7B 经常把上一页换个说法再写一遍 —— 去重后一页不剩，
+ * 页数就这么漏了（2026-10-27 e2e：要 8 页只出 5 页）。给角度就明显好转。 */
+const CONTINUE_ANGLES = ['一个具体的做法', '一组数字或前后对比', '一个常见的误区', '谁来做、第一步做什么', '代价或风险']
+
 /** 续写提示词：只补缺的页，不重复已写内容 */
-function continuePrompt({ topic, n, need, titles, lang }) {
+function continuePrompt({ topic, n, need, titles, lang, hasClosing = false }) {
   const done = titles.length ? `已写好的页标题：${titles.join('、')}。` : ''
+  const angles = Array.from({ length: need }, (_, i) => CONTINUE_ANGLES[i % CONTINUE_ANGLES.length])
+  const plan = angles.map((a, i) => `第 ${i + 1} 页讲${a}`).join('；')
+  const tailAsk = hasClosing ? '全部用 B| / S| / C| / Q|，不要再写结尾页' : '最后一页用 E|标题'
   if (lang === 'en') {
-    return `The deck "${topic}" needs ${n} slides in total. ${done}Write ONLY the remaining ${need} slides, do not repeat any of the titles above and do not write a T line or a cover (01). Use B|title / S|title / C|title / Q|line, and finish with E|title.`
+    return (
+      `The deck "${topic}" needs ${n} slides in total. ${done}\n` +
+      `Write EXACTLY ${need} more slides, one per line. Do not repeat any title above, no T line, no cover (01).\n` +
+      `Use B|title / S|title / C|title / Q|line. ${hasClosing ? 'Do not write a closing slide.' : 'The last one is E|title.'}\n` +
+      `What each slide covers: ${angles.join('; ')}.\n` +
+      `Each bullet 16-24 chars with a number or a concrete noun. No filler, no slide with a title only.`
+    )
   }
   return (
     `《${topic}》这份演示一共 ${n} 页。${done}\n` +
-    `现在只补剩下的 ${need} 页，不要重复上面这些页，也不要再写 T 行和封面（01）。\n` +
-    `按同样格式输出 ${need} 页：B|标题 / S|标题 / C|标题 / Q|金句 任选，最后一页用 E|标题。\n` +
-    `每条要点 16-24 字，必须含数字或具体名词；S 页写「数值|指标名」；C 页每行「- 左|- 右」。不要写空话。`
+    `现在只补剩下的 ${need} 页，一页一行，不要重复上面这些页，也不要再写 T 行和封面（01）。\n` +
+    `按同样格式输出 ${need} 页：B|标题 / S|标题 / C|标题 / Q|金句 任选，${tailAsk}。\n` +
+    `每页讲什么：${plan}。\n` +
+    `每页至少两条要点，每条 16-24 字，必须含数字或具体名词；S 页写「数值|指标名」；C 页每行「- 左|- 右」。` +
+    `不要写空话，不要只给页头。`
   )
 }
 
@@ -2225,19 +2257,29 @@ function continuePrompt({ topic, n, need, titles, lang }) {
  *  1. 素材来自策划阶段，本来就要落到页面上，拼页是零成本的；模型续写一轮
  *     实测要 90 秒（1.5B 也不行），把 6 页任务从 20 秒拖到 110 秒。
  *  2. 模型续写的输出经常不带页头，直接串进上一页的正文，把结尾页写成大杂烩。
- *     所以只有在素材不够时才让它写，且只写一轮、有总预算。
+ *     所以只有在素材不够时才让它写，最多两轮、有总预算、一轮没长进就停。
  *  3. 占位页永远排最后 —— 先塞占位页会污染结构，模型看见「补充要点」就学会照着写。
  */
-async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan, send }) {
+async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan, send, maxRounds = 2 }) {
   const started = Date.now()
 
   // 1) 先用素材补齐（快、真、可控）
   fillFromPlan(data, n, plan)
 
-  // 2) 素材不够才让模型补，且只补一轮
-  const work = fastModel || model
-  if (missingPages(data.slides, n) > 0 && Date.now() - started < COMPLETE_BUDGET_MS) {
+  /* 2) 素材不够才让模型补。
+   * 9.9.7 只补一轮，实测经常「要 3 页给 1 页」，页数就这么漏掉了
+   * （10.0.1 e2e：8 页任务最终只剩 5 页）。这里改成最多两轮：
+   *   · 每轮都按「现在还差几页」重新问，并把已写标题带过去防重复；
+   *   · 一轮下来一页都没多，说明模型写不动了，立刻停，别烧时间；
+   *   · 续写用大模型 —— 1.5B 续写同样要 90 秒，但更容易写重/写崩，
+   *     实测省下的那点时间远不够赔的。 */
+  const work = model || fastModel
+  for (let round = 0; round < maxRounds; round += 1) {
     const need = missingPages(data.slides, n)
+    if (need <= 0) break
+    // 每轮给一份预算，但不让「上一轮慢」把下一轮直接掐死
+    if (Date.now() - started > COMPLETE_BUDGET_MS * (round + 1)) break
+    const before = (data.slides || []).length
     send({
       type: 'delta',
       phase: 'outline',
@@ -2247,7 +2289,7 @@ async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan
     try {
       const r = await chaosLlm.chat({
         model: work,
-        options: { ...opts, temperature: 0.5, num_predict: Math.min(420, 90 * need + 140) },
+        options: { ...opts, temperature: 0.5, num_predict: Math.min(520, 110 * need + 150) },
         keepAlive: '30m',
         messages: [
           {
@@ -2265,6 +2307,7 @@ async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan
               need,
               titles: (data.slides || []).map((s) => s.title).filter(Boolean),
               lang,
+              hasClosing: (data.slides || []).some((s) => s.kind === 'closing'),
             }),
           },
         ],
@@ -2290,6 +2333,7 @@ async function completeDeck({ data, topic, n, model, fastModel, opts, lang, plan
     }
     // 续写出来的页也补齐条数，别又出现一页一条
     fillFromPlan(data, n, plan)
+    if ((data.slides || []).length <= before) break // 这轮白跑，再问也一样
   }
 
   // 还有「本页内容待补充」的页，就直接删掉 —— 宁可少一页，
@@ -2429,6 +2473,274 @@ function thicken(outline, plan) {
     }
   }
   return outline
+}
+
+/* ------------------------------------------------------------------ *
+ * 页数硬保证（10.0.1）
+ * ------------------------------------------------------------------
+ * 「用户要几页就出几页」是硬指标，但闸门会删垃圾页、素材也会见底。
+ * 以前缺页时用 normalizeOutline 的占位页（「这一页可以补充你想强调的其他要点」）
+ * 去凑，结果那句话命中 META 正则被当成 meta-talk 删掉，页数原地塌回 5 页
+ * （2026-10-27 e2e 实测：要 8 页出 5 页）。占位句凑数这条路是死的。
+ *
+ * 现在只认真实内容，按「越像人干的事越优先」排序：
+ *   1. 素材拼页 —— 策划阶段攒的真信息
+ *   2. 拆厚页 —— 一页四条要点拆成两页各两条，内容不变、密度更舒服
+ *   3. 章节过渡页 —— 用相邻页的标题当章节名，本身就该有的一页
+ *   4. 金句页 —— 从正文里挑一条判断句「抽」出来放大，原页少一条
+ * 一个都补不出来就如实把页数交回去，绝不放白页。
+ * ------------------------------------------------------------------ */
+
+/** 结构性页型的「内容」不在 body 里，不能按空页处理 */
+const STRUCT_KINDS = new Set(['quote', 'cover', 'section', 'chart', 'timeline'])
+
+/** 翻过去一片白的页：没有正文、没有数据、没有左右栏 */
+function isHolePage(x) {
+  return Boolean(x) &&
+    !STRUCT_KINDS.has(x.kind) &&
+    !(x.body || []).length &&
+    !(x.stats || []).length &&
+    !(x.extra || []).length
+}
+
+/** 新页工厂：字段一次给全，别让下游渲染拿到 undefined */
+function makePage(s) {
+  return {
+    kind: 'bullets',
+    title: '',
+    kicker: '',
+    body: [],
+    extra: [],
+    stats: [],
+    chart: null,
+    timeline: null,
+    head: null,
+    note: '',
+    image: '',
+    imageName: '',
+    ...s,
+  }
+}
+
+/**
+ * 拆最厚的一页要点（≥4 条才值得拆）。
+ *
+ * 只拆 bullets：双栏/表格页拆开会塌版式（右栏没了就是一片空白），
+ * 图表/时间轴的内容在结构化字段里，拆不动。
+ */
+function splitThickPage(slides, minLines = 4) {
+  let best = -1
+  let bestLen = 0
+  slides.forEach((s, i) => {
+    if (!s || s.kind !== 'bullets') return
+    const len = (s.body || []).length + (s.extra || []).length
+    if (len > bestLen) {
+      bestLen = len
+      best = i
+    }
+  })
+  if (best < 0 || bestLen < minLines) return false
+  const s = slides[best]
+  const lines = [...(s.body || []), ...(s.extra || [])]
+  const half = Math.ceil(lines.length / 2)
+  const tail = lines.slice(half)
+  if (tail.length < 2) return false // 拆出来的那页只剩一条，等于制造一页薄片
+  slides[best] = { ...s, body: lines.slice(0, half), extra: [] }
+  const page = makePage({
+    kind: 'bullets',
+    title: titleFromLine(tail[0]),
+    body: tail.slice(0, 4),
+    note: `从「${s.title}」拆出`,
+  })
+  // 插在结尾页前面：结尾永远是最后一页
+  const ci = slides.findIndex((x) => x.kind === 'closing')
+  slides.splice(ci >= 0 ? ci : slides.length, 0, page)
+  return true
+}
+
+/**
+ * 章节过渡页：在最长的一段内容里插一页分隔。
+ *
+ * 不是「永远插在正中间」—— 连插两三次会挤在同一处，变成「页、页、分隔、页、页、分隔」
+ * 的碎稿。这里按「已有分隔页把稿子切成的若干段」找最长的一段，插在它的中点上，
+ * 分隔页自然均匀分布（2026-10-27 页数硬保证实测：10 页稿只补得动 2 页，差 1）。
+ * 章节名直接用那一页的标题 —— 分隔页上的字本来就该和它统领的那一章对得上。
+ */
+function addSectionPage(slides, maxSections = 2) {
+  const used = slides.filter((x) => x && x.kind === 'section').length
+  if (used >= maxSections || slides.length < 4) return false
+  /* 已经用过的章节名不能再当新章节名 —— 连着两页「第 2 部分 · 慢不在设备」
+   * 比少一页更像凑数（2026-10-27 实测踩到过）。 */
+  const usedThemes = new Set(
+    slides
+      .filter((x) => x && x.kind === 'section')
+      .map((x) => String(x.title || '').replace(/^第\s*\d+\s*部分\s*·\s*/, '').trim())
+      .filter(Boolean),
+  )
+  /* 分隔页的落点只能在这几条「界碑」之间的内容段里 */
+  const anchors = [0]
+  slides.forEach((s, i) => {
+    if (s && (s.kind === 'section' || s.kind === 'closing')) anchors.push(i)
+  })
+  if (anchors[anchors.length - 1] !== slides.length - 1) anchors.push(slides.length - 1)
+  let at = -1
+  let widest = 0
+  for (let k = 0; k < anchors.length - 1; k += 1) {
+    const from = anchors[k]
+    const to = anchors[k + 1]
+    if (to - from < 3) continue // 中间只剩一两页内容，不值得起一章
+    if (to - from > widest) {
+      widest = to - from
+      at = from + Math.floor((to - from) / 2)
+    }
+  }
+  if (at <= 1 || !widest) return false
+  /* 落点两侧都得是内容页：紧贴另一个分隔页插进去就是连着的两张过渡，翻两下都是标题 */
+  const prev = slides[at - 1]
+  if (prev && (prev.kind === 'section' || prev.kind === 'cover')) return false
+  const target = slides[at]
+  if (!target || target.kind === 'section' || target.kind === 'cover' || target.kind === 'closing') return false
+  const theme = String(target.title || '').trim()
+  if (!theme || usedThemes.has(theme)) return false
+  slides.splice(
+    at,
+    0,
+    makePage({
+      kind: 'section',
+      title: `第 ${used + 1} 部分 · ${theme}`.slice(0, 30),
+      note: `章节过渡：${theme}`,
+    }),
+  )
+  return true
+}
+
+/**
+ * 拆数据页：一页摆了 5 个以上数字时，读者其实已经数不过来了。
+ * 拆成两页 2-3 个数字的大字版，比一页塞满更好读 —— 也是最不伤内容的一种补页。
+ */
+function splitStatsPage(slides, minStats = 5) {
+  let best = -1
+  let bestLen = 0
+  slides.forEach((s, i) => {
+    if (!s || s.kind !== 'stats') return
+    const len = (s.stats || []).length
+    if (len > bestLen) {
+      bestLen = len
+      best = i
+    }
+  })
+  if (best < 0 || bestLen < minStats) return false
+  const s = slides[best]
+  const stats = s.stats || []
+  const half = Math.ceil(stats.length / 2)
+  const head = stats.slice(0, half)
+  const tail = stats.slice(half)
+  if (tail.length < 2) return false
+  slides[best] = { ...s, stats: head }
+  const ci = slides.findIndex((x) => x.kind === 'closing')
+  slides.splice(
+    ci >= 0 ? ci : slides.length,
+    0,
+    makePage({
+      kind: 'stats',
+      title: String(s.title || '').trim() ? `${String(s.title).trim()}（续）`.slice(0, 28) : '更多关键数字',
+      stats: tail,
+      note: `从「${s.title || '数据页'}」拆出`,
+    }),
+  )
+  return true
+}
+
+/**
+ * 金句页：从一页要点里「抽」一条判断句出来放大。
+ *
+ * 是搬走不是复制 —— 复制的话闸门会按跨页重复（dup-line）删掉，
+ * 那一页就变成一页空白金句，比少一页更难看。原页必须还剩 ≥2 条才抽。
+ */
+function addQuotePage(slides) {
+  if (slides.some((x) => x && x.kind === 'quote')) return false
+  for (let i = 0; i < slides.length; i += 1) {
+    const s = slides[i]
+    if (!s || s.kind !== 'bullets') continue
+    const body = s.body || []
+    if (body.length < 3) continue
+    const k = body.findIndex((x) => {
+      const t = String(x || '').trim()
+      return t.length >= 12 && t.length <= 44 && /(不是|而是|其实|才是|取决|反而|越)/.test(t)
+    })
+    if (k < 0) continue
+    const line = String(body[k]).trim()
+    slides[i] = { ...s, body: body.filter((_, j) => j !== k) }
+    const ci = slides.findIndex((x) => x.kind === 'closing')
+    slides.splice(ci >= 0 ? ci : slides.length, 0, makePage({ kind: 'quote', title: '', body: [line] }))
+    return true
+  }
+  return false
+}
+
+/** 超页从尾部裁，封面（第 1 页）和结尾页（最后一页）不动 */
+function trimDeck(slides, n) {
+  const out = [...slides]
+  while (out.length > n && out.length > 2) {
+    const last = out.length - 1
+    const dropAt = out[last]?.kind === 'closing' ? last - 1 : last
+    if (dropAt <= 0) break
+    out.splice(dropAt, 1)
+  }
+  return out
+}
+
+/**
+ * 把页数拉到 n。返回 { outline, short }：
+ *   short > 0 表示真实内容实在凑不出来，交给上层如实告诉用户。
+ */
+function enforcePageCount({ outline, n, plan, topic, send }) {
+  let deck = { ...outline, slides: [...(outline.slides || [])] }
+  if (!deck.slides.length) return { outline: deck, short: n }
+
+  /* 1) 素材拼页：策划阶段的真实信息，白用不用 */
+  let guard = 0
+  while (deck.slides.length < n && guard++ < 3) {
+    const before = deck.slides.length
+    fillFromPlan(deck, n, plan)
+    if (deck.slides.length === before) break
+  }
+  if (send) send({ type: 'notice', reason: 'page-count', field: `material-fill=${deck.slides.length}` })
+
+  /* 补出来的页是照抄素材行，必须再过一遍规则闸门（老坑：绕过检查） */
+  try {
+    deck = quality.auditDeck(deck, { topic }).deck
+  } catch (_) { /* 闸门故障不能连累出片 */ }
+
+  /* 闸门删空的页留着就是白页，先丢掉，后面用真实内容重补 */
+  const solid = deck.slides.filter((x) => !isHolePage(x))
+  if (solid.length >= 2) deck = { ...deck, slides: solid }
+  deck.slides = trimDeck(deck.slides, n)
+  if (send) send({ type: 'notice', reason: 'page-count', field: `after-gate=${deck.slides.length}` })
+
+  /* 2) 结构性补页：拆厚页 → 拆数据页 → 金句 → 章节过渡，直到补齐或用尽手段
+   * 顺序有讲究：金句页承载的是一句真实判断，观感上比分隔页「有内容」，
+   * 所以先用金句，实在没得抽才动分隔页。
+   * 章节页上限随篇幅走：短稿 1 个分隔就够，10 页档 3 个、14 页以上 4 个。 */
+  const secCap = n >= 14 ? 4 : n >= 9 ? 3 : n >= 6 ? 2 : 1
+  guard = 0
+  while (deck.slides.length < n && guard++ < 8) {
+    if (splitThickPage(deck.slides)) continue
+    if (splitStatsPage(deck.slides)) continue
+    if (addQuotePage(deck.slides)) continue
+    if (addSectionPage(deck.slides, secCap)) continue
+    break
+  }
+  // 拆页拆多了（一次循环可能补超一页）再裁回去
+  deck.slides = trimDeck(deck.slides, n)
+  /* 收尾页必须在最后：补页/裁剪都可能把它挤到中间 */
+  const ci = deck.slides.findIndex((x) => x && x.kind === 'closing')
+  if (ci >= 0 && ci !== deck.slides.length - 1) deck.slides.push(deck.slides.splice(ci, 1)[0])
+  if (send) send({ type: 'notice', reason: 'page-count', field: `structural=${deck.slides.length}` })
+
+  const short = Math.max(0, n - deck.slides.length)
+  if (short > 0 && send) send({ type: 'notice', reason: 'page-short', field: `${deck.slides.length}/${n}` })
+  return { outline: deck, short }
 }
 
 /**
@@ -2873,38 +3185,34 @@ async function generate(opts = {}, emit = null) {
   /* 最后一道保险。
    * 闸门删、回炉又没救回来的页，到这里可能是空的 —— 那种页翻过去一片白，
    * 比内容差更伤人。用真实素材把它们填满，实在没素材才丢掉这一页。 */
-  /* 结构性页型（金句/章节/图表/时间轴）的「内容」不在 body 里，不能按空页处理 */
-  const STRUCT_KINDS = new Set(['quote', 'cover', 'section', 'chart', 'timeline'])
-  const isHole = (x) =>
-    x && !STRUCT_KINDS.has(x.kind) &&
-    !(x.body || []).length && !(x.stats || []).length && !(x.extra || []).length
-  if ((outline.slides || []).some(isHole)) {
+  if ((outline.slides || []).some(isHolePage)) {
     const patched = fillFromPlan({ ...data, slides: outline.slides }, n, planRows || plan)
     outline = { ...outline, slides: patched.slides }
-    // 素材也填不上的，直接删页；页数少一页总比空一页好
-    const kept = outline.slides.filter((x) => !isHole(x))
-    if (kept.length >= Math.min(4, n)) outline = { ...outline, slides: kept }
+    /* 素材也填不上的直接删页。以前这里卡「至少留 4 页」的门槛，结果删到 5 页就
+     * 停手，后面的页数保证又补不出真实内容 —— 现在有 enforcePageCount 兜住页数，
+     * 空页一律清掉，别让白页占着位置。 */
+    const kept = outline.slides.filter((x) => !isHolePage(x))
+    if (kept.length >= 2) outline = { ...outline, slides: kept }
     /* 兜底拼页是照抄素材行，必须再过一遍规则闸门——不然「XX案例.docx-原创力文档」
      * 这种行就绕过了前面所有检查直接上页面（2026-10-25 实测踩坑）。 */
     try {
       outline = quality.auditDeck(outline, { topic: topicClean, research }).deck
     } catch (_) { /* 闸门故障不能连累出片 */ }
     /* 终检删掉垃圾行后页面可能又变空 —— 再清一轮，别把只有标题的空壳交给用户 */
-    const kept2 = outline.slides.filter((x) => !isHole(x))
-    if (kept2.length >= Math.min(4, n)) outline = { ...outline, slides: kept2 }
+    const kept2 = outline.slides.filter((x) => !isHolePage(x))
+    if (kept2.length >= 2) outline = { ...outline, slides: kept2 }
   }
 
-  /* ---- 9.9.7：页数硬保证（WPS 式体验：用户要几页就出几页）----
-   * 闸门和兜底都可能删页，这里把页数拉回 n：
-   *  - 缺页：先用素材补（fillFromPlan 会开新页），补出来的页必须再过闸门；
-   *    素材见底就把内容最厚的一页拆成两页 —— 用真实内容凑数，不放空壳。
-   *  - 超页：从尾部裁，封面（第 1 页）和结尾页（E）不动。 */
+  /* ---- 页数硬保证（WPS 式体验：用户要几页就出几页）----
+   * 闸门和兜底都可能删页，这里把页数拉回 askN。缺页的补法按可信度排序：
+   *   ① 让模型按原大纲口径再续写（最多两轮，写得出真实页最好）
+   *   ② 素材拼页 → 拆厚页 → 章节过渡 / 金句（全是稿子里现成的内容）
+   * 全程不放占位句 —— 那种页会被闸门判成 meta-talk 删掉，等于白补。 */
+  let shortPages = 0
   try {
-    /* 缺页先让模型按原大纲口径再续写一轮 —— 模型写的话比拼素材行像话；
-     * completeDeck 会先试素材、不够才调模型，只补一轮有预算兜底 */
-    if ((outline.slides || []).length < n) {
+    if ((outline.slides || []).length < askN) {
       try {
-        await completeDeck({
+        const refilled = await completeDeck({
           data: { ...data, slides: outline.slides },
           topic: topicClean,
           n: askN,
@@ -2915,64 +3223,21 @@ async function generate(opts = {}, emit = null) {
           plan: planRows || plan,
           send,
         })
-      } catch (_) { /* 续写失败走后面的素材补页/拆页兜底 */ }
+        // completeDeck 末尾会重排数组（删占位页、结尾页压尾），必须接回返回值
+        outline = { ...outline, slides: refilled.slides }
+      } catch (_) { /* 续写失败走后面的素材/结构补页 */ }
     }
-    /* 9.9.7：页数硬保证各阶段的观测点（e2e 只显示 notice，用它诊断补页链路） */
+    /* 各阶段打观测点（e2e 只显示 notice，用它诊断补页链路在哪一步断的） */
     send({ type: 'notice', reason: 'page-count', field: `model-fill=${(outline.slides || []).length}` })
-    let guardPg = 0
-    while ((outline.slides || []).length < askN && guardPg++ < 3) {
-      const before = (outline.slides || []).length
-      const patched = fillFromPlan({ ...data, slides: outline.slides }, askN, planRows || plan)
-      outline = { ...outline, slides: patched.slides }
-      if ((outline.slides || []).length === before) break
-    }
-    /* 补出来的页是照抄素材行，必须再过一遍规则闸门（老坑：绕过检查） */
-    try {
-      outline = quality.auditDeck(outline, { topic: topicClean, research }).deck
-    } catch (_) { /* 闸门故障不能连累出片 */ }
-    const kept3 = outline.slides.filter((x) => !isHole(x))
-    if (kept3.length >= Math.min(2, askN)) outline = { ...outline, slides: kept3 }
-    send({ type: 'notice', reason: 'page-count', field: `material-fill=${(outline.slides || []).length}` })
-
-    /* 素材见底还缺页：拆最厚的内容页（正文 ≥4 行才值得拆），插到结尾页前面 */
-    guardPg = 0
-    while ((outline.slides || []).length < askN && guardPg++ < 6) {
-      let best = -1
-      let bestLen = 0
-      outline.slides.forEach((s, i) => {
-        if (s.kind === 'cover' || s.kind === 'closing' || s.kind === 'quote') return
-        const len = (s.body || []).length + (s.extra || []).length
-        if (len > bestLen) {
-          bestLen = len
-          best = i
-        }
-      })
-      if (best < 0 || bestLen < 4) break // 没有可拆的厚页了，只能认命
-      const s = outline.slides[best]
-      const lines = [...(s.body || []), ...(s.extra || [])]
-      const half = Math.ceil(lines.length / 2)
-      outline.slides[best] = { ...s, body: lines.slice(0, half), extra: [] }
-      const tailLines = lines.slice(half)
-      const newPage = {
-        kind: 'bullets',
-        title: titleFromLine(tailLines[0] || s.title),
-        body: tailLines.slice(0, 3),
-        extra: [],
-        stats: [],
-        note: '',
-        image: '',
-      }
-      const ci = outline.slides.findIndex((x) => x.kind === 'closing')
-      outline.slides.splice(ci >= 0 ? ci : outline.slides.length, 0, newPage)
-    }
-
-    /* 超页：从尾部裁，结尾页压轴不动 */
-    while ((outline.slides || []).length > askN && outline.slides.length > 2) {
-      const last = outline.slides.length - 1
-      const dropAt = outline.slides[last]?.kind === 'closing' ? last - 1 : last
-      if (dropAt <= 0) break
-      outline.slides.splice(dropAt, 1)
-    }
+    const enforced = enforcePageCount({
+      outline,
+      n: askN,
+      plan: planRows || plan,
+      topic: topicClean,
+      send,
+    })
+    outline = enforced.outline
+    shortPages = enforced.short
   } catch (_) { /* 页数校正出问题不能连累出片 */ }
 
   send({ type: 'notice', reason: 'page-count', field: `final=${(outline.slides || []).length}(askN=${askN})` })
@@ -2998,6 +3263,8 @@ async function generate(opts = {}, emit = null) {
       theme: themeId,
       withToc: Boolean(withToc),
       lang,
+      /* 真实内容凑不满要求页数时如实上报（模型能力问题，不假装写满了） */
+      pagesShort: shortPages,
     }
     send({ type: 'done', result })
     return result
@@ -3425,6 +3692,9 @@ module.exports = {
   generateImages,
   fetchImage,
   completeDeck,
+  enforcePageCount,
+  splitThickPage,
+  isHolePage,
   isRealPage,
   missingPages,
   thicken,

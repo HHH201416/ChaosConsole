@@ -42,6 +42,7 @@ async function sse(p, body, headers) {
   const dec = new TextDecoder()
   let buf = ''
   const events = []
+  const raw = []
   let result = null
   let error = ''
   for (;;) {
@@ -54,21 +55,22 @@ async function sse(p, body, headers) {
       buf = buf.slice(cut + 2)
       for (const line of chunk.split('\n')) {
         if (!line.startsWith('data:')) continue
-        const raw = line.slice(5).trim()
-        if (!raw) continue
+        const rawLine = line.slice(5).trim()
+        if (!rawLine) continue
         let ev
         try {
-          ev = JSON.parse(raw)
+          ev = JSON.parse(rawLine)
         } catch (_) {
           continue
         }
         events.push(ev)
+        if (ev.type === 'delta' && ev.text) raw.push(ev.text)
         if (ev.type === 'done') result = ev.result
         if (ev.type === 'error') error = ev.error || '生成失败'
       }
     }
   }
-  return { events, result, error, elapsed: Date.now() - t0 }
+  return { events, result, error, raw: raw.join(''), elapsed: Date.now() - t0 }
 }
 
 async function main() {
@@ -99,6 +101,25 @@ async function main() {
   console.log(`  演讲备注：${notes}/${outline.slides.length} 页`)
   if (!step1.result.outlineOnly) warn('大纲阶段没有标记 outlineOnly')
   if (step1.events.some((e) => e.phase === 'image' || e.phase === 'render')) warn('大纲阶段不该跑配图/渲染')
+
+  /* 页数硬指标：用户要 8 页，成品就必须是 8 页（含自动目录）。
+   * 2026-10-27 这里悄悄退化成出 5 页，属于用户点名不能退的项，记成失败。 */
+  const expectOutlinePages = PAGES >= 6 ? PAGES - 1 : PAGES
+  console.log(`  大纲页数：${outline.slides.length} / 应为 ${expectOutlinePages}（成品 ${PAGES} 页含目录）`)
+  if (outline.slides.length !== expectOutlinePages) {
+    problems.push(`大纲页数不符：${outline.slides.length} 页，应为 ${expectOutlinePages} 页（成品 ${PAGES} 页）`)
+  }
+  if (step1.result.pagesShort) problems.push(`生成器自报还差 ${step1.result.pagesShort} 页`)
+  const blank = outline.slides.filter((s) => !s.kind || (!(s.body || []).length && !(s.stats || []).length && !s.chart && !(s.timeline || []).length && s.kind !== 'cover' && s.kind !== 'section' && s.kind !== 'quote'))
+  if (blank.length) problems.push(`大纲里有 ${blank.length} 页是空白页`)
+  /* 结尾页必须是最后一页（汇报稿没有收尾页=没讲完） */
+  const lastKind = outline.slides[outline.slides.length - 1]?.kind
+  if (lastKind !== 'closing') problems.push(`最后一页不是结尾页（是 ${lastKind}）`)
+  if (process.env.CHAOS_E2E_RAW) {
+    console.log('\n--- 模型原始输出（诊断用） ---')
+    console.log(String(step1.raw || '').trim().slice(-1200))
+    console.log('--- 原始输出结束 ---\n')
+  }
 
   /* 只出大纲时顺手校验：新页型是否被模型用上（不强制，但要能看见） */
   const usedNew = kinds(outline).filter((k) => ['section', 'chart', 'timeline', 'process', 'compare'].includes(k))

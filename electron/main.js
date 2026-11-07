@@ -113,6 +113,8 @@ const serverModule = require('../server/index.js')
 const storeModule = require('../server/store.js')
 // 与 server/index.js 同进程，拿到的是同一个单例，用来判断「有没有任务在跑」
 const runnerModule = require('../server/runner.js')
+// 10.0.2：运行期间拦截系统关机（设置里可开）
+const { ShutdownGuard } = require('./shutdown-guard.js')
 
 let mainWindow = null
 let serverPort = null
@@ -1111,6 +1113,21 @@ ipcMain.handle('dialog:pick-dir', async () => {
   }
 })
 
+/**
+ * 10.0.2：关机守护的真实状态。
+ *
+ * 为什么让界面来问、而不是只看设置项：设置在库里只是「用户想开」，实际有没有
+ * 拦住是另一回事（.NET 缺失、PowerShell 被组策略禁掉、非 Windows 都不行）。
+ * 界面要显示「已生效 / 未生效 + 原因」，不能只显示一个勾。
+ */
+ipcMain.handle('shutdown-guard:status', () => {
+  try {
+    return { ...shutdownGuardInstance().status(), wanted: shutdownGuardEnabled() }
+  } catch (err) {
+    return { enabled: false, status: 'error', detail: String(err && err.message ? err.message : err), wanted: false }
+  }
+})
+
 /** 把主题贴到某个窗口的 <html data-theme> 上。走 executeJavaScript，不受页面 CSP 限制。 */
 function applyThemeToWindow(win, theme) {
   if (!win || win.isDestroyed()) return
@@ -1338,6 +1355,91 @@ function syncTray() {
   tray.setToolTip('ChaosConsole')
   tray.on('click', toggleWindow)
   syncTray() // 复用上面的菜单构建逻辑
+}
+
+/* ------------------------------------------------------------------ *
+ * 10.0.2：运行期间拦截系统关机
+ *
+ * 设置项 blockShutdown 打开后，主进程起一个隐藏窗体守护（见 shutdown-guard.js），
+ * 对 WM_QUERYENDSESSION 返回 FALSE —— 用户点「关机」时 Windows 会停在本应用上，
+ * 并在阻止清单里显示「ChaosConsole 不允许关机」，我们同时弹窗 + 通知界面。
+ *
+ * 三条设计底线：
+ *  1. 默认关：这一点用户可感知（关不掉机挺烦），要用户自己在设置里开。
+ *  2. 退出应用必须把守护一起收掉，否则用户退出后还关不掉机，那是事故。
+ *  3. 拦不住要如实说（没有 .NET / 被策略禁用 / 非 Windows），不能显示「已开启」却不干活。
+ * ------------------------------------------------------------------ */
+let shutdownGuard = null
+
+function shutdownGuardInstance() {
+  if (shutdownGuard) return shutdownGuard
+  shutdownGuard = new ShutdownGuard({
+    userDataDir: app.getPath('userData'),
+    onBlocked: ({ at }) => {
+      console.log('[electron] 已拦截一次系统关机:', at)
+      /* 界面还在就先弹应用内提示，再弹一个系统级对话框 —— 关机流程里界面可能已经
+       * 来不及画，但对话框属于系统窗口，能出现在「阻止关机」界面之上。 */
+      try {
+        mainWindow?.webContents.send('desktop:notice', {
+          kind: 'warn',
+          text: 'ChaosConsole 不允许关机，已取消关机',
+        })
+      } catch (_) {
+        /* ignore */
+      }
+      try {
+        const opts = {
+          type: 'warning',
+          title: 'ChaosConsole',
+          message: 'ChaosConsole 不允许关机',
+          detail:
+            '已拦截本次关机。如果确实需要关机，请先在「设置 → 桌面集成」里关闭「运行期间禁止关机」，或先退出 ChaosConsole。',
+          buttons: ['知道了'],
+          noLink: true,
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) dialog.showMessageBox(mainWindow, opts)
+        else dialog.showMessageBox(opts)
+      } catch (_) {
+        /* ignore */
+      }
+    },
+    onStatus: (s) => {
+      try {
+        mainWindow?.webContents.send('shutdown-guard:status', s)
+      } catch (_) {
+        /* ignore */
+      }
+    },
+  })
+  return shutdownGuard
+}
+
+function shutdownGuardEnabled() {
+  try {
+    return storeModule.getSetting('blockShutdown', '0') === '1'
+  } catch (_) {
+    return false
+  }
+}
+
+function syncShutdownGuard() {
+  const on = shutdownGuardEnabled()
+  try {
+    const g = shutdownGuardInstance()
+    g.sync(on)
+    if (on) console.log('[electron] 运行期间禁止关机：已开启（守护进程守护中）')
+  } catch (err) {
+    console.error('[electron] 关机守护启停失败:', err.message)
+  }
+}
+
+/** 退出前必须收掉守护，不然用户关掉应用后依然关不掉机 */
+function stopShutdownGuard() {
+  try {
+    shutdownGuard?.stop()
+  } catch (_) {
+    /* ignore */
+  }
 }
 
 function syncGlobalShortcut() {
@@ -1659,6 +1761,20 @@ async function createWindow() {
     mainWindow = null
   })
 
+  /* 10.0.2：关机兜底。
+   * Electron 只有在系统已经决定结束会话之后才发 session-end，来不及 preventDefault，
+   * 但这时仍可能有权限强的实例把关机撤掉 —— 保守试一次 `shutdown /a`：
+   * 普通用户会失败（返回码非 0），失败就当没发生；有权限就真的取消了。
+   * 主拦截在 shutdown-guard.js 的窗体里，这条只是最后一层。 */
+  mainWindow.on('session-end', () => {
+    if (!shutdownGuardEnabled()) return
+    try {
+      spawn('shutdown', ['/a'], { windowsHide: true, stdio: 'ignore' })
+    } catch (_) {
+      /* ignore */
+    }
+  })
+
   // 站内链接留在应用内，外链交给系统浏览器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -1777,7 +1893,12 @@ app.whenReady().then(async () => {
   storeModule.bus.on('settings:updated', ({ key }) => {
     if (key === 'trayEnabled' || key === 'uiLanguage' || key === 'closeToTray') syncTray()
     if (key === 'globalShortcut') syncGlobalShortcut()
+    // 10.0.2：设置里开关「运行期间禁止关机」，立刻生效，不用重启应用
+    if (key === 'blockShutdown') syncShutdownGuard()
   })
+
+  // 10.0.2：上次是开着的话，这次启动就把守护拉起来
+  syncShutdownGuard()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1864,6 +1985,10 @@ app.on('before-quit', (event) => {
   if (finalized) return
   finalized = true
   event.preventDefault()
+  /* 10.0.2：收尾第一步就把关机守护停掉。这一步不能等到 will-quit ——
+   * 下面走的是 app.exit(0)，它不发 will-quit，守护进程会变成孤儿，
+   * 用户关掉应用后还关不掉机。 */
+  stopShutdownGuard()
   ;(async () => {
     // 只关自己启动的后端；外部后端由 npm run dev 的 concurrently 负责收尾
     if (ownsServer) {
@@ -1927,8 +2052,20 @@ app.on('will-quit', () => {
   } catch (_) {
     /* ignore */
   }
+  // 10.0.2：守护进程必须随应用一起退，否则用户关掉应用后依然关不掉机
+  stopShutdownGuard()
 })
 
 process.on('uncaughtException', (err) => {
   console.error('[electron] 未捕获异常:', err)
+})
+
+/* 10.0.2：进程以任何方式消失（崩溃 / 被 taskkill / 正常退出）都要把关机守护带走，
+ * 否则用户关掉应用后还关不掉机 —— 那是比「不拦」更糟的事故。 */
+process.on('exit', () => {
+  try {
+    shutdownGuard?.killNow()
+  } catch (_) {
+    /* ignore */
+  }
 })

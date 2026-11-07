@@ -36,6 +36,7 @@ const SETTING_KEYS = [
   'uiLanguage',
   'accent',
   'trayEnabled',
+  'blockShutdown',
   'closeToTray',
   'notifyOnComplete',
   'notifyOnNeedsInput',

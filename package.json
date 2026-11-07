@@ -31,7 +31,8 @@
     "site:publish": "node scripts/publish-gitee.js",
     "site:deploy": "gh workflow run pages.yml",
     "dist": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish never",
-    "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always"
+    "release": "npm run icon && npm run manifest && npm run build:web && node scripts/build.js --publish always",
+    "test:shutdown-guard": "node scripts/shutdown-guard-selftest.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

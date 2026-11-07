@@ -1114,6 +1114,88 @@ ipcMain.handle('dialog:pick-dir', async () => {
 })
 
 /**
+ * 10.0.2：在应用内触发卸载。
+ *
+ * 为什么不自己实现删除：卸载器是 NSIS 生成的，负责写它的那套逻辑（注册表、
+ * 快捷方式、文件清单）只有它自己知道全。这里只做两件事 —— 找到它、按正确
+ * 顺序交给它。数据要不要删，由卸载器第一页的选项决定。
+ *
+ * 顺序是硬要求：应用不退，卸载器在 un.onInit 里 checkAppRunning 会判定
+ * 「程序正在运行」并中止。所以先 spawn 一个延迟 2 秒的 cmd，再 app.quit()，
+ * 等主进程真的退出、文件锁放开，卸载器才开始跑。
+ *
+ * 卸载器文件名随 productName 变（中文名 + 空格），不硬编码单一候选：
+ * 打包配置改过名字的历史版本会留下别的名字，多探测几个比报错好。
+ */
+ipcMain.handle('app:uninstall', async () => {
+  let productName = ''
+  try {
+    productName = String(require('../package.json').build?.productName || '')
+  } catch (_) {
+    /* 读不到就用下面的兜底名字 */
+  }
+
+  const exeDir = path.dirname(app.getPath('exe'))
+  const candidates = [
+    productName ? `Uninstall ${productName}.exe` : '',
+    'Uninstall AI Agent开发控制台.exe',
+    `Uninstall ${app.getName()}.exe`,
+    'Uninstall ChaosConsole.exe',
+    'Uninstall.exe',
+  ].filter(Boolean)
+
+  let found = ''
+  for (const name of candidates) {
+    try {
+      const p = path.join(exeDir, name)
+      if (fs.existsSync(p)) {
+        found = p
+        break
+      }
+    } catch (_) {
+      /* 单个候选探测失败不影响其它候选 */
+    }
+  }
+  if (!found) return { ok: false, error: 'not-found' }
+
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const r = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['取消', '卸载'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '卸载 AI Agent开发控制台',
+    message: '确定要卸载吗？',
+    detail:
+      '会关闭应用并启动卸载程序。\n\n' +
+      '卸载程序里可以选是否一并删除用户数据（对话、岗位、知识库、生成的文件）。' +
+      '默认会删除，想留着重装后接着用，就在那一页取消勾选。',
+  })
+  if (r.response !== 1) return { ok: false, canceled: true }
+
+  try {
+    spawn('cmd.exe', ['/c', `ping -n 3 127.0.0.1 >nul & start "" "${found}"`], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref()
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) }
+  }
+
+  // 留一点时间让 cmd 起来，再走正常退出流程（before-quit 会收服务、停守护）
+  setTimeout(() => {
+    try {
+      app.quit()
+    } catch (_) {
+      app.exit(0)
+    }
+  }, 150)
+  return { ok: true, uninstaller: path.basename(found) }
+})
+
+/**
  * 10.0.2：关机守护的真实状态。
  *
  * 为什么让界面来问、而不是只看设置项：设置在库里只是「用户想开」，实际有没有

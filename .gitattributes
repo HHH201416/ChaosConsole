@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# NSIS 脚本靠开头的 UTF-8 BOM 判断源文件编码，换行符转换别动它们：
+# 一旦被规范化，makensis 可能按 ANSI(GBK) 读，中文全乱码。
+build/*.nsh -text

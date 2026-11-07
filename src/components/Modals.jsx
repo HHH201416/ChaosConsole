@@ -1276,6 +1276,64 @@ function ShutdownGuardField() {
   )
 }
 
+/**
+ * 10.0.2：卸载应用。
+ *
+ * 确认框故意不画在这一层：卸载不可逆，确认要由主进程用系统对话框弹出，
+ * 才能压过应用窗口、也不会被页面的浮层遮挡。这里只负责发起与回执。
+ *
+ * 三条失败路径对应三种真实情况，提示词不能混：
+ *   not-found  绿色版 / 解压运行，安装目录里没有 Uninstall exe
+ *   canceled   用户自己点了取消，属于正常操作，不提示
+ *   其它       启动失败（权限、杀软拦截）
+ */
+function UninstallField() {
+  const t = useT()
+  const [busy, setBusy] = useState(false)
+  const bridge = typeof window !== 'undefined' ? window.chaos : null
+  const canUninstall = Boolean(bridge && bridge.uninstallApp)
+
+  const onClick = async () => {
+    if (!canUninstall || busy) return
+    setBusy(true)
+    try {
+      const r = await bridge.uninstallApp()
+      if (r?.ok) {
+        useStore.getState().toast(t('settings.uninstallLaunching'), 'success')
+      } else if (r?.canceled) {
+        /* 用户主动取消，不打扰 */
+      } else if (r?.error === 'not-found') {
+        useStore.getState().toast(t('settings.uninstallNotFound'), 'error')
+      } else {
+        useStore
+          .getState()
+          .toast(`${t('settings.uninstallFailed')}${r?.error ? `：${r.error}` : ''}`, 'error')
+      }
+    } catch (err) {
+      useStore.getState().toast(err?.message || t('settings.uninstallFailed'), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-1 rounded-lg border border-ink-500 bg-ink-900 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11.5px] text-slate-400">{t('settings.uninstall')}</span>
+        <button
+          className="btn-ghost px-2 py-1 text-[10.5px] !text-rose-300"
+          onClick={onClick}
+          disabled={!canUninstall || busy}
+          title={canUninstall ? '' : t('settings.uninstallUnsupported')}
+        >
+          {busy ? t('settings.uninstallBusy') : t('settings.uninstallNow')}
+        </button>
+      </div>
+      <p className="text-[10px] leading-relaxed text-slate-500">{t('settings.uninstallHint')}</p>
+    </div>
+  )
+}
+
 export function SettingsModal({ onClose }) {
   const t = useT()
   const system = useStore((s) => s.system)
@@ -1383,6 +1441,9 @@ export function SettingsModal({ onClose }) {
 
           {/* 10.0.2：运行期间禁止关机 */}
           <ShutdownGuardField />
+
+          {/* 10.0.2：卸载入口（系统安装版才有卸载器） */}
+          <UninstallField />
 
           <label className="flex items-center justify-between gap-3">
             <span className="text-[11.5px] text-slate-400">{t('settings.globalShortcut')}</span>

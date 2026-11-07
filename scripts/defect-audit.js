@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "10\.0\.1"/, '版本为 10.0.1')
+must('package.json', /"version": "10\.0\.2"/, '版本为 10.0.2')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -367,7 +367,7 @@ must('src/components/AipptPage.jsx', /onInsertAfter/, '编辑器有插页入口'
 must('src/components/AipptPage.jsx', /换模板（预览立刻变，不用重新生成）/, '换模板不重新生成')
 must('src/components/AipptPage.jsx', /演讲备注（放映时不显示/, '编辑页可写演讲备注')
 must('src/components/AipptPage.jsx', /function ChartBox/, '预览里有图表渲染')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.1'/, '更新日志首条是 10.0.1')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.2'/, '更新日志首条是 10.0.2')
 
 /* ---------- 10.0.1：页数硬保证（要几页就出几页） ---------- */
 console.log('— 10.0.1 页数硬保证（缺页用真实内容补，不用占位句）')
@@ -423,6 +423,30 @@ must('src/components/Modals.jsx', /function ShutdownGuardField/, '设置页有�
 must('server/workspace.js', /'blockShutdown',/, '导出/导入工作区带上这条设置')
 must('src/lib/i18n.js', /'settings\.blockShutdownHint'/, '开关有中英双语说明')
 must('scripts/shutdown-guard-selftest.js', /selfTest\(\{/, '有 npm run test:shutdown-guard 自检')
+
+/* ---------- 10.0.2：卸载程序（数据留不留由用户定） ---------- */
+console.log('— 10.0.2 卸载程序')
+must('build/uninstaller.nsh', /!macro customUninstallPage/, '卸载器用 electron-builder 显式锚点做自定义页')
+mustNot('build/uninstaller.nsh', /customUnWelcomePage/, '不用没人引用的欢迎页钩子（会触发 6010 warning，构建失败）')
+must('build/uninstaller.nsh', /NSD_CreateCheckbox[^\n]*用户数据/, '卸载页有「删除用户数据」勾选')
+must('build/uninstaller.nsh', /\$\{NSD_Check\} \$ChaosUnDataBox/, '默认勾选（卸载即清干净）')
+must('build/uninstaller.nsh', /RMDir \/r "\$APPDATA\\chaos-console"/, '能清当前数据目录')
+must('build/uninstaller.nsh', /RMDir \/r "\$APPDATA\\chaosconsole"/, '能清 8.x 时期的旧目录名')
+must('build/uninstaller.nsh', /Function un\.ChaosUnDataPageLeave/, '按用户选择在页面离开时执行删除')
+must('build/uninstaller.nsh', /UninstPage custom un\.ChaosUnDataPageCreate/, '页面用 UninstPage 登记（用 Page 会 6010 构建失败）')
+mustNot('build/uninstaller.nsh', /^\s*Page custom un\./m, '卸载器里不混用 Page 指令')
+must('build/uninstaller.nsh', /!macro customUnInstall/, '无条件清理走卸载 Section')
+must('build/uninstaller.nsh', /DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run"/, '顺手清开机自启注册表')
+must('build/installer.nsh', /BUILD_UNINSTALLER[\s\S]{0,200}uninstaller\.nsh/, '安装器脚本把卸载器脚本接进来')
+must('electron/main.js', /ipcMain\.handle\('app:uninstall'/, '主进程能启动卸载器')
+must('electron/main.js', /Uninstall \$\{productName\}\.exe/, '按产品名找卸载器（文件名随 productName 变）')
+must('electron/main.js', /setTimeout\(\(\) => \{[\s\S]{0,120}app\.quit\(\)/, '先让应用退出再交给卸载器')
+must('electron/preload.js', /uninstallApp: \(\) => ipcRenderer\.invoke\('app:uninstall'\)/, '渲染进程有卸载通道')
+must('src/components/Modals.jsx', /function UninstallField/, '设置页有卸载入口')
+must('src/components/Modals.jsx', /<UninstallField \/>/, '卸载入口挂进了设置界面')
+must('src/lib/i18n.js', /'settings\.uninstallNotFound'/, '卸载有中英双语说明')
+must('release-notes-10.0.2.md', /卸载程序/, '有本版发布正文')
+must('src/lib/changelog.js', /卸载程序/, '应用内更新日志写了卸载程序')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

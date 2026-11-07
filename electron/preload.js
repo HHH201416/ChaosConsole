@@ -104,4 +104,15 @@ contextBridge.exposeInMainWorld('chaos', {
     ipcRenderer.on('shutdown-guard:status', handler)
     return () => ipcRenderer.removeListener('shutdown-guard:status', handler)
   },
+  /**
+   * 10.0.2：卸载本应用。
+   *
+   * 主进程会先弹一次系统确认框（渲染进程自己画的确认框挡不住误触），
+   * 确认后启动安装目录里的卸载程序并退出应用。返回值：
+   *   { ok: true }            已交给卸载器
+   *   { ok: false, canceled } 用户在确认框里点了取消
+   *   { ok: false, error }    找不到卸载器（绿色版 / 解压运行）或启动失败
+   * 浏览器里跑时这个函数不存在，调用方要自己兜底提示。
+   */
+  uninstallApp: () => ipcRenderer.invoke('app:uninstall'),
 })

@@ -13,6 +13,13 @@
    需要 Actions 工作流就先放 `build/ci/`（现有 `build/ci/pages.yml` 即此来由）。
    遇到 `CONNECT tunnel failed, response 502` 是代理抖动，**循环重试**即可（二三次就过），
    核实远端用 `gh api repos/<r>/branches/main`，别信 `git ls-remote`。
+   **代理彻底不通时**（10.0.3 那次 8 次全败：`schannel missing close_notify` / `Empty reply` /
+   502，换 HTTP/1.1、大 postBuffer、openssl backend 都没用）：`api.github.com` 仍然是通的，
+   改用 `scripts/push-via-api.py` 走 REST —— blobs → tree（base_tree 取远端父树）→ commit →
+   PATCH refs/heads/main。**必须核对 API 返回的 tree sha 与 `git rev-parse HEAD^{tree}` 一致**，
+   一致才说明内容没走样。代价是本地提交 sha 与远端不同（作者/时间戳不同），
+   之后 `git fetch origin && git reset --hard origin/main` 对齐即可，**不要 force push**。
+   API 建的提交本地没有对象，`git update-ref refs/remotes/origin/main <sha>` 会报 not a valid SHA1。
 4. 安装包不进仓库：`.gitignore` 已忽略根目录 `ChaosConsole-Setup-*.exe`，`release/`、`dist/`
    本来就在忽略里。87MB 的 exe 塞进 git 会让 push 被代理掐断。
 

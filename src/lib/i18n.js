@@ -171,7 +171,7 @@ const DICT = {
     'settings.uninstallNow': '卸载…',
     'settings.uninstallBusy': '正在启动…',
     'settings.uninstallHint':
-      '启动系统卸载程序。卸载时可以选择是否一并删除用户数据（对话、岗位、知识库、生成的文件），默认删除；想重装后接着用就在那一页取消勾选。',
+      '启动系统卸载程序。卸载向导最后一页是五项清理清单：用户数据、缓存与更新包、已下载的 MCP 工具、早期版本残留、混沌引擎与本地模型 —— 逐项勾选要删的，默认保留引擎与模型。升级流程里的静默卸载一项都不删。',
     'settings.uninstallLaunching': '已启动卸载程序，应用即将退出',
     'settings.uninstallNotFound': '没找到卸载程序：当前可能是绿色版或解压运行，直接删除安装文件夹即可',
     'settings.uninstallFailed': '启动卸载程序失败',
@@ -553,7 +553,7 @@ const DICT = {
     'settings.uninstallNow': 'Uninstall…',
     'settings.uninstallBusy': 'Launching…',
     'settings.uninstallHint':
-      'Starts the system uninstaller. It asks whether to delete your data (conversations, roles, knowledge base, generated files) — deletion is the default; clear that box to keep your data for a reinstall.',
+      'Starts the system uninstaller. Its last page lists five cleanup groups — user data, caches and downloaded updates, MCP tools, leftovers from older versions, and the local engine plus models. Tick what should go; the engine and models stay by default. Silent uninstall (used during upgrades) deletes nothing.',
     'settings.uninstallLaunching': 'Uninstaller started, the app will now quit',
     'settings.uninstallNotFound':
       'Uninstaller not found — this looks like a portable copy; just delete the folder instead',

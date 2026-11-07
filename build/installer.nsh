@@ -231,7 +231,7 @@
 ;
 ;  electron-builder 编译两趟：安装器一趟、卸载器一趟，这个 include 文件
 ;  两趟都会被读进来。下面的 include 只在卸载器那一趟生效，里面定义
-;  customUnWelcomePage（数据清理选项页）和 customUnInstall（清残留）。
+;  customUninstallPage（五项清理清单页）和 customUnInstall（清残留）。
 ;
 ;  必须 include 在文件末尾而不是顶部：顶部还在 common header 阶段，
 ;  MUI2 尚未就绪，宏体里的 Page/Function 定义会编不过。卸载器的页面列表

@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "10\.0\.2"/, '版本为 10.0.2')
+must('package.json', /"version": "10\.0\.3"/, '版本为 10.0.3')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -367,7 +367,7 @@ must('src/components/AipptPage.jsx', /onInsertAfter/, '编辑器有插页入口'
 must('src/components/AipptPage.jsx', /换模板（预览立刻变，不用重新生成）/, '换模板不重新生成')
 must('src/components/AipptPage.jsx', /演讲备注（放映时不显示/, '编辑页可写演讲备注')
 must('src/components/AipptPage.jsx', /function ChartBox/, '预览里有图表渲染')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.2'/, '更新日志首条是 10.0.2')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.3'/, '更新日志首条是 10.0.3')
 
 /* ---------- 10.0.1：页数硬保证（要几页就出几页） ---------- */
 console.log('— 10.0.1 页数硬保证（缺页用真实内容补，不用占位句）')
@@ -424,14 +424,10 @@ must('server/workspace.js', /'blockShutdown',/, '导出/导入工作区带上这
 must('src/lib/i18n.js', /'settings\.blockShutdownHint'/, '开关有中英双语说明')
 must('scripts/shutdown-guard-selftest.js', /selfTest\(\{/, '有 npm run test:shutdown-guard 自检')
 
-/* ---------- 10.0.2：卸载程序（数据留不留由用户定） ---------- */
+/* ---------- 10.0.2：卸载程序（应用内入口与钩子约束） ---------- */
 console.log('— 10.0.2 卸载程序')
 must('build/uninstaller.nsh', /!macro customUninstallPage/, '卸载器用 electron-builder 显式锚点做自定义页')
 mustNot('build/uninstaller.nsh', /customUnWelcomePage/, '不用没人引用的欢迎页钩子（会触发 6010 warning，构建失败）')
-must('build/uninstaller.nsh', /NSD_CreateCheckbox[^\n]*用户数据/, '卸载页有「删除用户数据」勾选')
-must('build/uninstaller.nsh', /\$\{NSD_Check\} \$ChaosUnDataBox/, '默认勾选（卸载即清干净）')
-must('build/uninstaller.nsh', /RMDir \/r "\$APPDATA\\chaos-console"/, '能清当前数据目录')
-must('build/uninstaller.nsh', /RMDir \/r "\$APPDATA\\chaosconsole"/, '能清 8.x 时期的旧目录名')
 must('build/uninstaller.nsh', /Function un\.ChaosUnDataPageLeave/, '按用户选择在页面离开时执行删除')
 must('build/uninstaller.nsh', /UninstPage custom un\.ChaosUnDataPageCreate/, '页面用 UninstPage 登记（用 Page 会 6010 构建失败）')
 mustNot('build/uninstaller.nsh', /^\s*Page custom un\./m, '卸载器里不混用 Page 指令')
@@ -446,7 +442,49 @@ must('src/components/Modals.jsx', /function UninstallField/, '设置页有卸载
 must('src/components/Modals.jsx', /<UninstallField \/>/, '卸载入口挂进了设置界面')
 must('src/lib/i18n.js', /'settings\.uninstallNotFound'/, '卸载有中英双语说明')
 must('release-notes-10.0.2.md', /卸载程序/, '有本版发布正文')
-must('src/lib/changelog.js', /卸载程序/, '应用内更新日志写了卸载程序')
+
+/* ---------- 10.0.3：卸载器逐项可选，能清到只剩 Windows ---------- */
+console.log('— 10.0.3 卸载器逐项清理')
+const U = 'build/uninstaller.nsh'
+must(U, /10\.0\.3/, '脚本头注释标了版本')
+/* 五项清单：每项一个复选框，合计 5 个句柄 */
+/* 句柄在下一行 Pop 出来，所以不能只匹配同一行 */
+must(U, /\$\{NSD_CreateCheckbox\}[\s\S]{0,160}\$ChaosUnBox1/, '第 1 项：用户数据')
+must(U, /\$\{NSD_CreateCheckbox\}[\s\S]{0,160}\$ChaosUnBox2/, '第 2 项：缓存与更新包')
+must(U, /\$\{NSD_CreateCheckbox\}[\s\S]{0,160}\$ChaosUnBox3/, '第 3 项：已下载的 MCP 工具')
+must(U, /\$\{NSD_CreateCheckbox\}[\s\S]{0,160}\$ChaosUnBox4/, '第 4 项：早期版本残留')
+must(U, /\$\{NSD_CreateCheckbox\}[\s\S]{0,160}\$ChaosUnBox5/, '第 5 项：引擎与本地模型')
+/* 默认值：前四项勾选，第五项不勾（引擎可能是别的程序在用的共享资源） */
+must(U, /\$\{NSD_Check\} \$ChaosUnBox1/, '用户数据默认删')
+must(U, /\$\{NSD_Check\} \$ChaosUnBox2/, '缓存默认删')
+must(U, /\$\{NSD_Check\} \$ChaosUnBox3/, 'MCP 工具默认删')
+must(U, /\$\{NSD_Check\} \$ChaosUnBox4/, '早期残留默认删')
+mustNot(U, /\$\{NSD_Check\} \$ChaosUnBox5/, '引擎与模型默认保留')
+/* all-users 安装下 $APPDATA 会变成 C:\ProgramData —— 必须走 ReadEnvStr */
+must(U, /ReadEnvStr \$ChaosUnAppData "APPDATA"/, '用 ReadEnvStr 拿真实用户目录（all-users 安装下 $APPDATA 指向 ProgramData）')
+must(U, /ReadEnvStr \$ChaosUnLocalApp "LOCALAPPDATA"/, 'LOCALAPPDATA 同样走 ReadEnvStr')
+mustNot(U, /RMDir \/r "\$APPDATA\\chaos-console/, '不直接用 $APPDATA 拼路径')
+/* 每条清理路径都得在，缺一条就等于「说能清干净但清不掉」 */
+must(U, /RMDir \/r "\$ChaosUnAppData\\chaos-console\\data"/, '清用户数据 data 目录')
+must(U, /RMDir \/r "\$ChaosUnAppData\\chaos-console\\Local Storage"/, '清网页端界面状态')
+must(U, /RMDir \/r "\$ChaosUnLocalApp\\chaos-console-updater"/, '清更新器下载的安装包副本')
+must(U, /Delete "\$ChaosUnTemp\\ChaosConsole-Setup-\*\.exe"/, '清安装器留在 TEMP 的安装包')
+must(U, /RMDir \/r "\$ChaosUnAppData\\chaos-console\\mcp"/, '清已下载的 MCP 工具')
+must(U, /RMDir \/r "\$ChaosUnAppData\\chaosconsole"/, '清 8.x 时期的旧目录名')
+must(U, /RMDir \/r "\$INSTDIR\\resources\\app\\data"/, '清安装目录里早期版本遗留的数据')
+must(U, /Delete "\$ChaosUnProfile\\\.chaos_ca_bundle\.crt"/, '清家目录 CA 证书')
+must(U, /nsExec::Exec 'taskkill \/IM ollama\.exe \/F \/T'/, '删引擎前先停常驻进程（不停删不掉）')
+must(U, /Uninstall Ollama\.exe" \/S/, '跑官方卸载器而不是硬删目录（否则留僵尸卸载项）')
+must(U, /RMDir \/r "\$ChaosUnProfile\\\.ollama"/, '能清数 GB 的模型目录')
+must(U, /DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Ollama"/, '清引擎的卸载注册表项')
+/* 失败要说出来，不能静默失败 */
+must(U, /Var ChaosUnFail/, '有失败汇总变量')
+must(U, /Function un\.ChaosUnAddFail/, '有失败追加函数')
+must(U, /以下内容没能删除/, '删不掉时弹窗列清单')
+must(U, /静默卸载（\/S）不显示本页/, '注释写明静默卸载一项都不删')
+must('release-notes-10.0.3.md', /五项|逐项/, '有本版发布正文')
+must('src/lib/changelog.js', /version: '10\.0\.3'/, '应用内更新日志写了 10.0.3')
+must('src/lib/i18n.js', /五项清理清单/, '中英提示同步成清单说法')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

@@ -43,3 +43,12 @@
   （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），打包直接失败。
 - `git commit` 的提交信息写进文件再用 `-F`：heredoc 正文若出现 PowerShell 字样会被
   安全策略判为越权调用并拒绝执行。
+- **git 连不上先查 CA 配置**：本机 `.git/config` 里曾被写进
+  `http.sslCAInfo = C:/Users/Andy/.chaos_ca_bundle.crt`（Steam 工具那套逻辑），文件删掉后
+  git 报 `schannel: failed to open CA file` / `missing close_notify`，看着像代理抽风。
+  `git config --show-origin --get-all http.sslCAInfo` 一查就现形，`--unset` 即恢复。
+- `D:/ChaosConsole-8.0.0` 是 `D:/ChaosConsole` 的 **linked worktree**，两边共用
+  `D:/ChaosConsole/.git/config` —— 在一侧改 git 配置会同时影响另一侧。
+- 应用内「卸载」必须等进程真退出再 spawn 卸载器：NSIS 的 `checkAppRunning` 发现
+  应用还在就 Abort。别用 `ping -n N` 猜时间（退出要动画 1.65s + 停后端最多 5s），
+  在 `before-quit` 的 finalizing 分支里 spawn(detached) 才是对的顺序。

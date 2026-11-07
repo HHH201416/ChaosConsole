@@ -148,6 +148,9 @@ build/versions.nsh
 # 自检脚本的临时隔离数据目录
 .tmp-resp/
 
+# 根目录误放的安装包（安装包只走 GitHub Release 资产，不进仓库）
+/ChaosConsole-Setup-*.exe
+
 # 开发模式下后端的默认数据目录（server/config.js: DATA_DIR 未指定 CHAOS_DATA_DIR 时
 # 落到仓库根的 data/，里面是本机的 chaos.db）。跑一次自检就会冒出来，别提交。
 data/

@@ -8,8 +8,13 @@
    - `scripts/defect-audit.js`：版本断言（`package.json` 版本 + changelog 首条）同步更新。
 2. **发布三件套**：`gh release create <tag> --target main --notes-file ...`，然后单独
    `gh release upload --clobber` 传 exe、`latest.yml`、`*.exe.blockmap`。exe 随 create 一起传会静默失败。
-3. 源码分支 `release/8.0.0` 推送长期被 OAuth `workflow` scope 拦；需要用户手动
-   `gh auth refresh -h github.com -s workflow` 才能推源码。Release 走 `--target main` 不受影响。
+3. 推源码到 `main`：`git push origin HEAD:main`。**提交里绝不能出现
+   `.github/workflows/` 下的文件**——OAuth token 缺 `workflow` scope 时 GitHub 会整批拒绝。
+   需要 Actions 工作流就先放 `build/ci/`（现有 `build/ci/pages.yml` 即此来由）。
+   遇到 `CONNECT tunnel failed, response 502` 是代理抖动，**循环重试**即可（二三次就过），
+   核实远端用 `gh api repos/<r>/branches/main`，别信 `git ls-remote`。
+4. 安装包不进仓库：`.gitignore` 已忽略根目录 `ChaosConsole-Setup-*.exe`，`release/`、`dist/`
+   本来就在忽略里。87MB 的 exe 塞进 git 会让 push 被代理掐断。
 
 ## 产品约束（用户明确要求）
 

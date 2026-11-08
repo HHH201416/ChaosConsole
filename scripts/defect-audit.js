@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "10\.0\.4"/, '版本为 10.0.4')
+must('package.json', /"version": "10\.0\.5"/, '版本为 10.0.5')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -367,7 +367,7 @@ must('src/components/AipptPage.jsx', /onInsertAfter/, '编辑器有插页入口'
 must('src/components/AipptPage.jsx', /换模板（预览立刻变，不用重新生成）/, '换模板不重新生成')
 must('src/components/AipptPage.jsx', /演讲备注（放映时不显示/, '编辑页可写演讲备注')
 must('src/components/AipptPage.jsx', /function ChartBox/, '预览里有图表渲染')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.4'/, '更新日志首条是 10.0.4')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.5'/, '更新日志首条是 10.0.5')
 
 /* ---------- 10.0.1：页数硬保证（要几页就出几页） ---------- */
 console.log('— 10.0.1 页数硬保证（缺页用真实内容补，不用占位句）')
@@ -505,6 +505,52 @@ must(M, /自动打开卸载向导/, '确认框写明会自动打开向导')
 must(M, /shell\.openPath\(target\)/, 'spawn 失败时退回系统 ShellExecute')
 must('release-notes-10.0.4.md', /卸载向导/, '有本版发布正文')
 must('src/lib/changelog.js', /version: '10\.0\.4'/, '应用内更新日志写了 10.0.4')
+
+/* ---------- 10.0.5：关机守护改成「完全阻止」+ 安装界面能挑版本 ---------- */
+console.log('— 10.0.5 完全阻止关机 / 安装界面挑版本')
+const G = 'electron/shutdown-guard.js'
+/* 原来的致命点：WM_QUERYENDSESSION 处理里同步调 AbortSystemShutdown。系统正
+ * SendMessageTimeout 等回话，卡住超过 5 秒会被判「未响应」，反而给出强制关机入口。 */
+mustNot(G, /if \(m\.Msg == WM_QUERYENDSESSION\)\s*\{[^}]{0,300}AbortSystemShutdown\(null\)/, '不在查询处理里同步撤销（会被判未响应）')
+must(G, /BeginInvoke\(new MethodInvoker\(delegate \{ AbortNow\("query"\); \}\)\)/, '撤销动作排到消息循环之后执行')
+must(G, /m\.Result = IntPtr\.Zero/, '查询一律回 FALSE（拒绝结束会话）')
+/* 撤销要用权限：SeShutdownPrivilege 默认在令牌里但未启用，不启用恒 ERROR_ACCESS_DENIED */
+must(G, /SE_SHUTDOWN_NAME = "SeShutdownPrivilege"/, '显式点名关机权限')
+must(G, /AdjustTokenPrivileges/, '运行时启用令牌权限（否则撤销恒定失败）')
+must(G, /ERROR_NOT_ALL_ASSIGNED/, '按 ERROR_NOT_ALL_ASSIGNED 判断权限是否真拿到')
+/* 定时关机 / 更新重启 / 其它程序发起的关机不一定走交互界面，靠轮询撤销 */
+must(G, /_timer\.Interval = 400/, '400ms 撤销轮询')
+must(G, /ERROR_NO_SHUTDOWN_IN_PROGRESS/, '区分「没有待执行关机」与真失败')
+/* 关机工具直接掐掉，掐不到还有上面两条兜 */
+must(G, /Process\.GetProcessesByName\(name\)/, '按进程名掐关机工具')
+must(G, /"shutdown", "PsShutdown", "UsoClient"/, '覆盖 shutdown.exe / PsShutdown / 更新重启工具')
+must(G, /File\.Delete\(_abortPath\)/, '主进程可通过 abort.flag 要求立刻撤销')
+must(G, /_parentPid/, '父进程消失就自退（不留孤儿守护）')
+must(G, /MAX_RESTARTS/, '守护被杀后自动重启，别让「已开启」变成谎')
+must(G, /privileged=/, 'ready.flag 带上权限状态，界面能如实说明能力')
+/* 撤销入口不能按文档静态声明：本机 user32 只导出 ExitWindowsEx，
+ * AbortSystemShutdownW 在 advapi32 —— 静态声明抛 EntryPointNotFoundException，
+ * 被 catch 吞掉后就是「撤销从来没生效，日志里只有 err=2」。 */
+mustNot(G, /\[DllImport\("user32\.dll"[^)]*\)\]\s*private static extern bool AbortSystemShutdown/, '不再把撤销入口静态声明在 user32（本机没有这个导出）')
+must(G, /UnmanagedFunctionPointer\(CallingConvention\.Winapi/, '撤销入口用委托在运行时解析')
+must(G, /Marshal\.GetDelegateForFunctionPointer/, '按函数地址取委托')
+must(G, /new string\[\] \{ "advapi32\.dll", "user32\.dll" \}/, '先 advapi32 再 user32 兜底')
+must(G, /"AbortSystemShutdownW", "AbortSystemShutdownA", "AbortSystemShutdown"/, 'W/A/裸名逐个试')
+must(G, /abort entry: /, '日志写明解到的入口（否则排查又是谜语）')
+must('scripts/probe-shutdown-poll.js', /'\/t', '1800'/, '有定时关机的实测脚本')
+must('scripts/probe-shutdown-poll.js', /code === 1116/, '用外部 shutdown /a 的返回码判定是否真撤掉')
+must(M, /shutdownGuardInstance\(\)\.abortNow\(\)/, 'session-end 改由守护撤销')
+mustNot(M, /spawn\('shutdown', \['\/a'\]/, '不再 spawn shutdown /a（会被守护自己的嗅探掐死）')
+must(M, /SHUTDOWN_BLOCK_DETAIL/, '拦截途径有各自的具体说明')
+must(M, /lastShutdownNoticeAt/, '反复拦截时限流，不刷模态框')
+must(M, /x-ratelimit-remaining/, '列出历史版本被限流时给出可操作提示')
+must(M, /webUrl/, '拿不到列表时给出 Releases 网页兜底')
+must('src/components/Modals.jsx', /其他版本/, '安装/更新界面能下载其他版本')
+must('src/components/Modals.jsx', /loadReleases/, '界面能拉版本列表')
+must('src/components/Modals.jsx', /rollbackTo\(r\.tag\)/, '选中版本即下载该版安装包')
+must('src/lib/i18n.js', /settings\.shutdownLimited/, '权限受限时中英双语如实说明')
+must('release-notes-10.0.5.md', /完全阻止关机/, '有本版发布正文')
+must('src/lib/changelog.js', /version: '10\.0\.5'/, '应用内更新日志写了 10.0.5')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

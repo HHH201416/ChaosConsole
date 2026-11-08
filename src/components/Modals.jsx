@@ -1239,10 +1239,19 @@ function ShutdownGuardField() {
   } else {
     const s = state?.status || ''
     if (s === 'running') {
-      status = t('settings.shutdownOn')
-      tone = 'text-emerald-400'
+      /* 权限被策略收走时只能拦界面发起的关机，撤不掉定时关机 —— 如实说 */
+      if (state?.privileged === false) {
+        status = t('settings.shutdownLimited')
+        tone = 'text-amber-400'
+      } else {
+        status = t('settings.shutdownOn')
+        tone = 'text-emerald-400'
+      }
     } else if (s === 'running-fallback') {
       status = t('settings.shutdownFallback')
+      tone = 'text-amber-400'
+    } else if (s === 'restarting') {
+      status = t('settings.shutdownRestarting')
       tone = 'text-amber-400'
     } else if (s === 'starting') {
       status = t('settings.shutdownStarting')
@@ -1796,8 +1805,15 @@ export function InstallUpdateModal({ onClose }) {
   const system = useStore((s) => s.system)
   const installUpdate = useStore((s) => s.installUpdate)
   const downloadUpdate = useStore((s) => s.downloadUpdate)
+  const loadReleases = useStore((s) => s.loadReleases)
+  const rollbackTo = useStore((s) => s.rollbackTo)
   const running = useStore((s) => s.tasks.filter((t) => t.runState === 'running').length)
   const [busy, setBusy] = useState(false)
+  /* 10.0.5：装哪个版本由用户定。默认收起，不干扰「升级到最新」这条主路径。 */
+  const [otherOpen, setOtherOpen] = useState(false)
+  const [rel, setRel] = useState(null)
+  const [relBusy, setRelBusy] = useState(false)
+  const [rollbacking, setRollbacking] = useState('')
 
   const status = update?.status || 'idle'
   const target = update?.version || system?.version || '?'
@@ -1806,6 +1822,12 @@ export function InstallUpdateModal({ onClose }) {
   const local = notesFor(target) || LATEST_NOTES
   const lines = online.length ? online : local.items
   const pct = Math.max(0, Math.min(100, Number(update?.percent) || 0))
+
+  const loadList = async () => {
+    setRelBusy(true)
+    setRel(await loadReleases())
+    setRelBusy(false)
+  }
 
   return (
     <Shell
@@ -1828,6 +1850,53 @@ export function InstallUpdateModal({ onClose }) {
               </li>
             ))}
           </ul>
+        </div>
+
+        {/* 10.0.5：其他版本 */}
+        <div className="rounded-lg border border-ink-500 bg-ink-900 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] font-medium text-slate-200">其他版本</span>
+            <button
+              className="btn-ghost"
+              disabled={relBusy}
+              onClick={async () => {
+                if (!otherOpen) setOtherOpen(true)
+                await loadList()
+              }}
+            >
+              {relBusy ? '读取中…' : rel ? '刷新列表' : otherOpen ? '加载版本列表' : '选择其他版本'}
+            </button>
+          </div>
+          <p className="mt-1 text-[10.5px] leading-relaxed text-slate-500">
+            要装回旧版、或换到某个特定版本，在这里下它的安装包。下载完仍要点「安装并重启」才生效，
+            和正常升级走同一套确认流程。
+          </p>
+          {otherOpen && (
+            <div className="mt-2 space-y-1.5">
+              {rel?.error && <p className="text-[11px] text-rose-300">{rel.error}</p>}
+              {rel && !rel.error && (rel.releases || []).length === 0 && (
+                <p className="text-[11px] text-slate-500">没有可用的版本。</p>
+              )}
+              <div className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
+                {(rel?.releases || []).map((r) => (
+                  <ReleaseRow key={r.tag} release={r}>
+                    <button
+                      className="btn-ghost"
+                      disabled={r.current || !r.assetName || Boolean(rollbacking) || status === 'downloading'}
+                      onClick={async () => {
+                        setRollbacking(r.tag)
+                        await rollbackTo(r.tag)
+                        setRollbacking('')
+                      }}
+                      title={r.current ? '当前已是这个版本' : `下载 ${r.tag} 的安装包`}
+                    >
+                      {r.current ? '已是此版' : rollbacking === r.tag ? '下发中' : '下载'}
+                    </button>
+                  </ReleaseRow>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {status === 'downloading' && (

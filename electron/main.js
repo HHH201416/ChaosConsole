@@ -553,6 +553,20 @@ async function listReleases() {
       signal: AbortSignal.timeout(20000),
     })
     if (!res.ok) {
+      /* 403/429 基本都是匿名调用额度（60 次/小时/IP）用完了。这时说「HTTP 403」
+       * 用户只会以为是坏了 —— 直接告诉他怎么办。 */
+      if (res.status === 403 || res.status === 429) {
+        const left = res.headers.get('x-ratelimit-remaining')
+        return {
+          supported: true,
+          releases: [],
+          webUrl: `https://github.com/${owner}/${repo}/releases`,
+          error:
+            left === '0'
+              ? 'GitHub 接口的匿名调用额度已用完（每小时 60 次，按 IP 计）。等一会儿再试，或直接打开 Releases 页下载。'
+              : `GitHub 拒绝了这次请求（HTTP ${res.status}），可能被限流。稍后重试，或直接打开 Releases 页下载。`,
+        }
+      }
       return { supported: true, error: `GitHub 返回 HTTP ${res.status}`, releases: [] }
     }
     const raw = await res.json()
@@ -573,12 +587,17 @@ async function listReleases() {
         }
       })
       .filter((r) => r.downloadUrl)
-    return { supported: true, current, releases }
+    return { supported: true, current, webUrl: `https://github.com/${owner}/${repo}/releases`, releases }
   } catch (err) {
     // 真因都在 err.cause 里（TLS 证书、DNS、代理都是 "fetch failed" + cause）。
     // 只报 message 会退化成「失败了但不知道为什么」，下次还得从头排查一遍。
     const cause = err && err.cause && err.cause.message ? `（${err.cause.message}）` : ''
-    return { supported: true, error: `列出历史版本失败：${err.message}${cause}`, releases: [] }
+    return {
+      supported: true,
+      error: `列出历史版本失败：${err.message}${cause}。可直接打开 https://github.com/${owner}/${repo}/releases 下载。`,
+      webUrl: `https://github.com/${owner}/${repo}/releases`,
+      releases: [],
+    }
   }
 }
 
@@ -1460,30 +1479,44 @@ function syncTray() {
  *  3. 拦不住要如实说（没有 .NET / 被策略禁用 / 非 Windows），不能显示「已开启」却不干活。
  * ------------------------------------------------------------------ */
 let shutdownGuard = null
+/* 关机被反复拦下时（系统会连发 QueryEndSession）不能反复弹模态框，
+ * 对话框本身会抢焦点、也会让主进程看起来像卡住 */
+let lastShutdownNoticeAt = 0
+
+const SHUTDOWN_BLOCK_DETAIL = {
+  query: '收到系统关机/重启/注销请求，已直接拒绝，Windows 无法继续。',
+  abort: '检测到待执行的关机（定时关机、更新重启或其它程序发起），已经撤销。',
+  kill: '已终止正在执行的关机命令（shutdown.exe / 更新重启工具）。',
+  host: '系统已进入关机流程，已用提升后的权限撤销。',
+}
 
 function shutdownGuardInstance() {
   if (shutdownGuard) return shutdownGuard
   shutdownGuard = new ShutdownGuard({
     userDataDir: app.getPath('userData'),
-    onBlocked: ({ at }) => {
-      console.log('[electron] 已拦截一次系统关机:', at)
-      /* 界面还在就先弹应用内提示，再弹一个系统级对话框 —— 关机流程里界面可能已经
-       * 来不及画，但对话框属于系统窗口，能出现在「阻止关机」界面之上。 */
+    onBlocked: ({ at, via }) => {
+      console.log('[electron] 已拦截系统关机:', at, '途径:', via || 'unknown')
+      const now = Date.now()
+      const quiet = now - lastShutdownNoticeAt < 6000
+      lastShutdownNoticeAt = now
       try {
         mainWindow?.webContents.send('desktop:notice', {
           kind: 'warn',
-          text: 'ChaosConsole 不允许关机，已取消关机',
+          text: 'ChaosConsole 不允许关机，已阻止本次关机',
         })
       } catch (_) {
         /* ignore */
       }
+      if (quiet) return
+      /* 关机流程里界面可能已经来不及画，对话框属于系统窗口，能出现在阻止界面之上 */
       try {
         const opts = {
           type: 'warning',
           title: 'ChaosConsole',
           message: 'ChaosConsole 不允许关机',
           detail:
-            '已拦截本次关机。如果确实需要关机，请先在「设置 → 桌面集成」里关闭「运行期间禁止关机」，或先退出 ChaosConsole。',
+            (SHUTDOWN_BLOCK_DETAIL[via] || '已阻止本次关机。') +
+            '\n\n确实需要关机，请先在「设置 → 桌面集成」里关闭「运行期间禁止关机」，或先退出 ChaosConsole。',
           buttons: ['知道了'],
           noLink: true,
         }
@@ -1851,15 +1884,15 @@ async function createWindow() {
     mainWindow = null
   })
 
-  /* 10.0.2：关机兜底。
+  /* 10.0.5：关机兜底。
    * Electron 只有在系统已经决定结束会话之后才发 session-end，来不及 preventDefault，
-   * 但这时仍可能有权限强的实例把关机撤掉 —— 保守试一次 `shutdown /a`：
-   * 普通用户会失败（返回码非 0），失败就当没发生；有权限就真的取消了。
-   * 主拦截在 shutdown-guard.js 的窗体里，这条只是最后一层。 */
+   * 这时让守护立刻做一次 AbortSystemShutdown（权限已在守护里启用过）。
+   * 不走命令行工具 `shutdown /a`：守护会在嗅探里把 shutdown.exe 终止掉，
+   * 自己拉起的命令行工具反而会被自己人掐死 —— 两层互相拆台。 */
   mainWindow.on('session-end', () => {
     if (!shutdownGuardEnabled()) return
     try {
-      spawn('shutdown', ['/a'], { windowsHide: true, stdio: 'ignore' })
+      shutdownGuardInstance().abortNow()
     } catch (_) {
       /* ignore */
     }

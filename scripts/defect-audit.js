@@ -117,7 +117,7 @@ mustNot('src/components/ChatPanel.jsx', /whitespace-pre[^"']*overflow/, '聊天�
 
 /* ---------- 版本 / 通道 ---------- */
 console.log('— 版本与发布通道')
-must('package.json', /"version": "10\.0\.5"/, '版本为 10.0.5')
+must('package.json', /"version": "10\.0\.6"/, '版本为 10.0.6')
 must('package.json', /"releaseType": "release"/, '发布通道是 release')
 mustNot('package.json', /prerelease/, '没有 prerelease 通道')
 must('electron/main.js', /app\.setAppUserModelId\('com\.chaosconsole\.boss'\)/, '桌面通知 AppUserModelID 已设置')
@@ -367,7 +367,7 @@ must('src/components/AipptPage.jsx', /onInsertAfter/, '编辑器有插页入口'
 must('src/components/AipptPage.jsx', /换模板（预览立刻变，不用重新生成）/, '换模板不重新生成')
 must('src/components/AipptPage.jsx', /演讲备注（放映时不显示/, '编辑页可写演讲备注')
 must('src/components/AipptPage.jsx', /function ChartBox/, '预览里有图表渲染')
-must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.5'/, '更新日志首条是 10.0.5')
+must('src/lib/changelog.js', /export const CHANGELOG = \[\s*\{\s*version: '10\.0\.6'/, '更新日志首条是 10.0.6')
 
 /* ---------- 10.0.1：页数硬保证（要几页就出几页） ---------- */
 console.log('— 10.0.1 页数硬保证（缺页用真实内容补，不用占位句）')
@@ -551,6 +551,28 @@ must('src/components/Modals.jsx', /rollbackTo\(r\.tag\)/, '选中版本即下载
 must('src/lib/i18n.js', /settings\.shutdownLimited/, '权限受限时中英双语如实说明')
 must('release-notes-10.0.5.md', /完全阻止关机/, '有本版发布正文')
 must('src/lib/changelog.js', /version: '10\.0\.5'/, '应用内更新日志写了 10.0.5')
+
+/* ---------- 10.0.6：守护加固 + 拦截证据上设置页 ---------- */
+console.log('— 10.0.6 关机守护加固')
+/* 第二否决通道：SystemEvents 自己的隐藏窗口也收 WM_QUERYENDSESSION 广播，
+ * e.Cancel = true 让它也回 FALSE。两个窗口两票，漏一个还有一票。 */
+must(G, /Microsoft\.Win32\.SystemEvents\.SessionEnding/, '挂上 SystemEvents.SessionEnding（第二否决通道）')
+must(G, /e\.Cancel = true/, 'SessionEnding 事件也投否决票')
+must(G, /第二否决通道/, '通道的存在写进日志（排查时要能看到）')
+must(G, /SetProcessShutdownParameters/, '注册进关机通知队列')
+must(G, /SetProcessShutdownParameters\(0x4FF, 0\)/, '用应用程序可用的最高优先级 0x4FF')
+/* 拦截证据：设置页显示真实拦过的次数，别让「开着但从没拦过」冒充已生效 */
+must(G, /this\.blockedCount = Number\(count\) \|\| 0/, '守护状态解析拦截计数')
+must(G, /blockedCount: this\.blockedCount/, '状态接口带上拦截计数')
+must('src/components/Modals.jsx', /settings\.shutdownBlockedCount/, '设置页显示拦截证据')
+must('src/components/Modals.jsx', /blockedCount\) > 0/, '只在真拦过时显示（次数为 0 不装样子）')
+must('src/lib/i18n.js', /'settings\.shutdownBlockedCount'[^\n]*\{n\}/, '拦截计数词条支持插值')
+/* 机制级验证脚本：这次排查的三件套，出问题时重跑即可定位断在哪一环 */
+must('scripts/probe-enum-window.js', /direct-send/, '有跨进程否决验证脚本（真实关机走的就是跨进程路径）')
+must('scripts/probe-enum-window.js', /EnumCheck/, '有顶层窗口可枚举性验证')
+must('scripts/probe-broadcast.js', /0xFFFF/, '有广播投递验证脚本')
+must('release-notes-10.0.6.md', /机制级实测是通的/, '有本版发布正文')
+must('src/lib/changelog.js', /version: '10\.0\.6'/, '应用内更新日志写了 10.0.6')
 
 
 /* 9.8.0：思考全文显示 / 混沌自动就绪 / 知识库应用内编辑 */

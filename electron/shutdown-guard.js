@@ -155,6 +155,13 @@ public class ChaosShutdownGuard : Form
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr h);
 
+    /// <summary>
+    /// 10.0.6：把自己排进关机通知队列的前列。范围 0x080-0x4FF 是留给应用程序的，
+    /// 数值越大越早被通知 —— 早点回 FALSE，早点把整个关机流程掐停。
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessShutdownParameters(uint level, uint flags);
+
     private readonly string _flagPath;
     private readonly string _stopPath;
     private readonly string _abortPath;
@@ -172,6 +179,7 @@ public class ChaosShutdownGuard : Form
     private bool _loggedKill;
     private bool _loggedNoEntry;
     private bool _loggedEntry;
+    private bool _sysEventsHooked;
 
     public ChaosShutdownGuard(string flagPath, string stopPath, string abortPath,
         string readyPath, string logPath)
@@ -399,6 +407,22 @@ public class ChaosShutdownGuard : Form
 
         EnsurePrivilege();
 
+        /* 10.0.6：早点进关机通知队列（0x4FF 是应用程序可用的最高优先级） */
+        try
+        {
+            bool sp = SetProcessShutdownParameters(0x4FF, 0);
+            Log("SetProcessShutdownParameters(0x4FF) " + (sp ? "ok" : "failed err=" + Marshal.GetLastWin32Error().ToString()));
+        }
+        catch (Exception ex)
+        {
+            Log("SetProcessShutdownParameters threw: " + ex.Message);
+        }
+
+        /* 10.0.6：第二否决通道。SystemEvents 自己会建一个隐藏窗口并收
+         * WM_QUERYENDSESSION 广播，e.Cancel = true 等于让那个窗口也回 FALSE ——
+         * 两个窗口两票，广播枚举漏掉任何一个都还有另一票在。 */
+        HookSessionEnding();
+
         /* 把「撤销入口到底解到哪个库」记下来 —— 解不到就等于只会拦、不会撤，
          * 这种能力差异必须在日志里能看到，否则排查时又是一句谜语 err=2 */
         try
@@ -422,6 +446,30 @@ public class ChaosShutdownGuard : Form
         Log("guard ready hwnd=" + Handle.ToString() + " privilege=" + _privilege.ToString());
 
         if (_selfTest) BeginInvoke(new MethodInvoker(RunSelfTest));
+    }
+
+    /// <summary>
+    /// 挂上 SystemEvents.SessionEnding（.NET 自带的会话结束事件），投出第二张否决票。
+    /// 回调里只做记标记和日志两件小事，真正的撤销照旧排到消息循环之后。
+    /// </summary>
+    private void HookSessionEnding()
+    {
+        if (_sysEventsHooked) return;
+        _sysEventsHooked = true;
+        try
+        {
+            Microsoft.Win32.SystemEvents.SessionEnding += delegate(object s, Microsoft.Win32.SessionEndingEventArgs e)
+            {
+                try { MarkBlocked("sys-events"); } catch { }
+                Log("SystemEvents.SessionEnding reason=" + e.Reason.ToString() + " — veto");
+                e.Cancel = true;
+            };
+            Log("SystemEvents.SessionEnding hooked（第二否决通道）");
+        }
+        catch (Exception ex)
+        {
+            Log("hook SessionEnding failed: " + ex.Message);
+        }
     }
 
     /// <summary>
@@ -600,6 +648,10 @@ class ShutdownGuard {
     this.restartTimer = null
     this.privileged = null
     this.lastStatus = 'idle'
+    /* 10.0.6：拦截计数 —— 设置页直接显示「已拦下几次」，证据可见，
+     * 免得「开关开着但从来没拦过」这种状态一直被当成已生效 */
+    this.blockedCount = 0
+    this.lastBlockedAt = ''
   }
 
   file(name) {
@@ -613,6 +665,8 @@ class ShutdownGuard {
       supported: supported(),
       privileged: this.privileged,
       dir: this.dir,
+      blockedCount: this.blockedCount,
+      lastBlockedAt: this.lastBlockedAt,
     }
   }
 
@@ -741,6 +795,8 @@ class ShutdownGuard {
     }
 
     this.wanted = true
+    this.blockedCount = 0
+    this.lastBlockedAt = ''
     this.child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', this.file('guard.ps1')],
@@ -829,6 +885,8 @@ class ShutdownGuard {
       if (stamp && stamp !== last) {
         last = stamp
         const [at, via, count] = stamp.split('|')
+        this.blockedCount = Number(count) || 0
+        this.lastBlockedAt = at || ''
         try {
           this.onBlocked({ at, via, count: Number(count) || 0 })
         } catch (_) {

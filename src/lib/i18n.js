@@ -159,7 +159,7 @@ const DICT = {
     'settings.globalShortcut': '显示/隐藏窗口的全局快捷键',
     'settings.blockShutdown': '运行期间禁止关机',
     'settings.blockShutdownHint':
-      '开启后，应用运行期间电脑关不掉：开始菜单的关机 / 重启 / 注销、Alt+F4 关机、定时关机（shutdown /s /t）、Windows 更新重启、以及其它程序发起的关机，都会被拦下并自动撤销，系统显示「ChaosConsole 不允许关机」。长按电源键断电属于硬件层，任何软件都拦不住。确实要关机请先在设置里关掉这一项，或退出应用。',
+      '开启后，应用运行期间电脑关不掉：开始菜单的关机 / 重启 / 注销、Alt+F4 关机、定时关机（shutdown /s /t）、Windows 更新重启、以及其它程序发起的关机，都会被拦下并自动撤销。点「关机」时 Windows 会停在「正在阻止关机」全屏界面、显示「ChaosConsole 不允许关机」，不点「仍要关机」就不会关机；定时关机则被直接撤销，什么都看不到。长按电源键断电属于硬件层，任何软件都拦不住。确实要关机请先在设置里关掉这一项，或退出应用。',
     'settings.shutdownOff': '当前未开启：系统关机不受影响',
     'settings.shutdownOn': '已生效：常规关机路径全部拦截，并自动撤销待执行的关机',
     'settings.shutdownRestarting': '守护进程被结束了，正在自动重启…',
@@ -168,6 +168,8 @@ const DICT = {
     'settings.shutdownPaused': '已开启，守护进程未在运行（正在自动拉起）',
     'settings.shutdownLimited':
       '已生效但权限受限：系统策略收走了关机权限，只能拦截界面发起的关机，无法撤销定时关机',
+    'settings.shutdownBlockedCount': '守护已在真实关机时拦下 {n} 次 —— 证据在此',
+    'settings.shutdownLastAt': '最近一次',
     'settings.shutdownFailed': '未生效',
     'settings.shutdownUnsupported': '当前环境不支持（需要 Windows 桌面版）',
     'settings.uninstall': '卸载应用',
@@ -544,7 +546,7 @@ const DICT = {
     'settings.globalShortcut': 'Show/hide window shortcut',
     'settings.blockShutdown': 'Block system shutdown while running',
     'settings.blockShutdownHint':
-      'While this is on the machine cannot shut down: Start menu shutdown/restart/sign-out, Alt+F4 shutdown, scheduled shutdowns (shutdown /s /t), Windows Update restarts and shutdowns requested by other programs are all blocked and cancelled, and Windows shows "ChaosConsole 不允许关机". Holding the power button is a hardware event no software can block. Turn this off — or quit the app — when you really need to shut down.',
+      'While this is on the machine cannot shut down: Start menu shutdown/restart/sign-out, Alt+F4 shutdown, scheduled shutdowns (shutdown /s /t), Windows Update restarts and shutdowns requested by other programs are all blocked and cancelled. Clicking "Shut down" leaves Windows on the full-screen "An app is preventing shutdown" page showing "ChaosConsole 不允许关机" — it only proceeds if you click "Shut down anyway"; scheduled shutdowns are cancelled silently. Holding the power button is a hardware event no software can block. Turn this off — or quit the app — when you really need to shut down.',
     'settings.shutdownOff': 'Off: shutdown is not affected',
     'settings.shutdownOn': 'Active: every normal shutdown path is blocked and pending shutdowns are cancelled',
     'settings.shutdownRestarting': 'The guard process ended; restarting it automatically…',
@@ -553,6 +555,8 @@ const DICT = {
     'settings.shutdownPaused': 'Enabled, but the guard process is not running (restarting automatically)',
     'settings.shutdownLimited':
       'Active, but limited by policy: the shutdown right was revoked, so only shutdowns started from the UI can be blocked — scheduled shutdowns cannot be cancelled',
+    'settings.shutdownBlockedCount': 'The guard has vetoed {n} real shutdown attempts — here is the proof',
+    'settings.shutdownLastAt': 'last at',
     'settings.shutdownFailed': 'Not effective',
     'settings.shutdownUnsupported': 'Not supported here (needs the Windows desktop app)',
     'settings.uninstall': 'Uninstall',

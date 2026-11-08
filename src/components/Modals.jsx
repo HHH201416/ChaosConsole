@@ -1281,6 +1281,13 @@ function ShutdownGuardField() {
       </label>
       <p className="text-[10px] leading-relaxed text-slate-500">{t('settings.blockShutdownHint')}</p>
       <p className={`text-[10px] ${tone}`}>{status}</p>
+      {/* 10.0.6：拦截证据直接可见 —— 开关开着但一次都没拦过，和真拦过，是两种状态 */}
+      {wanted && Number(state?.blockedCount) > 0 && (
+        <p className="text-[10px] text-emerald-400/80">
+          {t('settings.shutdownBlockedCount', { n: state.blockedCount })}
+          {state.lastBlockedAt ? `（${t('settings.shutdownLastAt')} ${String(state.lastBlockedAt).slice(11, 19)}）` : ''}
+        </p>
+      )}
     </div>
   )
 }

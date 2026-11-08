@@ -52,3 +52,13 @@
 - 应用内「卸载」必须等进程真退出再 spawn 卸载器：NSIS 的 `checkAppRunning` 发现
   应用还在就 Abort。别用 `ping -n N` 猜时间（退出要动画 1.65s + 停后端最多 5s），
   在 `before-quit` 的 finalizing 分支里 spawn(detached) 才是对的顺序。
+- **Windows 撤销关机（AbortSystemShutdown）在本机在 `advapi32.dll`，不在 `user32.dll`**：
+  按文档静态 P/Invoke 到 user32 会抛 `EntryPointNotFoundException`，被 catch 吞掉后
+  只剩一句假象 `err=2`，看起来像系统拒绝。要用 LoadLibrary + GetProcAddress +
+  `GetDelegateForFunctionPointer` 运行时解析。**凡是 P/Invoke 的库名/入口点，
+  先探测再写死。**
+- 验证「定时关机被撤掉」不要靠应用自报：守护跑着时下发 `shutdown /s /t 1800`，
+  3 秒后外部执行 `shutdown /a`，返回 **1116** = 已无待执行关机（证明被撤），
+  返回 0 = 还排着队（没撤）。见 `scripts/probe-shutdown-poll.js`。
+- PowerShell 工具**禁止 `Add-Type`**（安全策略），Bash 里也不能直接调 powershell。
+  要编译 C# 只能由 node `spawn` 一个 .ps1 文件（守护进程本身就是这么做的）。
